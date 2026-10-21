@@ -31,3 +31,11 @@ Build 0012 can recognize its HFS signature but has no HFS filesystem provider
 or direct native root selector. Installing the image does not establish a root
 mount; HFS registration, root selection and actual read/write integration are
 separate kernel work.
+
+## Subsequent correction: journaling is required
+
+This document records the initial non-journaled image, not the current preferred
+format. After the first writable mount ended in a separate kernel panic, the
+next boot refused that dirty non-journaled volume. The current SYSTEM has been
+repaired and converted to real Journaled HFS+; see [journal repair](system-journal.md).
+Future writable root images must use `-fs 'Journaled HFS+'`.

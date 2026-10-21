@@ -46,3 +46,11 @@ The BOOT-only update completed with target checks and exact image-prefix
 readback verification, then reboot was requested. SYSTEM was not rewritten.
 Original Android backups remain intact; no additional backups were taken.
 Physical continuation past the photographed AMFI fault is pending device evidence.
+
+## Device result and filesystem correction
+
+The next device photograph stops before the entitlement path: HFS refuses the
+dirty non-journaled root left by the earlier 0013 panic. This does not establish
+whether the AMFI fix has passed on the phone. The filesystem was subsequently
+[repaired and journaling enabled](system-journal.md), then the unchanged 0014
+BOOT was retried. Physical continuation remains a separate device test.

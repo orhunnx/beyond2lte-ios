@@ -71,6 +71,11 @@ validated SYSTEM root and adds bounded SYSTEM writes with real cache flushing.
 The device photograph verifies the read/write HFS root mount and a completed
 native write/cache flush. Startup then exposes a separate absent-AMFI entitlement
 helper fault; the empty volume contains no init or iOS userspace.
+[Build 0014](docs/build-0014.md) handles unavailable AMFI entitlement callbacks
+without granting privileges. Its device test initially stopped on the dirty
+non-journaled volume left by the prior panic. SYSTEM was then
+[repaired and converted to Journaled HFS+](docs/system-journal.md), with only the
+changed blocks written back; the existing 0014 BOOT was retried.
 BOOT writes retain the original Android backup and are readback-verified.
 [Build 0002](docs/build-0002.md) uses a dynamic 1–2 GiB RAM arena within the
 unchanged firmware memory guards. [Build 0003](docs/build-0003.md) adds XNU-owned
