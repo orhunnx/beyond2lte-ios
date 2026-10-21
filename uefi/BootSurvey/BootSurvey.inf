@@ -1,0 +1,27 @@
+## @file
+#  Read-only UEFI handoff survey for beyond2lte XNU boot work.
+##
+[Defines]
+  INF_VERSION    = 0x0001001B
+  BASE_NAME      = BootSurvey
+  FILE_GUID      = 803E937F-BC17-41BC-A2CA-26DB21564031
+  MODULE_TYPE    = UEFI_APPLICATION
+  VERSION_STRING = 0.1
+  ENTRY_POINT    = UefiMain
+
+[Sources]
+  BootSurvey.c
+
+[Packages]
+  MdePkg/MdePkg.dec
+  ArmPkg/ArmPkg.dec
+
+[LibraryClasses]
+  ArmLib
+  MemoryAllocationLib
+  UefiApplicationEntryPoint
+  UefiBootServicesTableLib
+  UefiLib
+
+[Protocols]
+  gEfiGraphicsOutputProtocolGuid  ## CONSUMES

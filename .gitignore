@@ -1,0 +1,15 @@
+# Local upstream checkouts, build products and firmware inputs
+xnu/
+Build/
+build/
+out/
+*.efi
+*.img
+*.ipsw
+*.dmg
+*.im4p
+*.kernelcache
+*.kc
+*.dtb
+*.fd
+.DS_Store
