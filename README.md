@@ -44,7 +44,8 @@ adds the required /chosen/memory-map and /defaults containers.
 [Build 0006](docs/build-0006.md) adds allocator RNG and real kernel PRNG startup;
 its device test passes PRNG registration and exposes the console lifecycle gap.
 [Build 0007](docs/build-0007.md) restores initialized console locks and the real
-display-control backend while preserving early text. Its device test is pending.
+display-control backend while preserving early text. It has been installed;
+the next device screen report is pending.
 BOOT writes were backed up and readback-verified.
 [Build 0002](docs/build-0002.md) uses a dynamic 1–2 GiB RAM arena within the
 unchanged firmware memory guards. [Build 0003](docs/build-0003.md) adds XNU-owned

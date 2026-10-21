@@ -38,6 +38,11 @@ and the absence of remapping or freeing the reserved framebuffer alias.
 
 ## Device boundary
 
-Physical execution is pending. The next screen report must establish progress
+The authorized BOOT-only update completed after a verified full backup of the
+previous BOOT. The original backup remains intact. Exact image-prefix readback
+matched and the device was rebooted. Raw receipts and identifiers remain local
+and ignored.
+
+The next screen report must establish progress
 past console attachment, then boot CPU registration and the dedicated timer
 and SGI proof line. A root-device wait is possible without a root filesystem.
