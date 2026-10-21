@@ -39,6 +39,11 @@ production-status values were not fabricated. Kernel assertions remain intact.
 
 ## Installation and device boundary
 
-The package is ready. Physical progress past the policy assertion is pending.
+The authorized BOOT-only update completed after a full verified backup of the
+previous BOOT. The original backup remains intact. Exact image-prefix readback
+matched, then the device was rebooted. SYSTEM remains untouched. Raw receipts
+and identifiers stay local and ignored.
+
+Physical progress past the policy assertion is pending.
 The next screen report should show later BSD autoconfiguration or a root-device
 wait; no root filesystem or native UFS driver is supplied by this update.

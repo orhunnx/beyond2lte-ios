@@ -56,7 +56,8 @@ the next failure identifies the absent AES mode provider.
 unavailable GCM operations safely. Its device test passes into BSD autoconfiguration
 and exposes a missing boot-policy property.
 [Build 0011](docs/build-0011.md) supplies the explicit existing non-CTRR policy
-in the Apple device tree. Its device test is pending.
+in the Apple device tree. Its BOOT-only installation is verified;
+the device screen result is pending.
 BOOT writes were backed up and readback-verified.
 [Build 0002](docs/build-0002.md) uses a dynamic 1–2 GiB RAM arena within the
 unchanged firmware memory guards. [Build 0003](docs/build-0003.md) adds XNU-owned
