@@ -1,22 +1,57 @@
-# UEFI → XNU açılış sözleşmesi
+# UEFI to XNU boot contract
 
-## Doğrulanan mevcut sınır
+## Firmware boundary
 
-`beyond2lte-uefi` deposunun `BUILD.md` dosyası UEFI'nin `boot` bölümüne yazıldığını, `sboot` bölümüne yazılmadığını belirtiyor. `EbsTest` EFI uygulaması GOP ve `ExitBootServices` yolunu sınamak için mevcut. Bu nedenle XNU yolu, firmware'i yeniden yazmak yerine mevcut UEFI içinden yüklenir. Fiziksel zincirde Samsung'un ilk aşaması yerinde kalır.
+The existing beyond2lte firmware runs from the Android BOOT partition. Samsung
+S-Boot still starts that firmware; this project adds the subsequent XNU path.
+The firmware is maintained in its own repository.
 
-Mevcut UEFI bellek haritası Windows için korumalıdır. Kodun `MemoryMapLib.c` dosyasında UEFI FD `0xC9000000..0xC9400000`, stack `0xC9400000..0xC9440000`, framebuffer `0xCA000000..0xCB400000`, DXE heap `0xCB400000..0xCF000000` ve genel amaçlı üst RAM `0x900000000..0x980000000` olarak listeleniyor. Bunlar çalışma zamanı ölçümü yerine geçmez. XNU yükleyicisi EFI bellek haritasından gerçek kullanılabilir sayfaları seçmeli ve korunan aralıklara yazmamalıdır.
+Use EFI memory descriptors to select RAM at runtime. The firmware's reserved
+ranges include its image, stack and framebuffer. Those ranges must not be
+reused as kernel RAM, even when the corresponding physical addresses refer
+to DRAM. Reference constants are not a substitute for a live EFI memory map.
 
-## XNU 12377'nin girişi
+Firmware ACPI tables and Windows support are outside this repository's scope.
+XNU receives its own Apple-format device tree.
 
-`pexpert/pexpert/arm64/boot.h` ARM64 `boot_args` yapısını tanımlar: `virtBase`, `physBase`, `memSize`, `topOfKernelData`, video, `deviceTreeP`, komut satırı ve diğer alanlar. `osfmk/arm64/start.s` içindeki `start_first_cpu`, x0'dan bu yapıyı okur, MMU tablolarını kurar ve `arm_init` aşamasına geçer. Giriş EFI uygulaması değildir. Mach-O segment yerleşimi, adres kaydırması ve fiziksel bellek aralığı birlikte doğrulanmadan bu adrese dallanılmaz.
+## XNU 12377 entry ABI
 
-`pexpert/pexpert/arm64/board_config.h` içinde Exynos 9820 tanımı yoktur. `VMAPPLE` tanımı Apple sanal platformu, GICv3 ve Apple'a özgü işlemci özellikleri içerir; doğrudan beyond2lte yapılandırması olarak kullanılamaz. Cihaz için ayrı yapılandırma gerekir.
+`pexpert/pexpert/arm64/boot.h` defines the ARM64 `boot_args` structure. The
+current ABI includes a 1024-byte command line and is 1152 bytes in total.
+`CommandLine` starts at byte 108; the video structure starts at byte 40.
+Older XNU ports using a 608-byte command line are not ABI-compatible.
 
-## EFI yükleyicinin kabul koşulları
+`start_first_cpu` in `osfmk/arm64/start.s` accepts the physical address of this
+structure in `x0`. It establishes the kernel translation tables and continues
+to `arm_init`. It is not an EFI application entry point.
 
-- Çalışan UEFI'nin exception level'ı, GOP biçimi ve kullanılabilir fiziksel bellek aralıkları aygıtta ölçülmüş olmalı.
-- Yüklenmiş ARM64 Mach-O'nun tüm segmentleri ayrılan fiziksel RAM'e sığmalı; taşma ve korunan alan çakışması reddedilmeli.
-- XNU'ya verilecek Apple biçimindeki aygıt ağacı, framebuffer ve bellek bilgisi oluşturulmalı.
-- `ExitBootServices` çağrısı güncel memory-map key ile yapılmalı; başarısızsa harita yenilenmeli.
-- EBS sonrası UEFI hizmeti kullanılmamalı; giriş EL1 ve x0 `boot_args` önkoşulları karşılanmalı.
-- İlk gerçek aygıt denemesinde sonuç, ekrandaki/UART'daki XNU erken çıktı ile doğrulanmalı.
+The loader must supply matching `virtBase`, `physBase`, `memSize`,
+`topOfKernelData`, video fields and an Apple-format device tree. `deviceTreeP`
+is expressed in the kernel's virtual address space. The physical kernel
+entry must correspond to the loaded Mach-O entry point.
+
+## Platform configuration
+
+B2L is a separate machine configuration. `VMAPPLE` assumes an Apple virtual
+platform and is not a substitute for an Exynos 9820 port.
+
+The initial target uses plain ARM64, ARMv8-A with crypto instructions, 4 KiB
+pages, one CPU, GICv2 and the architected virtual timer. It does not use Apple
+PAC, BTI, SPTM, PPL, AMCC or Apple production-fuse policy. Successful
+compilation does not validate these runtime assumptions on the phone.
+
+## Loader acceptance requirements
+
+1. Check the running exception level, direct framebuffer format and available
+   EFI conventional memory. Preserve firmware-reserved regions.
+2. Validate every Mach-O command, segment range, arithmetic operation and
+   executable entry point before copying data. Reject unsupported formats.
+3. Allocate kernel memory through EFI, populate the Apple device tree and
+   prepare the exact `boot_args` ABI.
+4. Obtain a fresh memory-map key for `ExitBootServices`; handle a changed key
+   without allocating memory after a successful exit.
+5. Complete cache maintenance and satisfy the kernel's EL1/MMU entry contract.
+   Do not call EFI services after exiting boot services.
+6. Verify kernel entry and continued initialization using device output.
+
+A firmware-only BOOT image must not be presented as a working XNU image.

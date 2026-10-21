@@ -43,8 +43,16 @@ UefiMain (EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
   UINT64 Size;
   UINTN CandidateCount = 0;
   UINTN Attempt;
+  UINT64 Mpidr, Mmfr0, CounterHz, Sctlr;
+
+  __asm__ volatile ("mrs %0, mpidr_el1" : "=r" (Mpidr));
+  __asm__ volatile ("mrs %0, id_aa64mmfr0_el1" : "=r" (Mmfr0));
+  __asm__ volatile ("mrs %0, cntfrq_el0" : "=r" (CounterHz));
+  __asm__ volatile ("mrs %0, sctlr_el1" : "=r" (Sctlr));
 
   Print (L"B2L XNU survey: CurrentEL=EL%u\n", (UINT32)(ArmReadCurrentEL () >> 2));
+  Print (L"CPU: MPIDR=0x%lx MMFR0=0x%lx CNTFRQ=%lu SCTLR=0x%lx\n",
+    Mpidr, Mmfr0, CounterHz, Sctlr);
   Status = gBS->LocateProtocol (&gEfiGraphicsOutputProtocolGuid, NULL, (VOID **)&Gop);
   if (!EFI_ERROR (Status) && Gop != NULL && Gop->Mode != NULL && Gop->Mode->Info != NULL) {
     Print (L"GOP: %ux%u stride=%u format=%s framebuffer=0x%lx size=0x%lx\n",

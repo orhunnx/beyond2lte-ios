@@ -1,0 +1,416 @@
+diff --git a/bsd/sys/make_symbol_aliasing.sh b/bsd/sys/make_symbol_aliasing.sh
+index 24fb244..5eb9d3a 100755
+--- a/bsd/sys/make_symbol_aliasing.sh
++++ b/bsd/sys/make_symbol_aliasing.sh
+@@ -34,7 +34,7 @@ fi
+ SDKROOT="$1"
+ OUTPUT="$2"
+ 
+-AVAILABILITY_PL="${SDKROOT}/${DRIVERKITROOT}/usr/local/libexec/availability.pl"
++AVAILABILITY_PL="${B2L_DEPSROOT:-${SDKROOT}/${DRIVERKITROOT}}/usr/local/libexec/availability.pl"
+ 
+ if [ ! -x "${AVAILABILITY_PL}" ] ; then
+     echo "Unable to locate ${AVAILABILITY_PL} (or not executable)" >&2
+diff --git a/makedefs/MakeInc.def b/makedefs/MakeInc.def
+index e37762b..4fa871c 100644
+--- a/makedefs/MakeInc.def
++++ b/makedefs/MakeInc.def
+@@ -29,7 +29,7 @@ SUPPORTED_ARM64_MACHINE_CONFIGS = NONE
+ else ifneq ($(findstring _host,$(RC_ProjectName)),)
+ SUPPORTED_ARM64_MACHINE_CONFIGS = NONE
+ else
+-SUPPORTED_ARM64_MACHINE_CONFIGS = T6000 T6020 T6030 T6031 T6041 T6050 T8101 T8103 T8112 T8122 T8132 T8142 VMAPPLE
++SUPPORTED_ARM64_MACHINE_CONFIGS = B2L T6000 T6020 T6030 T6031 T6041 T6050 T8101 T8103 T8112 T8122 T8132 T8142 VMAPPLE
+ 
+ SPTM_ENABLED_SOCS_MacOSX = t6000 t8112 t6020 t8122 t6030 t6031 t6041 t6050 t8132 t8142
+ EXCLAVES_ENABLED_SOCS_MacOSX = t8142 t6050
+@@ -92,6 +92,8 @@ MACHINE_FLAGS_ARM64_T8122 = -DARM64_BOARD_CONFIG_T8122_T8130		-mcpu=apple-m3
+ MACHINE_FLAGS_ARM64_T8132 = -DARM64_BOARD_CONFIG_T8132			-mcpu=apple-m4
+ MACHINE_FLAGS_ARM64_T8142 = -DARM64_BOARD_CONFIG_T8142 			-mcpu=apple-m4+memtag+predres2
+ 
++MACHINE_FLAGS_ARM64_B2L = -DARM64_BOARD_CONFIG_B2L -march=armv8-a+crypto
++
+ MACHINE_FLAGS_ARM64_VMAPPLE = -DARM64_BOARD_CONFIG_VMAPPLE              -march=armv8.5a+sme2
+ 
+ 
+@@ -370,8 +372,10 @@ ifeq ($(ARCH_STRING_FOR_CURRENT_MACHINE_CONFIG),)
+ # Without embdedded device map, use a default arch string
+ export ARCH_STRING_FOR_CURRENT_MACHINE_CONFIG := $(shell echo $(CURRENT_ARCH_CONFIG) | tr A-Z a-z)
+ ifneq ($(filter arm64,$(ARCH_STRING_FOR_CURRENT_MACHINE_CONFIG)),)
++ifneq ($(CURRENT_MACHINE_CONFIG),B2L)
+ export ARCH_STRING_FOR_CURRENT_MACHINE_CONFIG := arm64e
+ endif
++endif
+ 
+ endif
+ 
+@@ -913,6 +917,9 @@ LDFLAGS_KERNEL_GEN = \
+ 
+ # LDFLAGS_KERNEL_SDK	= -L$(SDKROOT)/usr/local/lib/kernel -lfirehose_kernel
+ LDFLAGS_KERNEL_SDK	= -L$(SDKROOT)/usr/local/lib/kernel -L$(SDKROOT)/usr/local/lib/kernel/platform
++ifneq ($(B2L_DEPSROOT),)
++LDFLAGS_KERNEL_SDK := -L$(B2L_DEPSROOT)/usr/local/lib/kernel $(LDFLAGS_KERNEL_SDK)
++endif
+ ifneq ($(KDKROOT),)
+ LDFLAGS_KERNEL_SDK     += -L$(KDKROOT)/usr/local/lib/kernel/platform
+ endif
+@@ -1151,7 +1158,7 @@ LD_KERNEL_LIBS	   = -lcc_kext
+ LD_KERNEL_ARCHIVES = $(LDFLAGS_KERNEL_SDK) -lfirehose_kernel
+ 
+ # Link binary support library
+-ifneq ($(CURRENT_MACHINE_CONFIG),NONE)
++ifeq ($(filter NONE B2L,$(CURRENT_MACHINE_CONFIG)),)
+         LDFLAGS_KERNEL_ONLY += -rdynamic -Wl,-force_load,$(KDKROOT)/System/Library/KernelSupport/lib$(CURRENT_MACHINE_CONFIG).os.$(CURRENT_KERNEL_CONFIG).a
+ endif
+ 
+@@ -1196,6 +1203,11 @@ TIGHTBEAM_IN_SDK := 1
+ else ifneq ($(wildcard $(KDKROOT)/usr/local/lib/kernel/platform/libTightbeam.a),)
+ XNU_CONFIG_TIGHTBEAM := 1
+ endif
++ifeq ($(CURRENT_MACHINE_CONFIG),B2L)
++XNU_CONFIG_TIGHTBEAM := 0
++LDFLAGS_KERNEL_ONLY += -Wl,-no_fixup_chains
++endif
++
+ ifeq ($(XNU_CONFIG_TIGHTBEAM),1)
+   ifeq ($(TIGHTBEAM_IN_SDK),1)
+     # Force-import the Tightbeam static lib so that all of its symbols can be exported to kexts
+@@ -1228,6 +1240,9 @@ INCFLAGS_EXTERN	= -I$(SRCROOT)/EXTERNAL_HEADERS
+ INCFLAGS_GEN	= -I$(SRCROOT)/$(COMPONENT) -I$(OBJROOT)/EXPORT_HDRS/$(COMPONENT)
+ INCFLAGS_LOCAL	= -I.
+ INCFLAGS_SDK    = -I$(SDKROOT)/usr/local/include/kernel -I$(SDKROOT)/usr/local/include/iBoot -I$(SDKROOT)/$(KPINCDIR)/AppleFeatures
++ifneq ($(B2L_DEPSROOT),)
++INCFLAGS_SDK := -I$(B2L_DEPSROOT)/usr/local/include/kernel $(INCFLAGS_SDK)
++endif
+ INCFLAGS_PLATFORM = -I$(SDKROOT)/$(KPINCDIR)/platform
+ ifneq ($(KDKROOT),)
+ INCFLAGS_SDK   += -I$(KDKROOT)/$(KPINCDIR) -I$(KDKROOT)/System/Library/KernelSupport
+diff --git a/osfmk/arm/pmap/pmap.c b/osfmk/arm/pmap/pmap.c
+index 19e7e67..fe5f7c8 100644
+--- a/osfmk/arm/pmap/pmap.c
++++ b/osfmk/arm/pmap/pmap.c
+@@ -84,8 +84,10 @@
+ 
+ #include <arm64/proc_reg.h>
+ #include <pexpert/arm64/boot.h>
++#if !defined(B2L)
+ #include <arm64/ppl/sart.h>
+ #include <arm64/ppl/uat.h>
++#endif
+ 
+ #if defined(KERNEL_INTEGRITY_KTRR) || defined(KERNEL_INTEGRITY_CTRR) || defined(KERNEL_INTEGRITY_PV_CTRR)
+ #include <arm64/amcc_rorgn.h>
+@@ -2334,7 +2336,9 @@ pmap_bootstrap(
+ 	/**
+ 	 * Bootstrap any necessary SART data structures and values needed from the device tree.
+ 	 */
++#if !defined(B2L)
+ 	sart_bootstrap();
++#endif
+ 
+ 	/**
+ 	 * Don't make any assumptions about the alignment of avail_start before this
+@@ -4953,7 +4957,13 @@ pmap_page_protect_options_with_flush_range(
+ #endif
+ 			if (remove && (options & PMAP_OPTIONS_COMPRESSOR)) {
+ 				panic("pmap_page_protect: attempt to compress ppnum 0x%x owned by iommu %p, pve_p=%p",
+-				    ppnum, ptep_get_iommu(pte_p), pve_p);
++				    ppnum,
++#if defined(B2L)
++				    pte_p,
++#else
++				    ptep_get_iommu(pte_p),
++#endif
++				    pve_p);
+ 			}
+ 			goto protect_skip_pve_pass1;
+ 		}
+@@ -6180,6 +6190,8 @@ pmap_construct_pte(
+ 	return pte;
+ }
+ 
++MARK_AS_PMAP_TEXT static void pmap_phys_write_disable(vm_address_t va);
++
+ MARK_AS_PMAP_TEXT kern_return_t
+ pmap_enter_options_internal(
+ 	pmap_t pmap,
+@@ -12242,6 +12254,9 @@ pmap_cs_lockdown_pages(vm_address_t kva, vm_size_t size, bool ppl_writable)
+ {
+ #if XNU_MONITOR
+ 	pmap_ppl_lockdown_pages(kva, size, PVH_FLAG_LOCKDOWN_CS, ppl_writable);
++#elif defined(B2L)
++	/* B2L has no PPL monitor or PPL-owned pages. */
++	#pragma unused(kva, size, ppl_writable)
+ #else
+ 	pmap_ppl_lockdown_pages(kva, size, 0, ppl_writable);
+ #endif
+@@ -12252,6 +12267,8 @@ pmap_cs_unlockdown_pages(vm_address_t kva, vm_size_t size, bool ppl_writable)
+ {
+ #if XNU_MONITOR
+ 	pmap_ppl_unlockdown_pages(kva, size, PVH_FLAG_LOCKDOWN_CS, ppl_writable);
++#elif defined(B2L)
++	#pragma unused(kva, size, ppl_writable)
+ #else
+ 	pmap_ppl_unlockdown_pages(kva, size, 0, ppl_writable);
+ #endif
+diff --git a/osfmk/arm/pmap/pmap_misc.c b/osfmk/arm/pmap/pmap_misc.c
+index dacf3b5..3b766c4 100644
+--- a/osfmk/arm/pmap/pmap_misc.c
++++ b/osfmk/arm/pmap/pmap_misc.c
+@@ -51,3 +51,11 @@ pmap_abandon_measurement(void)
+ 	pmap_interrupts_restore(istate);
+ #endif /* SCHED_HYGIENE_DEBUG */
+ }
++
++#if defined(B2L) && SCHED_HYGIENE_DEBUG && (DEVELOPMENT || DEBUG) && !XNU_MONITOR
++bool
++pmap_pending_preemption(void)
++{
++        return _pmap_pending_preemption_real();
++}
++#endif
+diff --git a/osfmk/arm64/arm_vm_init.c b/osfmk/arm64/arm_vm_init.c
+index 756af52..c535423 100644
+--- a/osfmk/arm64/arm_vm_init.c
++++ b/osfmk/arm64/arm_vm_init.c
+@@ -2164,7 +2164,9 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
+ 	arm_vm_physmap_init(args);
+ 	set_mmu_ttb_alternate(cpu_ttep & TTBR_BADDR_MASK);
+ 
++#if !defined(B2L)
+ 	ml_enable_monitor();
++#endif
+ 
+ 	set_mmu_ttb(invalid_ttep & TTBR_BADDR_MASK);
+ 
+diff --git a/osfmk/arm64/caches_asm.s b/osfmk/arm64/caches_asm.s
+index 1588830..be2d3c7 100644
+--- a/osfmk/arm64/caches_asm.s
++++ b/osfmk/arm64/caches_asm.s
+@@ -354,6 +354,17 @@ LEXT(CleanPoC_DcacheRegion_Force)
+ 	b		EXT(CleanPoC_DcacheRegion_internal)
+ #endif /* APPLE_ARM64_ARCH_FAMILY */
+ 
++#if defined(B2L)
++/* Generic ARMv8 cache maintenance has no Apple HID register sequence. */
++        .text
++        .align 2
++        .globl EXT(CleanPoC_DcacheRegion_Force_nopreempt)
++        .globl EXT(CleanPoC_DcacheRegion_Force_nopreempt_nohid)
++LEXT(CleanPoC_DcacheRegion_Force_nopreempt)
++LEXT(CleanPoC_DcacheRegion_Force_nopreempt_nohid)
++        b EXT(CleanPoC_DcacheRegion_internal)
++#endif
++
+ /*
+  *	void FlushPoC_Dcache(void)
+  *
+diff --git a/osfmk/arm64/machine_routines.c b/osfmk/arm64/machine_routines.c
+index 07143d5..d719cd3 100644
+--- a/osfmk/arm64/machine_routines.c
++++ b/osfmk/arm64/machine_routines.c
+@@ -3406,3 +3406,12 @@ ml_unsafe_kernel_text(void)
+ 	return false;
+ }
+ #endif /* DEVELOPMENT || DEBUG || CONFIG_DTRACE || CONFIG_CSR_FROM_DT */
++
++#if defined(B2L)
++boolean_t
++ml_device_is_prod_fused(void)
++{
++        /* This research target has no Apple production-fuse policy source. */
++        return FALSE;
++}
++#endif
+diff --git a/osfmk/arm64/proc_reg.h b/osfmk/arm64/proc_reg.h
+index f4d148b..2ddf998 100644
+--- a/osfmk/arm64/proc_reg.h
++++ b/osfmk/arm64/proc_reg.h
+@@ -243,7 +243,7 @@
+ /* D-Cache, 128KB for Acc8 PCore, 8-way. 64KB for ECore, 8-way. */
+ #define MMU_CLINE   6                      /* cache line size is 1<<MMU_CLINE (64) */
+ 
+-#elif defined (VMAPPLE)
++#elif defined (VMAPPLE) || defined (B2L)
+ 
+ /* I-Cache. */
+ #define MMU_I_CLINE 6
+diff --git a/osfmk/arm64/start.s b/osfmk/arm64/start.s
+index 6aa6fe4..6995aac 100644
+--- a/osfmk/arm64/start.s
++++ b/osfmk/arm64/start.s
+@@ -33,7 +33,13 @@
+ #include <pexpert/arm64/board_config.h>
+ #include <mach_assert.h>
+ #include <machine/asm.h>
++#if defined(ARM64_BOARD_CONFIG_B2L)
++/* Exynos does not implement Apple's SoC-specific implementation registers. */
++.macro APPLY_TUNABLES midr, tmp1, tmp2
++.endmacro
++#else
+ #include <arm64/tunables/tunables.s>
++#endif
+ #include <arm64/exception_asm.h>
+ 
+ #if __ARM_KERNEL_PROTECT__
+diff --git a/osfmk/conf/files.arm64 b/osfmk/conf/files.arm64
+index 878b515..ac3e485 100644
+--- a/osfmk/conf/files.arm64
++++ b/osfmk/conf/files.arm64
+@@ -1,3 +1,4 @@
++OPTIONS/b2l optional b2l
+ OPTIONS/config_ecc_logging	optional config_ecc_logging
+ OPTIONS/fb			optional fb
+ 
+@@ -21,7 +22,7 @@ osfmk/arm64/sptm/pmap/pmap_iommu.c	optional nos_arm_asm config_sptm
+ osfmk/arm64/sptm/pmap/pmap_misc.c	optional nos_arm_asm config_sptm
+ osfmk/arm64/sptm/pmap/pmap_ppl_interface.c	optional nos_arm_asm config_sptm
+ osfmk/arm64/sptm/start_sptm.s		optional nos_arm_asm config_sptm
+-osfmk/arm64/amcc_rorgn_sptm.c		optional nos_arm_asm config_sptm
++osfmk/arm64/amcc_rorgn_sptm.c		optional nos_arm_asm config_sptm not b2l
+ osfmk/arm64/sptm/arm_init_sptm.c	optional config_sptm
+ osfmk/arm64/sop.c			optional config_sptm
+ 
+@@ -35,10 +36,10 @@ osfmk/arm64/WKdmCompress_4k.s	standard
+ osfmk/arm64/WKdmData.s		standard
+ osfmk/arm64/lz4_decode_arm64.s  standard
+ osfmk/arm64/lz4_encode_arm64.s  standard
+-osfmk/arm64/amcc_rorgn_ppl.c optional nos_arm_asm config_pmap_ppl
+-osfmk/arm64/amcc_rorgn_ppl_amcc.c optional nos_arm_asm config_pmap_ppl
+-osfmk/arm64/amcc_rorgn_common.c optional nos_arm_asm
+-osfmk/arm64/amcc_rorgn_pv_ctrr.c optional nos_arm_asm
++osfmk/arm64/amcc_rorgn_ppl.c optional nos_arm_asm config_pmap_ppl not b2l
++osfmk/arm64/amcc_rorgn_ppl_amcc.c optional nos_arm_asm config_pmap_ppl not b2l
++osfmk/arm64/amcc_rorgn_common.c optional nos_arm_asm not b2l
++osfmk/arm64/amcc_rorgn_pv_ctrr.c optional nos_arm_asm not b2l
+ osfmk/arm64/bcopy.s standard
+ osfmk/arm64/bzero.s standard
+ osfmk/arm/caches.c		standard
+diff --git a/osfmk/kern/ast.c b/osfmk/kern/ast.c
+index 4bfc59a..29948f2 100644
+--- a/osfmk/kern/ast.c
++++ b/osfmk/kern/ast.c
+@@ -368,7 +368,9 @@ handle_user_asts_interrupts_enabled(ast_t reasons, thread_t thread, task_t task)
+ 		kpc_thread_ast_handler(thread);
+ #endif /* CONFIG_CPU_COUNTERS */
+ 		kperf_thread_ast_handler(thread);
++#if KPERF
+ 		thread->kperf_ast = 0;
++#endif
+ 	}
+ 
+ 	if (reasons & AST_RESET_PCS) {
+diff --git a/osfmk/kern/exclaves.c b/osfmk/kern/exclaves.c
+index 6247d29..5fafc02 100644
+--- a/osfmk/kern/exclaves.c
++++ b/osfmk/kern/exclaves.c
+@@ -73,7 +73,7 @@
+ /* External & generated headers */
+ #include <xrt_hosted_types/types.h>
+ 
+-#if __has_include(<Tightbeam/tightbeam.h>)
++#if __has_include(<Tightbeam/tightbeam.h>) && !defined(ARM64_BOARD_CONFIG_B2L)
+ #include <Tightbeam/tightbeam.h>
+ #include <Tightbeam/tightbeam_private.h>
+ #endif
+@@ -3328,7 +3328,7 @@ STARTUP(TUNABLES, STARTUP_RANK_MIDDLE, exclaves_requirement_startup);
+ 
+ #endif /* CONFIG_EXCLAVES */
+ 
+-#if __has_include(<Tightbeam/tightbeam.h>)
++#if __has_include(<Tightbeam/tightbeam.h>) && !defined(ARM64_BOARD_CONFIG_B2L)
+ 
+ #include <Tightbeam/tightbeam.h>
+ 
+diff --git a/osfmk/kern/processor.c b/osfmk/kern/processor.c
+index 3e35085..65dd3b4 100644
+--- a/osfmk/kern/processor.c
++++ b/osfmk/kern/processor.c
+@@ -217,7 +217,9 @@ struct processor        PERCPU_DATA(processor);
+ static timer_call_func_t running_timer_funcs[] = {
+ 	[RUNNING_TIMER_QUANTUM] = thread_quantum_expire,
+ 	[RUNNING_TIMER_PREEMPT] = thread_preempt_expire,
++#if KPERF
+ 	[RUNNING_TIMER_KPERF] = kperf_timer_expire,
++#endif
+ 	[RUNNING_TIMER_PERFCONTROL] = perfcontrol_timer_expire,
+ };
+ static_assert(sizeof(running_timer_funcs) / sizeof(running_timer_funcs[0])
+diff --git a/pexpert/pexpert/arm64/Makefile b/pexpert/pexpert/arm64/Makefile
+index 75938b5..e704256 100644
+--- a/pexpert/pexpert/arm64/Makefile
++++ b/pexpert/pexpert/arm64/Makefile
+@@ -21,6 +21,7 @@ PRIVATE_DATAFILES = \
+ 
+ 
+ PRIVATE_KERNELFILES = \
++	B2L.h \
+ 	AIC.h \
+ 	apple_arm64_common.h \
+ 	apple_arm64_cpu.h \
+diff --git a/pexpert/pexpert/arm64/apple_arm64_cpu.h b/pexpert/pexpert/arm64/apple_arm64_cpu.h
+index e462ede..041e858 100644
+--- a/pexpert/pexpert/arm64/apple_arm64_cpu.h
++++ b/pexpert/pexpert/arm64/apple_arm64_cpu.h
+@@ -37,9 +37,16 @@
+  * Defines the core type of the executing CPU.
+  */
+ __enum_closed_decl(arm64_core_type_t, unsigned int, {
+-	E_CORE = MPIDR_CORETYPE_ACC_E,
+-	M_CORE = MPIDR_CORETYPE_ACC_M,
+-	P_CORE = MPIDR_CORETYPE_ACC_P,
++	#if defined(ARM64_BOARD_CONFIG_B2L)
++        E_CORE = 0,
++        M_CORE = 1,
++        P_CORE = 2,
++        SMP_CORE = 3,
++#else
++        E_CORE = MPIDR_CORETYPE_ACC_E,
++        M_CORE = MPIDR_CORETYPE_ACC_M,
++        P_CORE = MPIDR_CORETYPE_ACC_P,
++#endif
+ });
+ 
+ /*
+@@ -50,7 +57,10 @@ __enum_closed_decl(arm64_core_type_t, unsigned int, {
+ static inline arm64_core_type_t
+ arm64_core_type(void)
+ {
+-#ifdef __arm64__
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	/* Exynos MPIDR affinity fields do not encode Apple core types. */
++	return SMP_CORE;
++#elif defined(__arm64__)
+ 	return (arm64_core_type_t)((__builtin_arm_rsr64("MPIDR_EL1") >> MPIDR_CORETYPE_SHIFT) & MPIDR_CORETYPE_MASK);
+ #else
+ 	/**
+@@ -111,6 +121,10 @@ static inline const char *
+ arm64_core_type_to_string(arm64_core_type_t core_type)
+ {
+ 	switch (core_type) {
++#if defined(ARM64_BOARD_CONFIG_B2L)
++        case SMP_CORE:
++                return "SMP-core";
++#endif
+ 	case E_CORE:
+ 		return "E-core";
+ 	case M_CORE:
+diff --git a/pexpert/pexpert/arm64/board_config.h b/pexpert/pexpert/arm64/board_config.h
+index 5a6cd33..de9db2a 100644
+--- a/pexpert/pexpert/arm64/board_config.h
++++ b/pexpert/pexpert/arm64/board_config.h
+@@ -304,6 +304,14 @@
+ 
+ 
+ 
++#ifdef ARM64_BOARD_CONFIG_B2L
++#include <pexpert/arm64/B2L.h>
++#define MAX_L2_CLINE                   7
++#define MAX_CPUS                       1
++#define MAX_CPU_CLUSTERS               1
++#define NO_XNU_PLATFORM_ERROR_HANDLER  1
++#endif
++
+ #ifdef ARM64_BOARD_CONFIG_VMAPPLE
+ #include <pexpert/arm64/VMAPPLE.h>
+ 

@@ -1,0 +1,2 @@
+# Unified diff context lines preserve upstream indentation and blank lines.
+patches/*.patch -whitespace
