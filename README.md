@@ -3,53 +3,73 @@
 Boot Apple's open source XNU kernel on the Samsung Galaxy S10+ SM-G975F
 (`beyond2lte`, abbreviated **B2L**, Exynos 9820).
 
-The first milestone is kernel entry and early console output on the device.
-iOS userspace and SpringBoard are later milestones. An IPSW is not required
-for the initial kernel boot experiment.
+The first milestone is kernel entry, framebuffer console output and real timer
+interrupt delivery on the device. iOS userspace and SpringBoard are later
+milestones. An IPSW is not required for this initial kernel boot image.
 
 ## Boot chain
 
-`Samsung S-Boot → beyond2lte UEFI → B2L XNU loader → XNU`
+`Samsung S-Boot → BootShim → beyond2lte UEFI → embedded XnuLoader → XNU`
 
 The existing [beyond2lte UEFI port](https://github.com/orhunnx/beyond2lte-uefi)
 is an external firmware dependency. This repository contains the XNU board
-changes and EFI applications. Its scope does not include the firmware's ACPI
-or Windows support. U-Boot is not part of this chain.
+changes, standalone EFI applications and packaging scripts. ACPI and Windows
+implementation files are not copied here. The XNU firmware profile omits ACPI
+and selects the XNU loader as its default boot application. U-Boot is not used.
 
 ## Source baseline
 
 - [XNU `rel/xnu-12377`](https://github.com/apple-oss-distributions/xnu/tree/rel/xnu-12377),
   pinned to `ac9718fb1af618d5ce8678d0dc6e8a58f252216f`.
-- B2L uses generic ARMv8-A instructions, 4 KiB pages and one boot CPU for the
-  initial bring-up. Apple pointer authentication and BTI are not enabled.
-- The device reference DT describes GICv2 at `0x10101000` / `0x10102000` and
-  architected virtual timer interrupt 27 with a 26 MHz counter.
+- Generic ARMv8-A with crypto instructions, 4 KiB pages, one boot CPU.
+- GICv2 at `0x10101000` / `0x10102000`; virtual timer INTID 27.
+- Actual architected counter frequency read at runtime; expected 26 MHz.
+- Apple PAC, BTI, SPTM and PPL are not used by this initial B2L target.
 
-Use `scripts/fetch-xnu.sh` to fetch the pinned source. Local build products,
-Apple SDK/KDK files and firmware images are excluded from version control.
+## Build and package status
 
-## Implementation status
+The standalone ARM64 kernel, debugging symbols, EFI loader and external 4 MiB
+firmware profile build locally. Packaging produces a single Android v1
+`boot.img` with the firmware and a bounded XNU payload trailer. The embedded
+loader reads that payload through the existing firmware UFS service from GPT
+partition `BOOT`; no separate ESP or SYSTEM/USERDATA transfer is required.
 
-- `uefi/BootSurvey` builds as an AArch64 EFI application. It reports the CPU
-  execution level, GOP framebuffer and conventional EFI memory ranges.
-  It does not exit boot services or start XNU.
-- `uefi/XnuLoader/MachO.c` validates a plain ARM64 executable, segment bounds
-  and its entry point. It rejects ARM64e, dynamic imports and chained fixups.
-  Host tests cover malformed images and integer/bounds checks.
-- `xnu-overlay` and `patches` provide the initial B2L build configuration and
-  changes required to compile this open source kernel with local dependencies.
-- The standalone kernel target and debugging symbols build locally. EFI handoff, GICv2 runtime integration and
-  device boot verification remain in progress. A linked kernel alone is not
-  a flashable or device-tested XNU boot image.
+**The image is built and checked offline, not verified by a physical XNU boot.**
+It does not contain an iOS root filesystem. Progress after the scheduler may
+stop while looking for a root device; that is separate from initial kernel
+entry and interrupt bring-up.
 
-See [the boot contract](docs/boot-contract.md) and
-[build notes](docs/build.md) for the current requirements and limitations.
+Local artifacts are placed under ignored `out/` directories. Firmware binaries,
+SDKs, KDKs, IPSWs and local upstream source checkouts are not committed.
 
-## Verification
+## Build workflow
+
+1. Fetch the pinned source with `scripts/fetch-xnu.sh`.
+2. Apply the board changes with `scripts/prepare-xnu.sh`.
+3. Prepare external dependencies described in [build notes](docs/build.md),
+   then run `scripts/build-kernel.sh`.
+4. Build the standalone EFI applications and external firmware profile using
+   `scripts/build-boot-firmware.sh` in a disposable Mu work tree.
+5. Create the image with `scripts/package-boot.py` as described in
+   [packaging](docs/packaging.md).
+
+## Verification and device boundary
 
 ```sh
-scripts/test-macho.sh
+scripts/test-loader.sh
+scripts/inspect-kernel.sh /path/to/mach.development.b2l
+python3 scripts/package-boot.py --verify /path/to/boot.img
 ```
 
-Device success requires XNU output after the EFI handoff. EFI compilation,
-a Mach-O link and a UEFI splash screen do not establish that result.
+Host checks cover malformed Mach-O input, Apple device-tree bounds, the exact
+XNU boot ABI and BOOT container arithmetic. Packaging also verifies that the
+actual compressed firmware volume contains the selected EFI loader.
+
+No phone partition is written by these build/package commands. The user's
+explicit approval is required before an ADB BOOT write. The connected device
+must first be verified as beyond2lte and its real BOOT capacity checked.
+
+See [the boot contract](docs/boot-contract.md),
+[EFI handoff](docs/efi-xnu-loader.md) and
+[runtime milestones](docs/runtime-bringup.md) for execution details and the
+screen output needed to establish a successful device test.

@@ -7,6 +7,9 @@ build_root="${BUILD_DIR:-$repo_root/out/xnu}"
 : "${KDKROOT:?Set KDKROOT to the merged KDK and KDK_SDK payload root}"
 : "${B2L_DEPSROOT:?Set B2L_DEPSROOT to the isolated dependency installation root}"
 export B2L_DEPSROOT
+[[ "$(git -C "$xnu_path" rev-parse HEAD)" == ac9718fb1af618d5ce8678d0dc6e8a58f252216f ]] || {
+  echo 'Unexpected XNU source revision.' >&2; exit 1;
+}
 [[ -f "$xnu_path/pexpert/pexpert/arm64/B2L.h" ]] || {
   echo 'Apply the B2L patch and overlay before building.' >&2; exit 1;
 }

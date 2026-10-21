@@ -11,6 +11,47 @@ index 24fb244..5eb9d3a 100755
  
  if [ ! -x "${AVAILABILITY_PL}" ] ; then
      echo "Unable to locate ${AVAILABILITY_PL} (or not executable)" >&2
+diff --git a/iokit/KernelConfigTables.cpp b/iokit/KernelConfigTables.cpp
+index 559a9db..4be6e48 100644
+--- a/iokit/KernelConfigTables.cpp
++++ b/iokit/KernelConfigTables.cpp
+@@ -32,8 +32,23 @@
+  * Version 2.0.
+  */
+ 
++#include <pexpert/arm64/board_config.h>
++
+ const char * gIOKernelConfigTables =
+     "("
++#if defined(B2L)
++    "   {"
++    "     'IOClass' = B2LPlatformExpert;"
++    "     'IOProviderClass' = IOPlatformExpertDevice;"
++    "     'IONameMatch' = 'samsung,beyond2lte';"
++    "     'IOProbeScore' = 10000:32;"
++    "   },"
++    "   {"
++    "     'IOClass' = B2LCPU;"
++    "     'IOProviderClass' = IOPlatformDevice;"
++    "     'IONameMatch' = 'b2l,boot-cpu';"
++    "   },"
++#endif
+     "   {"
+     "     'IOClass'         = IOPanicPlatform;"
+     "     'IOProviderClass' = IOPlatformExpertDevice;"
+diff --git a/iokit/conf/files b/iokit/conf/files
+index c72c690..c50d136 100644
+--- a/iokit/conf/files
++++ b/iokit/conf/files
+@@ -159,3 +159,8 @@ iokit/bsddev/skywalk/IOSkywalkSupport.cpp		optional iokitcpp skywalk
+ 
+ # Exclaves
+ iokit/Exclaves/Exclaves.cpp			optional iokitcpp
++
++# Exynos 9820 first-boot platform
++OPTIONS/b2l optional b2l
++iokit/Kernel/arm/B2LPlatformExpert.cpp optional iokitcpp b2l
++iokit/Kernel/arm/B2LCPU.cpp optional iokitcpp b2l
 diff --git a/makedefs/MakeInc.def b/makedefs/MakeInc.def
 index e37762b..4fa871c 100644
 --- a/makedefs/MakeInc.def
@@ -85,6 +126,38 @@ index e37762b..4fa871c 100644
  INCFLAGS_PLATFORM = -I$(SDKROOT)/$(KPINCDIR)/platform
  ifneq ($(KDKROOT),)
  INCFLAGS_SDK   += -I$(KDKROOT)/$(KPINCDIR) -I$(KDKROOT)/System/Library/KernelSupport
+diff --git a/osfmk/arm/arm_init.c b/osfmk/arm/arm_init.c
+index 6690846..4b07008 100644
+--- a/osfmk/arm/arm_init.c
++++ b/osfmk/arm/arm_init.c
+@@ -571,6 +571,14 @@ arm_init(
+ 
+ 	arm_vm_init(xmaxmem, args);
+ 
++#if defined(B2L)
++	/* The EFI GOP is already scanning out.  Enable the stock framebuffer
++	 * console immediately after MMIO mappings become available, before
++	 * KPRINTF startup and all IOKit matching. */
++	PE_create_console();
++	PE_init_printf(FALSE);
++#endif
++
+ 	if (debug_boot_arg) {
+ 		patch_low_glo();
+ 	}
+@@ -624,10 +632,12 @@ arm_init(
+ 		(void)switch_to_serial_console(); /* Switch into serial mode from video console */
+ 		disableConsoleOutput = FALSE;     /* Allow printfs to happen */
+ 	}
++#if !defined(B2L)
+ 	PE_create_console();
+ 
+ 	/* setup console output */
+ 	PE_init_printf(FALSE);
++#endif
+ 
+ #if __arm64__
+ #if DEBUG
 diff --git a/osfmk/arm/pmap/pmap.c b/osfmk/arm/pmap/pmap.c
 index 19e7e67..fe5f7c8 100644
 --- a/osfmk/arm/pmap/pmap.c
@@ -235,8 +308,54 @@ index f4d148b..2ddf998 100644
  
  /* I-Cache. */
  #define MMU_I_CLINE 6
+diff --git a/osfmk/arm64/sleh.c b/osfmk/arm64/sleh.c
+index 0554aa8..5ecd71b 100644
+--- a/osfmk/arm64/sleh.c
++++ b/osfmk/arm64/sleh.c
+@@ -2999,6 +2999,13 @@ handle_simd_trap(arm_saved_state_t *state, uint64_t esr)
+ 	__builtin_unreachable();
+ }
+ 
++#if defined(B2L)
++extern void cpu_signal_handler(void);
++extern uint32_t b2l_irq_ack(void);
++extern void b2l_irq_eoi(uint32_t iar);
++extern void b2l_irq_record(unsigned intid);
++#endif
++
+ void
+ sleh_irq(arm_saved_state_t *state)
+ {
+@@ -3010,7 +3017,26 @@ sleh_irq(arm_saved_state_t *state)
+ 
+ 	sleh_interrupt_handler_prologue(state, DBG_INTR_TYPE_OTHER);
+ 
+-#if USE_APPLEARMSMP
++#if defined(B2L)
++	uint32_t iar = b2l_irq_ack();
++	unsigned intid = iar & 0x3ffU;
++	/* GICv2 reserves 1020..1023 as special/spurious acknowledgements. */
++	if (intid < 1020) {
++		b2l_irq_record(intid);
++		if (intid == B2L_TIMER_INTID) {
++			cdp->cpu_decrementer = -1;
++			ml_interrupt_masked_debug_start(rtclock_intr, DBG_INTR_TYPE_TIMER);
++			rtclock_intr(TRUE);
++			ml_interrupt_masked_debug_end();
++		} else if (intid == 1) {
++			cpu_signal_handler();
++		} else {
++			b2l_irq_eoi(iar);
++			panic("B2L GIC: unexpected unregistered IRQ %u", intid);
++		}
++		b2l_irq_eoi(iar);
++	}
++#elif USE_APPLEARMSMP
+ 	PE_handle_ext_interrupt();
+ #else
+ 	/* Run the registered interrupt handler. */
 diff --git a/osfmk/arm64/start.s b/osfmk/arm64/start.s
-index 6aa6fe4..6995aac 100644
+index 6aa6fe4..b3f76ae 100644
 --- a/osfmk/arm64/start.s
 +++ b/osfmk/arm64/start.s
 @@ -33,7 +33,13 @@
@@ -253,6 +372,40 @@ index 6aa6fe4..6995aac 100644
  #include <arm64/exception_asm.h>
  
  #if __ARM_KERNEL_PROTECT__
+@@ -474,6 +480,33 @@ LEXT(start_first_cpu)
+ 	mov		x20, x0
+ 	mov		x21, #0
+ 
++#if defined(B2L)
++	// Physical-entry proof before page tables or C runtime.  x9..x13 are
++	// scratch registers.  boot_args.Video starts at byte 40 in ABI v2.
++	// The loader validates a 32-bit GOP and dimensions before handoff.
++	ldr		x9, [x20, #40]
++	and		x9, x9, #~3
++	cbz		x9, Lb2l_entry_marker_done
++	ldr		x10, [x20, #56]
++	lsl		x11, x10, #7              // y=128
++	add		x9, x9, x11
++	add		x9, x9, #512              // x=128, 32bpp
++	mov		w11, #0xff00              // green 16x16 entry marker
++	mov		x12, #16
++Lb2l_entry_marker_row:
++	mov		x13, #16
++Lb2l_entry_marker_pixel:
++	str		w11, [x9], #4
++	subs	x13, x13, #1
++	b.ne	Lb2l_entry_marker_pixel
++	sub		x9, x9, #64
++	add		x9, x9, x10
++	subs	x12, x12, #1
++	b.ne	Lb2l_entry_marker_row
++	dsb		sy
++Lb2l_entry_marker_done:
++#endif
++
+ 	// Set low reset vector before attempting any loads
+ 	adrp	x0, EXT(LowExceptionVectorBase)@page
+ 	add		x0, x0, EXT(LowExceptionVectorBase)@pageoff
 diff --git a/osfmk/conf/files.arm64 b/osfmk/conf/files.arm64
 index 878b515..ac3e485 100644
 --- a/osfmk/conf/files.arm64
@@ -336,6 +489,201 @@ index 3e35085..65dd3b4 100644
  	[RUNNING_TIMER_PERFCONTROL] = perfcontrol_timer_expire,
  };
  static_assert(sizeof(running_timer_funcs) / sizeof(running_timer_funcs[0])
+diff --git a/pexpert/arm/pe_fiq.c b/pexpert/arm/pe_fiq.c
+index 3ad743f..b038275 100644
+--- a/pexpert/arm/pe_fiq.c
++++ b/pexpert/arm/pe_fiq.c
+@@ -12,7 +12,121 @@
+ #include <pexpert/arm64/board_config.h>
+ 
+ 
+-#if HAS_GIC_V3
++#if defined(B2L)
++/*
++ * Exynos 9820 exposes the GICv2 non-secure CPU interface.  The architected
++ * virtual timer is PPI 27 and is delivered as IRQ (Group 1), not Apple FIQ.
++ * Firmware retains the secure-world distributor configuration.
++ */
++static vm_offset_t b2l_gicd;
++static vm_offset_t b2l_gicc;
++static volatile uint64_t b2l_timer_irqs;
++static volatile uint64_t b2l_signal_irqs;
++
++static uint32_t
++b2l_gic_read(vm_offset_t base, unsigned offset)
++{
++	return *(volatile uint32_t *)(base + offset);
++}
++
++static void
++b2l_gic_write(vm_offset_t base, unsigned offset, uint32_t value)
++{
++	*(volatile uint32_t *)(base + offset) = value;
++}
++
++uint32_t
++b2l_irq_ack(void)
++{
++	return b2l_gic_read(b2l_gicc, 0x00c); /* GICC_IAR, preserve SGI source bits */
++}
++
++void
++b2l_irq_eoi(uint32_t iar)
++{
++	b2l_gic_write(b2l_gicc, 0x010, iar);
++	__builtin_arm_dsb(DSB_SY);
++}
++
++void
++b2l_send_self_ipi(void)
++{
++	__builtin_arm_dsb(DSB_ISHST);
++	b2l_gic_write(b2l_gicd, 0xf00, (2U << 24) | 1U);
++	__builtin_arm_dsb(DSB_SY);
++}
++
++void
++b2l_irq_record(unsigned intid)
++{
++	if (intid == B2L_TIMER_INTID) {
++		b2l_timer_irqs++;
++	} else if (intid == 1) {
++		b2l_signal_irqs++;
++	}
++}
++
++uint64_t
++b2l_irq_count(boolean_t timer)
++{
++	return timer ? b2l_timer_irqs : b2l_signal_irqs;
++}
++
++void
++pe_init_fiq(void)
++{
++	if (b2l_gicd == 0) {
++		DTEntry entry;
++		const void *prop;
++		unsigned size;
++		if (SecureDTLookupEntry(NULL, "/arm-io/gic", &entry) != kSuccess ||
++		    SecureDTGetProperty(entry, "reg", &prop, &size) != kSuccess ||
++		    size != 4 * sizeof(uint64_t)) {
++			panic("B2L GIC: missing GICv2 MMIO ranges");
++		}
++		const uint64_t *reg = prop;
++		uint64_t soc = pe_arm_get_soc_base_phys();
++		/* Refuse an unrelated firmware tree before touching controller MMIO. */
++		if (soc + reg[0] != B2L_GICD_PA || soc + reg[2] != B2L_GICC_PA ||
++		    reg[1] != 0x1000 || reg[3] != 0x1000) {
++			panic("B2L GIC: unexpected Exynos 9820 register ranges");
++		}
++		b2l_gicd = ml_io_map(soc + reg[0], reg[1]);
++		b2l_gicc = ml_io_map(soc + reg[2], reg[3]);
++		if (!b2l_gicd || !b2l_gicc) {
++			panic("B2L GIC: cannot map controller");
++		}
++		/* No peripheral drivers exist in the first-boot target.  Mask stale
++		 * non-secure firmware SPIs; secure interrupt bits are RAZ/WI here. */
++		unsigned banks = (b2l_gic_read(b2l_gicd, 0x004) & 31U) + 1;
++		for (unsigned bank = 1; bank < banks; ++bank) {
++			b2l_gic_write(b2l_gicd, 0x180 + bank * 4, UINT32_MAX);
++			b2l_gic_write(b2l_gicd, 0x280 + bank * 4, UINT32_MAX);
++		}
++	}
++	const uint32_t sources = (1U << B2L_TIMER_INTID) | (1U << 1);
++	b2l_gic_write(b2l_gicd, 0x180, UINT32_MAX); /* banked PPI/SGI masks */
++	b2l_gic_write(b2l_gicd, 0x080,
++	    b2l_gic_read(b2l_gicd, 0x080) | sources); /* Group 1 */
++	b2l_gic_write(b2l_gicd, 0x280, sources);
++	/* Banked priorities: SGI1 and virtual timer PPI27. */
++	*(volatile uint8_t *)(b2l_gicd + 0x401) = 0x80;
++	*(volatile uint8_t *)(b2l_gicd + 0x400 + B2L_TIMER_INTID) = 0xa0;
++	b2l_gic_write(b2l_gicd, 0x100, sources);
++	b2l_gic_write(b2l_gicc, 0x004, 0xff); /* priority mask */
++	b2l_gic_write(b2l_gicc, 0x008, 0);    /* no priority grouping */
++	/* Non-secure bit0 is EnableGrp1; bit9 selects split EOI/deactivate.
++	 * Use combined EOI so GICC_EOIR deactivates as well as drops priority. */
++	b2l_gic_write(b2l_gicc, 0x000,
++	    (b2l_gic_read(b2l_gicc, 0x000) & ~(1U << 9)) | 1U);
++	b2l_gic_write(b2l_gicd, 0x000,
++	    b2l_gic_read(b2l_gicd, 0x000) | 1U);
++	__builtin_arm_dsb(DSB_SY);
++	__builtin_arm_isb(ISB_SY);
++	kprintf("B2L GIC: GICv2 IRQ ready, timer=%u, SGI=1, CNTFRQ=%llu Hz\n",
++	    B2L_TIMER_INTID, __builtin_arm_rsr64("CNTFRQ_EL0"));
++}
++#elif HAS_GIC_V3
+ #define GICR_WAKE_TIMEOUT_NS (1000000000ULL) // timeout for redistributor wakeup (default 1s)
+ MACHINE_TIMEOUT(gicr_wake_timeout_ns, "gicr-wake-timeout", GICR_WAKE_TIMEOUT_NS, MACHINE_TIMEOUT_UNIT_NSEC, NULL);
+ 
+diff --git a/pexpert/arm/pe_identify_machine.c b/pexpert/arm/pe_identify_machine.c
+index 937ce42..36dc8da 100644
+--- a/pexpert/arm/pe_identify_machine.c
++++ b/pexpert/arm/pe_identify_machine.c
+@@ -49,6 +49,23 @@ pe_identify_machine(boot_args * bootArgs)
+ 	/* Clear the gPEClockFrequencyInfo struct */
+ 	bzero((void *)&gPEClockFrequencyInfo, sizeof(clock_frequency_info_t));
+ 
++#if defined(B2L)
++	/* The architected counter is independent of CPU and bus DVFS clocks.
++	 * No Samsung clock driver is present yet: leave those unknown (zero)
++	 * rather than publish CNTFRQ as a fictitious CPU/bus frequency.  ARM
++	 * timebase callbacks consume timebase_frequency_hz directly. */
++	uint64_t counter_hz = __builtin_arm_rsr64("CNTFRQ_EL0");
++	if (counter_hz == 0 || counter_hz > UINT32_MAX) {
++		panic("B2L clock: invalid architected counter frequency");
++	}
++	gPEClockFrequencyInfo.timebase_frequency_hz = (uint32_t)counter_hz;
++	gPEClockFrequencyInfo.dec_clock_rate_hz = (uint32_t)counter_hz;
++	gPEClockFrequencyInfo.bus_clock_rate_den = 1;
++	gPEClockFrequencyInfo.bus_to_cpu_rate_den = 1;
++	gPEClockFrequencyInfo.bus_to_dec_rate_den = 1;
++	return;
++#endif
++
+ 	/* Start with default values. */
+ 	gPEClockFrequencyInfo.timebase_frequency_hz = 24000000;
+ 	gPEClockFrequencyInfo.bus_clock_rate_hz = 100000000;
+@@ -233,6 +250,7 @@ pe_arm_init_interrupts(void *args)
+ {
+ 	kprintf("pe_arm_init_interrupts: args: %p\n", args);
+ 
++#if !defined(B2L)
+ 	/* Set up mappings for interrupt controller and possibly timers (if they haven't been set up already) */
+ 	if (args != NULL) {
+ 		if (!pe_arm_map_interrupt_controller()) {
+@@ -240,6 +258,8 @@ pe_arm_init_interrupts(void *args)
+ 		}
+ 	}
+ 
++#endif
++	/* B2L uses CNTV_* architected registers; no MMIO timer block exists. */
+ 	return pe_arm_init_timer(args);
+ }
+ 
+diff --git a/pexpert/arm/pe_init.c b/pexpert/arm/pe_init.c
+index db1c4a0..1f6be57 100644
+--- a/pexpert/arm/pe_init.c
++++ b/pexpert/arm/pe_init.c
+@@ -552,11 +552,18 @@ PE_create_console(void)
+ 	 */
+ 	check_for_panic_log();
+ 
++#if defined(B2L)
++	/* Research target: preserve the inherited display controller mode and
++	 * use XNU's normal text renderer.  There is no AppleCLCD/GPU driver. */
++	PE_initialize_console(&PE_state.video, kPETextMode);
++	PE_initialize_console(NULL, kPEAcquireScreen);
++#else
+ 	if (PE_state.video.v_display) {
+ 		PE_initialize_console(&PE_state.video, kPEGraphicsMode);
+ 	} else {
+ 		PE_initialize_console(&PE_state.video, kPETextMode);
+ 	}
++#endif
+ }
+ 
+ int
 diff --git a/pexpert/pexpert/arm64/Makefile b/pexpert/pexpert/arm64/Makefile
 index 75938b5..e704256 100644
 --- a/pexpert/pexpert/arm64/Makefile

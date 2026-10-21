@@ -27,3 +27,4 @@
 
 [Components]
   B2LXnuPkg/BootSurvey/BootSurvey.inf
+  B2LXnuPkg/XnuLoader/XnuLoader.inf

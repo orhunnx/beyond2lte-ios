@@ -20,8 +20,9 @@ ARM64e SoC or Tightbeam libraries into the generic ARM64 B2L image.
 
 ## XNU source changes
 
-Fetch the pinned XNU source, apply `patches/0001-b2l-machine-and-local-dependencies.patch`,
-and copy the contents of `xnu-overlay/` over that checkout. Use a separate
+Fetch the pinned XNU source and run `scripts/prepare-xnu.sh`. It applies
+`patches/0001-b2l-machine-and-local-dependencies.patch` and the new source
+files under `xnu-overlay/` without resetting a checkout. Use a separate
 object directory for B2L and iPhoneOS. Export lists from a previous macOS
 configuration are not interchangeable with iPhoneOS export lists.
 
@@ -36,14 +37,16 @@ The initial target is `DEVELOPMENT ARM64 B2L`, with `PLATFORM=iPhoneOS`,
 Use `scripts/build-kernel.sh` after preparing these external dependencies:
 
 ```sh
-KDKROOT=/path/to/merged-kdk B2L_DEPSROOT=/path/to/deps scripts/build-kernel.sh
+KDKROOT=/path/to/merged-kdk B2L_DEPSROOT=/path/to/deps \
+  scripts/build-kernel.sh CWARNFLAGS=-w CXXWARNFLAGS=-w
 ```
 
 The standalone `build` target produces the kernel and debugging symbols.
 The upstream `all` target additionally creates Apple kext KPI bundles; its
 export lists reference Apple IOMMU/monitor symbols absent from B2L. Those
-bundles are not currently supported. The final handoff and device execution
-are still under development.
+bundles are not currently supported. The local first-boot build disables
+upstream compiler warnings with the shown overrides; it is not a claim of a
+warning-clean build against the newer SDK. Device execution remains unverified.
 
 ## EFI applications
 
@@ -62,13 +65,27 @@ Copy `uefi/` into the EDK II workspace as `B2LXnuPkg/`, set `WORKSPACE`,
 build -a AARCH64 -t CLANGPDB -b RELEASE -p B2LXnuPkg/B2LXnuPkg.dsc
 ```
 
-The current built application is `BootSurvey.efi`. It reports the boot
-boundary but does not load XNU.
+Both `BootSurvey.efi` and `XnuLoader.efi` build. The former only reports the
+boot boundary; the latter reads the packaged kernel and enters XNU after
+exiting boot services. See [EFI loader details](efi-xnu-loader.md).
+
+For a BOOT image, use a disposable external firmware work tree containing the
+reference beyond2lte platform overlay, then run:
+
+```sh
+WORKSPACE=/path/to/disposable-mu \
+PYTHON_COMMAND=/path/to/venv/bin/python \
+CLANG_BIN=/path/to/llvm-tools/ scripts/build-boot-firmware.sh
+```
+
+This first builds the app, prepares the XNU firmware profile and rebuilds the
+external FD with its original 4 MiB size. [Packaging instructions](packaging.md)
+cover the final Android image and its XNU trailer.
 
 ## Host parser checks
 
 ```sh
-scripts/test-macho.sh
+scripts/test-loader.sh
 ```
 
 The tests use AddressSanitizer and UndefinedBehaviorSanitizer. They validate

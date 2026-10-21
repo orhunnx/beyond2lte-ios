@@ -13,3 +13,6 @@ out/
 *.dtb
 *.fd
 .DS_Store
+
+__pycache__/
+*.pyc
