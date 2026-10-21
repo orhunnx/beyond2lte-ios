@@ -1,3 +1,224 @@
+diff --git a/bsd/kern/kern_trustcache.c b/bsd/kern/kern_trustcache.c
+index 4b1e8a9..c1de2cd 100644
+--- a/bsd/kern/kern_trustcache.c
++++ b/bsd/kern/kern_trustcache.c
+@@ -51,6 +51,24 @@
+ static bool boot_os_tc_loaded = false;
+ static bool boot_app_tc_loaded = false;
+ 
++#if defined(ARM64_BOARD_CONFIG_B2L)
++/* This open-source first-boot kernel has no bundled Image4/AMFI provider.
++ * Absence is an unavailable service, never evidence that an artifact is trusted.
++ * Keep public calls safe before initialization and after a declined runtime. */
++static SECURITY_READ_ONLY_LATE(bool) b2l_trust_cache_ready;
++
++static bool
++b2l_trust_cache_provider_complete(void)
++{
++	return img4if != NULL && amfi != NULL && amfi->TrustCache.version >= 2 &&
++	       amfi->TrustCache.load != NULL && amfi->TrustCache.loadModule != NULL &&
++	       amfi->TrustCache.query != NULL &&
++	       amfi->TrustCache.checkRuntimeForUUID != NULL &&
++	       amfi->TrustCache.getCapabilities != NULL;
++}
++#endif
++
++
+ SECURITY_READ_ONLY_LATE(uint32_t) num_static_trust_caches = 0;
+ SECURITY_READ_ONLY_LATE(uint32_t) num_engineering_trust_caches = 0;
+ uint32_t num_loadable_trust_caches = 0;
+@@ -124,6 +142,16 @@ get_trust_cache_info(void)
+ void
+ trust_cache_runtime_init(void)
+ {
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	if (!b2l_trust_cache_provider_complete()) {
++		trust_cache_rt = NULL;
++		trust_cache_mut_rt = NULL;
++		b2l_trust_cache_ready = false;
++		printf("B2L trust cache: Image4/AMFI unavailable; trust operations denied\n");
++		return;
++	}
++#endif
++
+ 	/* Image4 interface needs to be available */
+ 	if (img4if == NULL) {
+ 		panic("image4 interface not available");
+@@ -138,6 +166,9 @@ trust_cache_runtime_init(void)
+ 
+ 	/* Acquire trust cache information from the monitor */
+ 	get_trust_cache_info();
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	b2l_trust_cache_ready = true;
++#endif
+ }
+ 
+ static kern_return_t
+@@ -383,6 +414,16 @@ is_internal_iBoot(void)
+ void
+ trust_cache_runtime_init(void)
+ {
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	if (!b2l_trust_cache_provider_complete()) {
++		trust_cache_rt = NULL;
++		trust_cache_mut_rt = NULL;
++		b2l_trust_cache_ready = false;
++		printf("B2L trust cache: Image4/AMFI unavailable; trust operations denied\n");
++		return;
++	}
++#endif
++
+ 	bool allow_second_static_cache = false;
+ 	bool allow_engineering_caches = false;
+ 
+@@ -423,6 +464,9 @@ trust_cache_runtime_init(void)
+ 		IMG4_RUNTIME_PMAP_CS);
+ 
+ 	/* Locks are initialized in "pmap_bootstrap()" */
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	b2l_trust_cache_ready = true;
++#endif
+ }
+ 
+ static kern_return_t
+@@ -563,6 +607,16 @@ SECURITY_READ_ONLY_LATE(TrustCacheMutableRuntime_t*) trust_cache_mut_rt = &trust
+ void
+ trust_cache_runtime_init(void)
+ {
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	if (!b2l_trust_cache_provider_complete()) {
++		trust_cache_rt = NULL;
++		trust_cache_mut_rt = NULL;
++		b2l_trust_cache_ready = false;
++		printf("B2L trust cache: Image4/AMFI unavailable; trust operations denied\n");
++		return;
++	}
++#endif
++
+ 	bool allow_second_static_cache = false;
+ 	bool allow_engineering_caches = false;
+ 	bool allow_legacy_caches = false;
+@@ -601,6 +655,9 @@ trust_cache_runtime_init(void)
+ 
+ 	/* Initialize the read-write lock */
+ 	lck_rw_init(&trust_cache_rt_lock, &trust_cache_lck_grp, 0);
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	b2l_trust_cache_ready = true;
++#endif
+ }
+ 
+ static kern_return_t
+@@ -803,6 +860,11 @@ kern_return_t
+ check_trust_cache_runtime_for_uuid(
+ 	const uint8_t check_uuid[kUUIDSize])
+ {
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	if (check_uuid == NULL) return KERN_INVALID_ARGUMENT;
++	if (!b2l_trust_cache_ready) return KERN_NOT_SUPPORTED;
++#endif
++
+ 	kern_return_t ret = KERN_DENIED;
+ 
+ 	if (check_uuid == NULL) {
+@@ -823,6 +885,11 @@ check_trust_cache_runtime_for_uuid(
+ kern_return_t
+ unload_trust_cache(uuid_t uuid)
+ {
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	if (uuid == NULL) return KERN_INVALID_ARGUMENT;
++	if (!b2l_trust_cache_ready) return KERN_NOT_SUPPORTED;
++#endif
++
+ 	kern_return_t ret = KERN_DENIED;
+ 	uuid_string_t uuid_string = {0};
+ 
+@@ -861,6 +928,11 @@ load_trust_cache(
+ 	const uint8_t *img4_object, const size_t img4_object_len,
+ 	const uint8_t *img4_ext_manifest, const size_t img4_ext_manifest_len)
+ {
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	if (!img4_object || !img4_object_len) return KERN_INVALID_ARGUMENT;
++	if (!b2l_trust_cache_ready) return KERN_NOT_SUPPORTED;
++#endif
++
+ 	TCType_t type = kTCTypeInvalid;
+ 	kern_return_t ret = KERN_DENIED;
+ 
+@@ -896,6 +968,11 @@ load_trust_cache_with_type(
+ 	const uint8_t *img4_ext_manifest, const size_t img4_ext_manifest_len,
+ 	const uint8_t *img4_aux_manifest, const size_t img4_aux_manifest_len)
+ {
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	if (!img4_object || !img4_object_len || type >= kTCTypeTotal) return KERN_INVALID_ARGUMENT;
++	if (!b2l_trust_cache_ready) return KERN_NOT_SUPPORTED;
++#endif
++
+ 	kern_return_t ret = KERN_DENIED;
+ 	uintptr_t length_check = 0;
+ 	const uint8_t *img4_payload = NULL;
+@@ -1038,6 +1115,11 @@ kern_return_t
+ load_legacy_trust_cache(
+ 	const uint8_t *module_data, const size_t module_size)
+ {
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	if (!module_data || !module_size) return KERN_INVALID_ARGUMENT;
++	if (!b2l_trust_cache_ready) return KERN_NOT_SUPPORTED;
++#endif
++
+ 	kern_return_t ret = KERN_DENIED;
+ 	uintptr_t length_check = 0;
+ 
+@@ -1072,6 +1154,12 @@ query_trust_cache(
+ 	const uint8_t cdhash[kTCEntryHashSize],
+ 	TrustCacheQueryToken_t *query_token)
+ {
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	if (query_token != NULL) memset(query_token, 0, sizeof(*query_token));
++	if (cdhash == NULL || query_type >= kTCQueryTypeTotal) return KERN_INVALID_ARGUMENT;
++	if (!b2l_trust_cache_ready) return KERN_NOT_SUPPORTED;
++#endif
++
+ 	kern_return_t ret = KERN_NOT_FOUND;
+ 
+ 	if (cdhash == NULL) {
+@@ -1095,6 +1183,12 @@ query_trust_cache_for_rem(
+ 	const uint8_t cdhash[kTCEntryHashSize],
+ 	__unused uint8_t *rem_perms)
+ {
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	if (rem_perms != NULL) *rem_perms = 0;
++	if (cdhash == NULL) return KERN_INVALID_ARGUMENT;
++	if (!b2l_trust_cache_ready) return KERN_NOT_SUPPORTED;
++#endif
++
+ 	kern_return_t ret = KERN_NOT_SUPPORTED;
+ 
+ 	if (cdhash == NULL) {
+@@ -1174,6 +1268,9 @@ load_static_trust_cache(void)
+ 
+ 	/* Mark this function as having been called */
+ 	trust_cache_static_init = true;
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	if (!b2l_trust_cache_ready) return;
++#endif
+ 
+ 	/* Nothing to do when the runtime isn't set */
+ 	if (trust_cache_rt == NULL) {
+@@ -1308,6 +1405,14 @@ static_trust_cache_capabilities(
+ 	TCCapabilities_t *capabilities0_ret,
+ 	TCCapabilities_t *capabilities1_ret)
+ {
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	if (num_static_trust_caches_ret != NULL) *num_static_trust_caches_ret = 0;
++	if (capabilities0_ret != NULL) *capabilities0_ret = kTCCapabilityNone;
++	if (capabilities1_ret != NULL) *capabilities1_ret = kTCCapabilityNone;
++	if (!num_static_trust_caches_ret || !capabilities0_ret || !capabilities1_ret) return KERN_INVALID_ARGUMENT;
++	if (!b2l_trust_cache_ready) return KERN_NOT_SUPPORTED;
++#endif
++
+ 	TCReturn_t tcRet = {.error = kTCReturnError};
+ 
+ 	*num_static_trust_caches_ret = 0;
 diff --git a/bsd/sys/make_symbol_aliasing.sh b/bsd/sys/make_symbol_aliasing.sh
 index 24fb244..5eb9d3a 100755
 --- a/bsd/sys/make_symbol_aliasing.sh

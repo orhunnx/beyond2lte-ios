@@ -172,7 +172,7 @@ the same state. Independent Python HMAC-DRBG/SHA known answers verify initial
 output, reseeding, entropy refresh and streaming digests. Tests also check
 concurrent nonduplicate output, allocator vectors, independent seeds, unaligned
 output canaries, bounded rejection and startup rank ordering. Tests passed for
-0006; physical progress beyond the 0005 failure remains pending.
+0006; later device photographs confirm progress past that failure.
 
 ## Console control lifecycle (build 0007)
 
@@ -200,4 +200,39 @@ and backend dispatch hooks. It verifies preserved pixels on attach/disable,
 usable callbacks, both lock lifetimes, no double initialization, pause/resume,
 and a real subsequent enable/clear/free cycle. The early renderer's separate
 regression test also verifies the mapping accessor before and after relocation.
-Both tests passed. Device execution of 0007 remains pending.
+Both tests passed. The 0007 device photo confirms console attachment without
+the earlier invalid-lock panic, then reaches the Image4 initialization gate.
+
+## Absent Image4/AMFI trust-cache provider (build 0008)
+
+Build 0007 visibly completed console attachment, PRNG registration and later
+startup before stopping at `image4 interface not available` in the trust-cache
+runtime initializer. This is the same standalone-kernel dependency handled by
+the A5 port's open-source `0015-sweet-unavailable-trust-cache-runtime.patch`,
+reviewed as a design reference. Its later userspace XML entitlement/AMFI bridge
+is a separate feature and is not imported into this first-kernel-boot target.
+
+B2L now represents the absent service explicitly. If Image4, AMFI, a supported
+trust-cache interface version or any required trust-cache callback is missing,
+initialization records NULL runtime pointers and leaves a read-only-after-startup
+readiness flag false. It installs no fake interface and never reports signature
+verification or a trusted match. A complete provider supplied at startup keeps
+the existing initialization and validation path. This is a one-time boot
+initialization contract; late provider installation is not implemented here.
+
+All eight public trust-cache APIs check readiness before provider, entitlement,
+lock or Image4 parsing access. Queries, loads, unloads, UUID checks and capability
+requests fail with `KERN_NOT_SUPPORTED` when unavailable; malformed required
+arguments fail with `KERN_INVALID_ARGUMENT`. Query tokens, REM permissions and
+capability outputs are cleared before returning. Static loading records that it
+was attempted, then returns without accessing device-tree memory or loading any
+cache. Counts stay zero. Absence never grants trust or makes an artifact valid.
+
+`tests/test_trustcache_unavailable.py` compiles the actual first-executed guard
+bodies and provider-completeness check under ASan/UBSan, replacing downstream
+provider operations with a dispatch trap. It checks pre-init, absent, stale and
+each missing callback; all eight APIs; NULL output arguments; poisoned input
+addresses; cleared result data; and no downstream dispatch. A complete fixture
+is allowed through the presence gate. This test checks interface safety, not
+cryptographic signature verification. It passed for 0008. Physical execution
+of 0008 and interrupt proof remain pending. Physical guards are unchanged.

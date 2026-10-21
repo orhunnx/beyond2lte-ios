@@ -43,6 +43,8 @@ previous BOOT. The original backup remains intact. Exact image-prefix readback
 matched and the device was rebooted. Raw receipts and identifiers remain local
 and ignored.
 
-The next screen report must establish progress
-past console attachment, then boot CPU registration and the dedicated timer
-and SGI proof line. A root-device wait is possible without a root filesystem.
+The screen report confirms console attachment, PRNG registration and later
+MAC policy startup. The console lock panic is no longer present. The next
+panic is `image4 interface not available` in kern_trustcache.c:584; this
+standalone kernel does not include an Image4/AMFI provider. Boot CPU
+registration and the dedicated timer/SGI proof line remain unverified.
