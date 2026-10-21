@@ -309,8 +309,9 @@ There is no partial global crypto table. GCM is not implemented by this adapter:
 all 18 legacy GCM APIs decline a NULL/incomplete provider or mode, returning an
 error (or context size zero) without touching caller output. Optional IV helper
 callbacks are checked separately. No authentication result or tag is invented.
-RSA, AES-XTS, MD5 and other unrelated provider services remain separate work;
-for example, later TCP connection paths still have an MD5 dependency.
+RSA, AES-XTS and other unrelated provider services remain separate work.
+MD5 was still missing in 0010; the 0013 HFS integration adds the real legacy
+MD5 implementation described in [HFS provider details](hfs-provider.md).
 
 `tests/test_aes_provider.py` compiles the actual adapter and legacy wrapper
 bodies, real pinned BearSSL AES and upstream CBC dispatch under ASan/UBSan.
@@ -444,3 +445,28 @@ The 0012 device photograph confirms native read-only capacity, BSD device
 publication, validated primary/backup GPT and a bounded SYSTEM signature read.
 The driver successfully operates after ExitBootServices. This is native storage
 read proof; it does not establish an HFS mount or userspace boot.
+
+## Native HFS root and SYSTEM writes (0013)
+
+The 0012 UFS read milestone and verified empty SYSTEM image preparation now
+support a real builtin HFS provider and native root selector. See
+[HFS provider](hfs-provider.md) for the pinned source and unencrypted configuration.
+Only the unique validated HFS SYSTEM view becomes writable. The whole LU and
+other partitions remain read-only. Real WRITE commands and completed cache
+flushes back the permissions; partial physical blocks use bounded RMW.
+
+The loader explicitly opts into the SYSTEM development root with `rd=b2l-system`,
+`b2l_root_rw=1` and `b2l_unsealed_root=1`. The native alias resolves from validated
+GPT metadata; no unit-specific partition number is compiled into the selector.
+No IOMedia class or Apple root-authentication success is invented.
+
+Physical proof requires `B2L HFS: native root mounted read-write` and the first
+completed native write/cache-flush line. Compilation, host policy tests and
+permissions alone do not establish those outcomes. The empty filesystem has no
+init, so a later missing-init panic is expected independently of mount success.
+
+HFS's mount-time volume UUID uses the real pinned BearSSL MD5 fallback. It
+marshals the legacy context explicitly, preserving incremental updates, copied
+state and the existing high/low byte-counter ABI. MD5, AES regression and
+actual-source HFS registration/root-policy/native-alias tests pass under
+ASan/UBSan; physical mount/write proof is still separate.

@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: BSD-2-Clause */
-/* Native, read-only Exynos 9820 UFS transport. Inherit a live calibrated link;
- * never invoke firmware callbacks, reset HCE/PHY, or issue storage writes. */
+/* Native Exynos 9820 UFS transport. Inherit a live calibrated link; never
+ * invoke firmware callbacks or reset HCE/PHY. The BSD adapter limits storage
+ * writes to its validated SYSTEM extent; this interface is kernel-internal. */
 #if defined(ARM64_BOARD_CONFIG_B2L)
 #include <sys/param.h>
 #include <sys/systm.h>
@@ -25,7 +26,7 @@ static struct {
     uint64_t dma_pa;
     struct b2l_ufs_io io;
     struct b2l_ufs_geometry geometry;
-    int initialized,error,poisoned;
+    int initialized,error,poisoned,write_reported;
 } host;
 
 static uint32_t native_read(void *unused,uint32_t offset)
@@ -58,16 +59,17 @@ static int to_errno(int error)
     default:return EIO;
     }
 }
-static int command(const uint8_t cdb[16],uint32_t bytes)
+static int command(const uint8_t cdb[16],uint32_t bytes,const void *data_out)
 {
     struct b2l_ufs_utrd *tr=(void *)(host.dma+B2L_UFS_UTRL_OFFSET);
     struct b2l_ufs_ucd *ucd=(void *)(host.dma+B2L_UFS_UCD_OFFSET);
     int error;
     if(host.poisoned)return B2L_UFS_IO_ERROR;
-    error=b2l_ufs_build_read(tr,ucd,host.dma_pa+B2L_UFS_UCD_OFFSET,
-        host.dma_pa+B2L_UFS_DATA_OFFSET,(uint8_t)host.geometry.lun,0,cdb,bytes);
+    error=b2l_ufs_build_command(tr,ucd,host.dma_pa+B2L_UFS_UCD_OFFSET,
+        host.dma_pa+B2L_UFS_DATA_OFFSET,(uint8_t)host.geometry.lun,0,cdb,bytes,data_out!=NULL);
     if(error)return error;
-    b2l_ufs_zero((void *)(host.dma+B2L_UFS_DATA_OFFSET),bytes);
+    if(data_out)memcpy((void *)(host.dma+B2L_UFS_DATA_OFFSET),data_out,bytes);
+    else b2l_ufs_zero((void *)(host.dma+B2L_UFS_DATA_OFFSET),bytes);
     vs_write(0x40,0xffffffffU); /* SCSI nexus, preserving existing vendor format. */
     error=b2l_ufs_execute(&host.io,tr,ucd,(uint8_t)host.geometry.lun,0);
     if(error) {
@@ -75,7 +77,7 @@ static int command(const uint8_t cdb[16],uint32_t bytes)
         /* An unfinished transaction may still DMA. Keep its permanent memory
          * pinned and prohibit all later commands instead of reusing it. */
         if(native_read(NULL,0x58)!=0 || (status&B2L_UFS_FATAL))host.poisoned=1;
-        printf("B2L UFS: read command 0x%x failed error=%d OCS=0x%x response=0x%x status=0x%x\n",
+        printf("B2L UFS: command 0x%x failed error=%d OCS=0x%x response=0x%x status=0x%x\n",
             cdb[0],error,tr->dword[2],ucd->response[6],ucd->response[7]);
     }
     return error;
@@ -88,19 +90,19 @@ static int geometry(void)
     /* A previous boot environment can leave a single UNIT ATTENTION pending.
      * Clear it with REQUEST SENSE; don't silently accept any failed command. */
     for(unsigned retry=0;retry<3;retry++) {
-        bzero(cdb,sizeof(cdb));error=command(cdb,0);
+        bzero(cdb,sizeof(cdb));error=command(cdb,0,NULL);
         if(!error)break;
         if(error!=B2L_UFS_SCSI_ERROR || retry==2)return to_errno(error);
         cdb[0]=3;cdb[4]=18;
-        error=command(cdb,18);if(error)return to_errno(error);
+        error=command(cdb,18,NULL);if(error)return to_errno(error);
     }
     bzero(cdb,sizeof(cdb));cdb[0]=0x25;
-    error=command(cdb,8);if(error)return to_errno(error);
+    error=command(cdb,8,NULL);if(error)return to_errno(error);
     uint64_t last=b2l_ufs_be32(data);
     uint32_t size=b2l_ufs_be32(data+4);
     if(last==UINT32_MAX) {
         bzero(cdb,sizeof(cdb));cdb[0]=0x9e;cdb[1]=0x10;cdb[13]=32;
-        error=command(cdb,32);if(error)return to_errno(error);
+        error=command(cdb,32,NULL);if(error)return to_errno(error);
         last=b2l_ufs_be64(data);size=b2l_ufs_be32(data+8);
     }
     if(last==UINT64_MAX || !last || size<512 || size>4096 || (size&(size-1)) ||
@@ -182,7 +184,7 @@ int b2l_ufs_transport_init(struct b2l_ufs_geometry *out)
     nanoseconds_to_absolutetime(5ULL*NSEC_PER_SEC,&host.io.timeout_ticks);
     if(!host.io.timeout_ticks) { error=EIO;goto done; }
     error=takeover();if(!error)error=geometry();
-    if(!error)printf("B2L UFS: native read-only LUN %u block=%u capacity=%llu blocks\n",
+    if(!error)printf("B2L UFS: native LUN %u block=%u capacity=%llu blocks; writes restricted by SYSTEM adapter\n",
         host.geometry.lun,host.geometry.block_size,host.geometry.block_count);
 done:
     host.error=error;
@@ -196,22 +198,50 @@ int b2l_ufs_transport_read(uint64_t lba,uint32_t blocks,void *out)
     int error;
     lck_mtx_lock(&b2l_ufs_mutex);
     if(!host.initialized || host.error || host.poisoned) { error=ENXIO;goto done; }
-    if(lba>host.geometry.block_count || blocks>host.geometry.block_count-lba ||
-        blocks>B2L_UFS_MAX_READ_BYTES/host.geometry.block_size || (blocks&&!out)) {
+    if(b2l_ufs_transfer_bounds(&host.geometry,lba,blocks,out)) {
         error=EINVAL;goto done;
     }
     if(!blocks) { error=0;goto done; }
-    if(lba<=UINT32_MAX && (uint64_t)blocks-1<=UINT32_MAX-lba) {
-        cdb[0]=0x28;b2l_ufs_be32_store(cdb+2,(uint32_t)lba);
-        cdb[7]=(uint8_t)(blocks>>8);cdb[8]=(uint8_t)blocks;
-    } else {
-        cdb[0]=0x88;b2l_ufs_be32_store(cdb+2,(uint32_t)(lba>>32));
-        b2l_ufs_be32_store(cdb+6,(uint32_t)lba);b2l_ufs_be32_store(cdb+10,blocks);
-    }
+    error=to_errno(b2l_ufs_rw_cdb(cdb,lba,blocks,0));if(error)goto done;
     uint32_t bytes=blocks*host.geometry.block_size;
-    error=to_errno(command(cdb,bytes));
+    error=to_errno(command(cdb,bytes,NULL));
     if(!error)memcpy(out,(void *)(host.dma+B2L_UFS_DATA_OFFSET),bytes);
 done:
+    lck_mtx_unlock(&b2l_ufs_mutex);return error;
+}
+static int sync_locked(void)
+{
+    /* No IMMED bit: completion must mean the device finished flushing its
+     * volatile cache. LBA0/count0 flushes the LU, without writing block data. */
+    const uint8_t cdb[16]={0x35};
+    return to_errno(command(cdb,0,NULL));
+}
+int b2l_ufs_transport_write(uint64_t lba,uint32_t blocks,const void *in)
+{
+    uint8_t cdb[16];
+    int error;
+    lck_mtx_lock(&b2l_ufs_mutex);
+    if(!host.initialized || host.error || host.poisoned) { error=ENXIO;goto done; }
+    if(b2l_ufs_transfer_bounds(&host.geometry,lba,blocks,in)) { error=EINVAL;goto done; }
+    if(!blocks) { error=0;goto done; }
+    error=to_errno(b2l_ufs_rw_cdb(cdb,lba,blocks,1));if(error)goto done;
+    error=to_errno(command(cdb,blocks*host.geometry.block_size,in));
+    /* DPOFUA has not been probed. Use an actual flush after every write,
+     * rather than assuming FUA support or claiming cached writes are durable. */
+    if(!error)error=sync_locked();
+    if(!error && !host.write_reported) {
+        host.write_reported=1;
+        printf("B2L UFS: first native write and cache flush completed\n");
+    }
+done:
+    lck_mtx_unlock(&b2l_ufs_mutex);return error;
+}
+int b2l_ufs_transport_sync(void)
+{
+    int error;
+    lck_mtx_lock(&b2l_ufs_mutex);
+    if(!host.initialized || host.error || host.poisoned)error=ENXIO;
+    else error=sync_locked();
     lck_mtx_unlock(&b2l_ufs_mutex);return error;
 }
 #endif

@@ -1,0 +1,161 @@
+--- a/bsd/conf/files
++++ b/bsd/conf/files
+@@ -630,3 +630,44 @@
+ bsd/skywalk/packet/pbufpool.c			optional skywalk bound-checks
+ bsd/skywalk/packet/pbufpool_kern.c		optional skywalk bound-checks
+ bsd/dev/cpu_copy_in_cksum_gen.c			optional skywalk bound-checks
++
++# Pinned OSS hfs-715.120.4, staged by scripts/stage-hfs.py.
++bsd/b2l_hfs/upstream/core/BTree.c	optional b2l
++bsd/b2l_hfs/upstream/core/BTreeAllocate.c	optional b2l
++bsd/b2l_hfs/upstream/core/BTreeMiscOps.c	optional b2l
++bsd/b2l_hfs/upstream/core/BTreeNodeOps.c	optional b2l
++bsd/b2l_hfs/upstream/core/BTreeNodeReserve.c	optional b2l
++bsd/b2l_hfs/upstream/core/BTreeScanner.c	optional b2l
++bsd/b2l_hfs/upstream/core/BTreeTreeOps.c	optional b2l
++bsd/b2l_hfs/upstream/core/BTreeWrapper.c	optional b2l
++bsd/b2l_hfs/upstream/core/CatalogUtilities.c	optional b2l
++bsd/b2l_hfs/upstream/core/FileExtentMapping.c	optional b2l
++bsd/b2l_hfs/upstream/core/FileIDsServices.c	optional b2l
++bsd/b2l_hfs/upstream/core/MacOSStubs.c	optional b2l
++bsd/b2l_hfs/upstream/core/UnicodeWrappers.c	optional b2l
++bsd/b2l_hfs/upstream/core/VolumeAllocation.c	optional b2l
++bsd/b2l_hfs/upstream/core/hfs_attrlist.c	optional b2l
++bsd/b2l_hfs/upstream/core/hfs_btreeio.c	optional b2l
++bsd/b2l_hfs/upstream/core/hfs_catalog.c	optional b2l
++bsd/b2l_hfs/upstream/core/hfs_chash.c	optional b2l
++bsd/b2l_hfs/upstream/core/hfs_cnode.c	optional b2l
++bsd/b2l_hfs/upstream/core/hfs_cprotect.c	optional b2l
++bsd/b2l_hfs/upstream/core/hfs_endian.c	optional b2l
++bsd/b2l_hfs/upstream/core/hfs_extents.c	optional b2l
++bsd/b2l_hfs/upstream/core/hfs_fsinfo.c	optional b2l
++bsd/b2l_hfs/upstream/core/hfs_hotfiles.c	optional b2l
++bsd/b2l_hfs/upstream/core/hfs_journal.c	optional b2l
++bsd/b2l_hfs/upstream/core/hfs_link.c	optional b2l
++bsd/b2l_hfs/upstream/core/hfs_lookup.c	optional b2l
++bsd/b2l_hfs/upstream/core/hfs_notification.c	optional b2l
++bsd/b2l_hfs/upstream/core/hfs_quota.c	optional b2l
++bsd/b2l_hfs/upstream/core/hfs_readwrite.c	optional b2l
++bsd/b2l_hfs/upstream/core/hfs_resize.c	optional b2l
++bsd/b2l_hfs/upstream/core/hfs_search.c	optional b2l
++bsd/b2l_hfs/upstream/core/hfs_vfsops.c	optional b2l
++bsd/b2l_hfs/upstream/core/hfs_vfsutils.c	optional b2l
++bsd/b2l_hfs/upstream/core/hfs_vnops.c	optional b2l
++bsd/b2l_hfs/upstream/core/hfs_xattr.c	optional b2l
++bsd/b2l_hfs/upstream/core/rangelist.c	optional b2l
++bsd/b2l_hfs/b2l_hfs_iokit.c	optional b2l
++bsd/kern/b2l_root_policy.c	optional b2l
+--- a/bsd/conf/Makefile.template
++++ b/bsd/conf/Makefile.template
+@@ -51,6 +51,11 @@
+ b2l_pthread_init.o_INCFLAGS = $(B2L_PTHREAD_INC)
+ b2l_pthread_support.o_INCFLAGS = $(B2L_PTHREAD_INC)
+ b2l_pthread_synch.o_INCFLAGS = $(B2L_PTHREAD_INC)
++
++# Compile the real HFS sources with their kext KPI header view.
++B2L_HFS_ROOT = $(SRCROOT)/bsd/b2l_hfs
++B2L_HFS_OBJS = BTree.o BTreeAllocate.o BTreeMiscOps.o BTreeNodeOps.o BTreeNodeReserve.o BTreeScanner.o BTreeTreeOps.o BTreeWrapper.o CatalogUtilities.o FileExtentMapping.o FileIDsServices.o MacOSStubs.o UnicodeWrappers.o VolumeAllocation.o hfs_attrlist.o hfs_btreeio.o hfs_catalog.o hfs_chash.o hfs_cnode.o hfs_cprotect.o hfs_endian.o hfs_extents.o hfs_fsinfo.o hfs_hotfiles.o hfs_journal.o hfs_link.o hfs_lookup.o hfs_notification.o hfs_quota.o hfs_readwrite.o hfs_resize.o hfs_search.o hfs_vfsops.o hfs_vfsutils.o hfs_vnops.o hfs_xattr.o rangelist.o b2l_hfs_iokit.o
++$(foreach o,$(B2L_HFS_OBJS),$(eval $(o)_CFLAGS_ADD += -include $(B2L_HFS_ROOT)/b2l_hfs_compat.h -I$(B2L_HFS_ROOT) -I$(B2L_HFS_ROOT)/upstream -I$(B2L_HFS_ROOT)/upstream/core))
+ endif
+ 
+ #
+--- a/bsd/kern/bsd_init.c
++++ b/bsd/kern/bsd_init.c
+@@ -700,6 +700,10 @@
+ 	/* Initialize the file systems. */
+ 	bsd_init_kprintf("calling vfsinit\n");
+ 	vfsinit();
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	extern void b2l_hfs_register(void);
++	b2l_hfs_register();
++#endif
+ 
+ #if CONFIG_PROC_UUID_POLICY
+ 	/* Initial proc_uuid_policy subsystem */
+@@ -947,6 +951,12 @@
+ 		if (require_rootauth) {
+ 			/* enforce sealedness */
+ 			int autherr = VNOP_IOCTL(rootvnode, FSIOC_KERNEL_ROOTAUTH, NULL, 0, vfs_context_kernel());
++#if defined(ARM64_BOARD_CONFIG_B2L)
++			extern int b2l_hfs_root_unsealed(dev_t, vnode_t);
++			if (autherr && b2l_hfs_root_unsealed(rootdev, rootvnode)) {
++				printf("B2L HFS: development root is unsealed (authentication error %d)\n", autherr);
++			} else
++#endif
+ 			if (autherr) {
+ 				panic("rootvp not authenticated after mounting");
+ 			}
+--- a/iokit/bsddev/IOKitBSDInit.cpp
++++ b/iokit/bsddev/IOKitBSDInit.cpp
+@@ -65,6 +65,9 @@
+ 
+ extern dev_t mdevadd(int devid, uint64_t base, unsigned int size, int phys);
+ extern dev_t mdevlookup(int devid);
++#if defined(ARM64_BOARD_CONFIG_B2L)
++extern "C" int b2l_ufs_root_device(dev_t *);
++#endif
+ extern void mdevremoveall(void);
+ extern int mdevgetrange(int devid, uint64_t *base, uint64_t *size);
+ extern void di_root_ramfile(IORegistryEntry * entry);
+@@ -799,6 +802,27 @@
+ //	Now check if we are trying to root on a memory device
+ //
+ 
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	if (!strcmp(rdBootVar, "b2l-system") ||
++	    !strncmp(rdBootVar, "b2lufs0p", sizeof("b2lufs0p") - 1)) {
++		dev_t nativeRoot;
++		int error = b2l_ufs_root_device(&nativeRoot);
++		if (error) panic("B2L UFS: requested HFS SYSTEM root unavailable: %d", error);
++		char nativeName[32];
++		snprintf(nativeName, sizeof(nativeName), "b2lufs0p%u", minor(nativeRoot));
++		if (strcmp(rdBootVar, "b2l-system") && strcmp(rdBootVar, nativeName)) {
++			panic("B2L UFS: rd names a device other than validated SYSTEM");
++		}
++		OSSafeReleaseNULL(matching);
++		strlcpy(rootName, nativeName, rootNameSize);
++		*root = nativeRoot;
++		*oflags = 0;
++		IOLog("BSD root: %s, major %d, minor %d (native HFS SYSTEM)\n",
++		    rootName, major(*root), minor(*root));
++		goto iofrootx;
++	}
++#endif
++
+ 	if ((rdBootVar[0] == 'm') && (rdBootVar[1] == 'd') && (rdBootVar[3] == 0)) {
+ 		dchar = xchar = rdBootVar[2];                                                   /* Get the actual device */
+ 		if ((xchar >= '0') && (xchar <= '9')) {
+--- a/iokit/Kernel/IOService.cpp
++++ b/iokit/Kernel/IOService.cpp
+@@ -5396,7 +5396,9 @@
+ 	bool                wasHiding;
+ 
+ 	iomediaClass = OSMetaClass::getMetaClassWithName(gIOMediaKey);
++#if !defined(ARM64_BOARD_CONFIG_B2L)
+ 	assert(iomediaClass);
++#endif
+ 
+ 	LOCKWRITENOTIFY();
+ 	wasHiding = gIOServiceHideIOMedia;
+@@ -5407,7 +5409,7 @@
+ 
+ 	FindRootMediaContext ctx = { .services = NULL, .parent = parent };
+ 
+-	if (wasHiding) {
++	if (wasHiding && iomediaClass) {
+ 		iomediaClass->applyToInstances(publishHiddenMediaApplier, &ctx);
+ 	}
+ 	if (ctx.services) {
+@@ -5449,7 +5451,12 @@
+ 	bool unhide;
+ 
+ 	ioblockstoragedriverClass = OSMetaClass::getMetaClassWithName(gIOBlockStorageDriverKey);
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	/* No IOStorageFamily means no IOService owns the native BSD root device. */
++	if (!ioblockstoragedriverClass) root = NULL;
++#else
+ 	assert(ioblockstoragedriverClass);
++#endif
+ 
+ 	while (root) {
+ 		if (root->metaCast(ioblockstoragedriverClass)) {

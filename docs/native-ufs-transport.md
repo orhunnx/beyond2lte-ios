@@ -1,4 +1,4 @@
-# Native read-only UFS transport
+# Native UFS transport
 
 The B2L transport uses the live Exynos 9820 UFS link left by the working EFI
 driver. It runs independently of EFI after `ExitBootServices`. Successful host
@@ -30,8 +30,11 @@ are cleaned before DMA and cleaned/invalidated after completion, with barriers.
 The BSD adapter provides any smaller-sector view. All accesses are serialized,
 checked against actual device geometry, and copied out of private DMA memory.
 
-Only TEST UNIT READY, REQUEST SENSE, READ CAPACITY and READ commands are allowed.
-There is no disk-write API. Samsung UTRD lengths and offsets use the working
+Build 0012 allowed only TEST UNIT READY, REQUEST SENSE, READ CAPACITY and READ.
+The 0013 extension additionally permits bounded WRITE(10)/(16) and actual
+SYNCHRONIZE CACHE(10). Write requests are admitted only through the BSD layer's
+validated HFS SYSTEM capability. Whole-LU and other partition views remain
+read-only. Samsung UTRD lengths and offsets use the working
 firmware's byte units; generic UFS DWORD-offset descriptors are not substituted.
 Slot and task tag 0 are used with only one outstanding command.
 
@@ -42,8 +45,8 @@ memory stays pinned and cannot be reused for a new command. A failed command is
 never treated as a successful disk read. A bounded initial REQUEST SENSE sequence
 can clear a pending UNIT ATTENTION before reading capacity.
 
-Cold initialization, power management, link recovery and disk writes are outside
-this transport. If the inherited link is unavailable, initialization fails
+Cold initialization, power management and link recovery are outside this
+transport. If the inherited link is unavailable, initialization fails
 explicitly. GPT validation and BSD device publication are separate from this
 transport; neither a successful capacity read nor a GPT read proves an HFS mount.
 
@@ -51,8 +54,24 @@ transport; neither a successful capacity read nor a GPT read proves an HFS mount
 
 Run `bash scripts/test-ufs-transport.sh` for ASAN/UBSAN tests of the actual
 descriptor builder and polling state machine, including high DMA addresses,
-byte offsets, invalid write opcodes, timeout/wraparound, fatal status, response
+byte offsets, data-in/data-out direction, write CDB bounds, real flush commands,
+timeout/wraparound, fatal status, response
 mismatches, and bounds. The same tests validate EFI vendor-path decoding and
 reject truncated, malformed, unknown-controller and invalid-LUN paths. Apple DT
 tests additionally check the exact four-byte LUN property and its omission for
 filesystem fallback.
+
+## Write completion and durability (0013)
+
+Data-out requests copy CPU input into the kernel-owned bounce buffer before
+cache cleaning and the doorbell write. WRITE(10)/(16) uses the actual Samsung
+byte descriptor layout, UPIU write flag and UTRD data-out direction. Strict
+completion/error checks and poisoned outstanding-DMA handling are unchanged.
+No discard, query modification, firmware update or format opcode is admitted.
+
+FUA capability has not been measured. Every successful native write therefore
+issues non-IMMED SYNCHRONIZE CACHE(10) before reporting success. The separate
+sync operation issues the same real command; unsupported/failed flushing returns
+an error. The first completed write plus cache flush produces a single proof
+line without data or addresses. A passing descriptor test or an enabled write
+permission is not physical device-write proof.

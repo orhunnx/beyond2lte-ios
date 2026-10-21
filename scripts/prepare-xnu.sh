@@ -7,13 +7,10 @@ expected=ac9718fb1af618d5ce8678d0dc6e8a58f252216f
 [[ "$(git -C "$xnu_path" rev-parse HEAD)" == "$expected" ]] || {
   echo "XNU must be at $expected" >&2; exit 1;
 }
-patch_file="$repo_root/patches/0001-b2l-machine-and-local-dependencies.patch"
-if git -C "$xnu_path" apply --reverse --check "$patch_file" 2>/dev/null; then
-  echo 'B2L patch is already applied.'
-else
-  git -C "$xnu_path" apply --check "$patch_file"
-  git -C "$xnu_path" apply "$patch_file"
-fi
+python3 "$repo_root/scripts/apply-board-patches.py" "$xnu_path" \
+  "$repo_root/patches/0001-b2l-machine-and-local-dependencies.patch" \
+  "$repo_root/patches/0002-b2l-builtin-hfs-root.patch" \
+  "$repo_root/patches/0003-b2l-hfs-md5.patch"
 # New files have separate provenance and are kept as an overlay.
 while IFS= read -r -d '' source_file; do
   relative="${source_file#"$repo_root/xnu-overlay/"}"

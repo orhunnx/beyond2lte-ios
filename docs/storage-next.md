@@ -35,16 +35,18 @@ Neither approach should claim a memory-backed image is native disk access.
 ## HFS path
 
 The public release-paired HFS source is hfs-715.120.4, pinned to
-`124b970fd5390f1c2cd6f985478616a04f6eeb1f`. It needs an explicit built-in
-registration path and a supported unencrypted-root feature configuration. Its
+`124b970fd5390f1c2cd6f985478616a04f6eeb1f`. Build 0013 adds its explicit built-in
+registration path and an unencrypted-root feature configuration. Its
 normal iPhoneOS kext configuration assumes additional protection/AppleKeyStore
 services absent from this first-boot kernel. Source availability is not a
 successful build or filesystem mount.
 
-Direct BSD root selection also needs proper no-IOStorageFamily handling in the
-root-media publication path. HFS mount/authentication policy must represent an
-unsealed development root honestly; production Apple authentication must not be
-claimed. Empty HFS alone supplies no launchd or userspace.
+Build 0013 supplies direct native SYSTEM selection and optional IOStorageFamily
+handling for this BSD path. Its explicit development root policy accepts the
+unencrypted, unsealed HFS root without claiming Apple authentication. The real
+MD5 implementation required by HFS volume UUIDs is included. Physical root-mount
+and write/flush proof remain a device test. Empty HFS supplies no init or userspace.
+See [HFS integration](hfs-provider.md) and [build 0013](build-0013.md).
 
 ## Disk boundary
 

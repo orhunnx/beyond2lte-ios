@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: BSD-2-Clause
-"""Stage pinned MIT BearSSL portable AES sources as an external local input."""
+"""Stage pinned MIT BearSSL portable AES and MD5 as external local inputs."""
 import argparse
 import hashlib
 import json
@@ -14,6 +14,7 @@ COMMIT='7bea48e5e850ab4cafbe68d3765cdaba13a86d6f'
 XNU_COMMIT='ac9718fb1af618d5ce8678d0dc6e8a58f252216f'
 UPSTREAM='https://www.bearssl.org/git/BearSSL'
 AES_FILES=('aes_ct','aes_ct_enc','aes_ct_dec','aes_ct_cbcenc','aes_ct_cbcdec')
+HASH_FILES=('hash/md5.c','codec/dec32le.c','codec/enc32le.c')
 
 
 def run(*args):
@@ -34,13 +35,17 @@ def main():
         raise SystemExit('Refusing incompatible XNU revision')
     destination=xnu/'libkern/crypto/b2l_bearssl'
     manifest=destination/'b2l-provider.json'
+    legacy_hashes=None
     if destination.exists():
         if not manifest.is_file():
             raise SystemExit(f'Refusing to overwrite unmanaged AES input: {destination}')
         data=json.loads(manifest.read_text())
-        if data.get('format')!=1 or data.get('source_commit')!=COMMIT or data.get('files')!=hashes(destination):
+        if data.get('format') not in (1,2) or data.get('source_commit')!=COMMIT or data.get('files')!=hashes(destination):
             raise SystemExit('Staged AES dependency was modified or has an unexpected revision')
-        print('Pinned BearSSL AES sources already staged and verified');return
+        if data['format']==2:
+            print('Pinned BearSSL AES/MD5 sources already staged and verified');return
+        # Explicit migration: only a pristine, hash-verified v1 may gain MD5.
+        legacy_hashes=data['files']
     source=args.source
     if source is None:
         source=Path(__file__).resolve().parent.parent/'out/dependencies/bearssl'
@@ -65,11 +70,24 @@ def main():
             '#if defined(KERNEL)\n#include <machine/limits.h>\n#else\n#include <limits.h>\n#endif'))
         for name in AES_FILES:
             shutil.copyfile(source/'src/symcipher'/f'{name}.c',staged/'src/symcipher'/f'{name}.c')
+        for name in HASH_FILES:
+            output=staged/'src'/name;output.parent.mkdir(parents=True,exist_ok=True)
+            shutil.copyfile(source/'src'/name,output)
         shutil.copyfile(source/'LICENSE.txt',staged/'LICENSE.txt')
-        data={'format':1,'source_commit':COMMIT,'upstream':UPSTREAM,'files':hashes(staged)}
+        staged_hashes=hashes(staged)
+        if legacy_hashes is not None and any(staged_hashes.get(name)!=digest for name,digest in legacy_hashes.items()):
+            raise SystemExit('Refusing migration that would alter an existing pristine AES input')
+        data={'format':2,'source_commit':COMMIT,'upstream':UPSTREAM,'files':staged_hashes}
         (staged/'b2l-provider.json').write_text(json.dumps(data,sort_keys=True,indent=2)+'\n')
-        staged.rename(destination)
-    print(f'Staged real BearSSL portable AES @ {COMMIT}')
+        if legacy_hashes is None:
+            staged.rename(destination)
+        else:
+            backup=Path(temp)/'prior';destination.rename(backup)
+            try:
+                staged.rename(destination)
+            except BaseException:
+                backup.rename(destination);raise
+    print(f'Staged real BearSSL portable AES/MD5 @ {COMMIT}')
 
 
 if __name__=='__main__':

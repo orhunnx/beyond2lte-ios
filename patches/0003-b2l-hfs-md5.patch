@@ -1,0 +1,63 @@
+--- a/libkern/crypto/corecrypto_md5.c
++++ b/libkern/crypto/corecrypto_md5.c
+@@ -2,6 +2,9 @@
+ #include <libkern/crypto/md5.h>
+ #include <kern/debug.h>
+ #include <corecrypto/ccdigest.h>
++#if defined(ARM64_BOARD_CONFIG_B2L)
++#include "b2l_md5.h"
++#endif
+ 
+ static uint64_t
+ getCount(MD5_CTX *ctx)
+@@ -40,6 +43,9 @@
+ void
+ MD5Init(MD5_CTX *ctx)
+ {
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	if (!g_crypto_funcs) { b2l_md5_init(ctx); return; }
++#endif
+ 	const struct ccdigest_info *di = g_crypto_funcs->ccmd5_di;
+ 	ccdigest_di_decl(di, di_ctx);
+ 
+@@ -51,6 +57,9 @@
+ void
+ MD5Update(MD5_CTX *ctx, const void *data, unsigned int len)
+ {
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	if (!g_crypto_funcs) { b2l_md5_update(ctx, data, len); return; }
++#endif
+ 	const struct ccdigest_info *di = g_crypto_funcs->ccmd5_di;
+ 	ccdigest_di_decl(di, di_ctx);
+ 
+@@ -62,6 +71,9 @@
+ void
+ MD5Final(unsigned char digest[MD5_DIGEST_LENGTH], MD5_CTX *ctx)
+ {
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	if (!g_crypto_funcs) { b2l_md5_final(digest, ctx); return; }
++#endif
+ 	const struct ccdigest_info *di = g_crypto_funcs->ccmd5_di;
+ 	ccdigest_di_decl(di, di_ctx);
+ 
+--- a/libkern/conf/files
++++ b/libkern/conf/files
+@@ -143,3 +143,6 @@
+ libkern/libclosure/libclosuredata.c optional config_blocks
+ 
+ libkern/compression/compression.c	standard
++
++# Real legacy MD5 for HFS volume UUIDs (pinned BearSSL input).
++libkern/crypto/b2l_md5.c	optional b2l
+--- a/libkern/conf/Makefile.template
++++ b/libkern/conf/Makefile.template
+@@ -23,7 +23,7 @@
+ B2L_AES_ROOT = $(SRCROOT)/libkern/crypto/b2l_bearssl
+ B2L_AES_OBJECTS = b2l_aes.o b2l_aes_ct.o b2l_aes_ct_enc.o b2l_aes_ct_dec.o b2l_aes_ct_cbcenc.o b2l_aes_ct_cbcdec.o
+-$(foreach object,$(B2L_AES_OBJECTS),$(eval $(object)_INCFLAGS = -I$(B2L_AES_ROOT)/inc -I$(B2L_AES_ROOT)/src))
++$(foreach object,$(B2L_AES_OBJECTS) b2l_md5.o,$(eval $(object)_INCFLAGS = -I$(B2L_AES_ROOT)/inc -I$(B2L_AES_ROOT)/src))
+-$(foreach object,$(B2L_AES_OBJECTS) corecrypto_aes.o,$(eval $(object)_CFLAGS_ADD += -mgeneral-regs-only))
++$(foreach object,$(B2L_AES_OBJECTS) corecrypto_aes.o b2l_md5.o corecrypto_md5.o,$(eval $(object)_CFLAGS_ADD += -mgeneral-regs-only))
+ endif
+ 
+ 

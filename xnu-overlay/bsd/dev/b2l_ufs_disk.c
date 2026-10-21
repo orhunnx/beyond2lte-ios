@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: MIT
  * Minimal native BSD view over the inherited Samsung UFS transport.
- * Read-only by construction: no write command is exposed to the transport.
+ * Only the validated HFS SYSTEM view is writable; whole-LU and other views
+ * remain read-only even when they overlap the authorized physical range.
  */
 #include <sys/param.h>
 #include <sys/buf.h>
@@ -21,7 +22,7 @@
 struct b2l_ufs_view {
 	uint64_t base, size;
 	uint32_t sector_size;
-	int ready;
+	int ready, writable;
 	void *block_node, *char_node;
 };
 
@@ -32,6 +33,7 @@ static unsigned char b2l_read_scratch[B2L_UFS_MAX_BLOCK_SIZE];
 static struct b2l_gpt b2l_partitions;
 static struct b2l_ufs_view b2l_views[B2L_GPT_MAX_ENTRIES + 1];
 static int b2l_block_major = -1, b2l_char_major = -1;
+static unsigned b2l_system_index;
 
 static struct b2l_ufs_view *
 b2l_view(dev_t dev)
@@ -44,7 +46,7 @@ static int
 b2l_open(dev_t dev, int flags, __unused int type, __unused struct proc *p)
 {
 	if (!b2l_view(dev)) return ENXIO;
-	return flags & FWRITE ? EROFS : 0;
+	return (flags & FWRITE) && !b2l_view(dev)->writable ? EROFS : 0;
 }
 
 static int
@@ -65,7 +67,7 @@ b2l_strategy(struct buf *bp)
 	buf_setresid(bp, count);
 	if (!v) {
 		error = ENXIO;
-	} else if (!(buf_flags(bp) & B_READ)) {
+	} else if (!(buf_flags(bp) & B_READ) && !v->writable) {
 		error = EROFS;
 	} else if (buf_blkno(bp) < 0) {
 		error = EINVAL;
@@ -75,8 +77,12 @@ b2l_strategy(struct buf *bp)
 		if (block > UINT64_MAX / v->sector_size) {
 			error = EINVAL;
 		} else if ((error = buf_map(bp, &data)) == 0) {
-			error = b2l_ufs_read_view(&b2l_reader, v->base, v->size,
-			    block * v->sector_size, count, 0, data, &done);
+			if (buf_flags(bp) & B_READ)
+				error = b2l_ufs_read_view(&b2l_reader, v->base, v->size,
+				    block * v->sector_size, count, 0, data, &done);
+			else
+				error = b2l_ufs_write_view(&b2l_reader, v->base, v->size,
+				    block * v->sector_size, count, data, &done);
 			buf_unmap(bp);
 		}
 		lck_mtx_unlock(&b2l_ufs_disk_lock);
@@ -96,7 +102,7 @@ b2l_read(dev_t dev, struct uio *uio, __unused int flags)
 	unsigned char scratch[B2L_UFS_MAX_BLOCK_SIZE];
 	int error = 0;
 	while (uio_resid(uio) > 0) {
-		size_t n = uio_resid(uio) > sizeof(scratch) ?
+		size_t n = (size_t)uio_resid(uio) > sizeof(scratch) ?
 		    sizeof(scratch) : (size_t)uio_resid(uio);
 		size_t done = 0;
 		lck_mtx_lock(&b2l_ufs_disk_lock);
@@ -115,9 +121,41 @@ b2l_read(dev_t dev, struct uio *uio, __unused int flags)
 }
 
 static int
-b2l_write(__unused dev_t dev, __unused struct uio *uio, __unused int flags)
+b2l_write(dev_t dev, struct uio *uio, __unused int flags)
 {
-	return EROFS;
+	struct b2l_ufs_view *v = b2l_view(dev);
+	if (!v) return ENXIO;
+	if (!v->writable) return EROFS;
+	if (!uio || uio_rw(uio) != UIO_WRITE || uio_offset(uio) < 0 ||
+	    uio_resid(uio) < 0) return EINVAL;
+	lck_mtx_lock(&b2l_ufs_disk_lock);
+	int error = b2l_ufs_write_bounds(&b2l_reader, v->base, v->size,
+	    (uint64_t)uio_offset(uio), (size_t)uio_resid(uio));
+	lck_mtx_unlock(&b2l_ufs_disk_lock);
+	if (error || !uio_resid(uio)) return error;
+	struct uio *copy = uio_duplicate(uio);
+	if (!copy) return ENOMEM;
+	unsigned char scratch[B2L_UFS_MAX_BLOCK_SIZE];
+	while (uio_resid(uio) > 0) {
+		/* uio_update advances one iovec, not an arbitrary writev span. */
+		uio_update(uio, 0);
+		size_t current = (size_t)uio_curriovlen(uio);
+		if (!current) { error = EINVAL; break; }
+		size_t n = (size_t)uio_resid(uio) > sizeof(scratch) ? sizeof(scratch) : (size_t)uio_resid(uio);
+		if (n > current) n = current;
+		size_t done = 0;
+		/* copyin and user faults must never run while holding the disk mutex. */
+		error = uiomove((caddr_t)scratch, (int)n, copy);
+		if (error) break;
+		lck_mtx_lock(&b2l_ufs_disk_lock);
+		error = b2l_ufs_write_view(&b2l_reader, v->base, v->size,
+		    (uint64_t)uio_offset(uio), n, scratch, &done);
+		lck_mtx_unlock(&b2l_ufs_disk_lock);
+		if (done) uio_update(uio, done);
+		if (error || !done) break;
+	}
+	uio_free(copy);
+	return error;
 }
 
 static int
@@ -125,15 +163,24 @@ b2l_ioctl_common(dev_t dev, u_long cmd, caddr_t data, int is_char)
 {
 	struct b2l_ufs_view *v = b2l_view(dev);
 	if (!v) return ENXIO;
-	if (!data) return EINVAL;
 	int error = 0;
 	lck_mtx_lock(&b2l_ufs_disk_lock);
+	/* The no-argument SYNCHRONIZECACHE form legitimately passes NULL. */
+	if (cmd == DKIOCSYNCHRONIZE || cmd == DKIOCSYNCHRONIZECACHE) {
+		error = v->writable ? b2l_ufs_transport_sync() : EROFS;
+		lck_mtx_unlock(&b2l_ufs_disk_lock);
+		return error;
+	}
+	if (!data) {
+		lck_mtx_unlock(&b2l_ufs_disk_lock);
+		return EINVAL;
+	}
 	switch (cmd) {
 	case DKIOCGETBLOCKSIZE:
 		*(uint32_t *)data = v->sector_size; break;
 	case DKIOCGETPHYSICALBLOCKSIZE:
-		/* READ CAPACITY geometry currently reports only the UFS logical size. */
-		error = ENOTSUP; break;
+		/* Minimum native UFS I/O granule, not the NAND erase-page geometry. */
+		*(uint32_t *)data = b2l_reader.block_size; break;
 	case DKIOCGETBLOCKCOUNT:
 		*(uint64_t *)data = v->size / v->sector_size; break;
 	case DKIOCSETBLOCKSIZE:
@@ -143,7 +190,7 @@ b2l_ioctl_common(dev_t dev, u_long cmd, caddr_t data, int is_char)
 		else v->sector_size = *(uint32_t *)data;
 		break;
 	case DKIOCISWRITABLE:
-		*(uint32_t *)data = 0; break;
+		*(uint32_t *)data = v->writable ? 1 : 0; break;
 	case DKIOCISSOLIDSTATE:
 		*(uint32_t *)data = 1; break;
 	case DKIOCGETBASE:
@@ -156,6 +203,12 @@ b2l_ioctl_common(dev_t dev, u_long cmd, caddr_t data, int is_char)
 		*(uint64_t *)data = B2L_UFS_MAX_READ_BYTES; break;
 	case DKIOCGETMAXSEGMENTCOUNTREAD:
 		*(uint64_t *)data = 1; break;
+	case DKIOCGETMAXBLOCKCOUNTWRITE:
+		*(uint64_t *)data = v->writable ? B2L_UFS_MAX_IO_BYTES / v->sector_size : 0; break;
+	case DKIOCGETMAXBYTECOUNTWRITE:
+		*(uint64_t *)data = v->writable ? B2L_UFS_MAX_IO_BYTES : 0; break;
+	case DKIOCGETMAXSEGMENTCOUNTWRITE:
+		*(uint64_t *)data = v->writable ? 1 : 0; break;
 	default:
 		/* Unknown controls include all media modification operations. */
 		error = ENOTTY; break;
@@ -196,6 +249,7 @@ b2l_publish(unsigned index, uint64_t base, uint64_t size)
 {
 	struct b2l_ufs_view *v = &b2l_views[index];
 	v->base = base; v->size = size; v->sector_size = 512;
+	v->writable = index && index == b2l_system_index;
 	if (!index) {
 		v->block_node = devfs_make_node(makedev(b2l_block_major, index), DEVFS_BLOCK,
 		    UID_ROOT, GID_OPERATOR, 0400, "b2lufs0");
@@ -203,9 +257,9 @@ b2l_publish(unsigned index, uint64_t base, uint64_t size)
 		    UID_ROOT, GID_OPERATOR, 0400, "rb2lufs0");
 	} else {
 		v->block_node = devfs_make_node(makedev(b2l_block_major, index), DEVFS_BLOCK,
-		    UID_ROOT, GID_OPERATOR, 0400, "b2lufs0p%u", index);
+		    UID_ROOT, GID_OPERATOR, v->writable ? 0600 : 0400, "b2lufs0p%u", index);
 		v->char_node = devfs_make_node(makedev(b2l_char_major, index), DEVFS_CHAR,
-		    UID_ROOT, GID_OPERATOR, 0400, "rb2lufs0p%u", index);
+		    UID_ROOT, GID_OPERATOR, v->writable ? 0600 : 0400, "rb2lufs0p%u", index);
 	}
 	if (!v->block_node || !v->char_node) {
 		if (v->block_node) devfs_remove(v->block_node);
@@ -223,6 +277,8 @@ b2l_probe_selected(void)
 	const struct b2l_gpt_partition *selected = NULL;
 	unsigned matches = 0;
 	int container = 0;
+	b2l_system_index = 0;
+	b2l_reader.writable_base = b2l_reader.writable_size = 0;
 	for (unsigned pass = 0; pass < 2 && !matches; pass++) {
 		for (unsigned i = 0; i < b2l_partitions.partition_count; i++) {
 			const struct b2l_gpt_partition *p = &b2l_partitions.partitions[i];
@@ -246,9 +302,26 @@ b2l_probe_selected(void)
 		return;
 	}
 	const char *kind = "unrecognized";
-	if (signature[1024] == 'H' && (signature[1025] == '+' || signature[1025] == 'X'))
+	if (signature[1024] == 'H' && (signature[1025] == '+' || signature[1025] == 'X')) {
 		kind = "HFS+/HFSX";
-	else if (signature[1080] == 0x53 && signature[1081] == 0xef) kind = "ext4-family";
+		const unsigned char *vh = signature + 1024;
+		unsigned version = (unsigned)vh[2] << 8 | vh[3];
+		uint32_t block_size = (uint32_t)vh[40] << 24 | (uint32_t)vh[41] << 16 |
+		    (uint32_t)vh[42] << 8 | vh[43];
+		uint32_t blocks = (uint32_t)vh[44] << 24 | (uint32_t)vh[45] << 16 |
+		    (uint32_t)vh[46] << 8 | vh[47];
+		uint32_t free_blocks = (uint32_t)vh[48] << 24 | (uint32_t)vh[49] << 16 |
+		    (uint32_t)vh[50] << 8 | vh[51];
+		if (((vh[1] == '+' && version == 4) || (vh[1] == 'X' && version == 5)) &&
+		    block_size >= 512 && !(block_size & (block_size - 1)) && blocks >= 2 &&
+		    blocks <= size / block_size && free_blocks <= blocks && b2l_reader.write) {
+			b2l_system_index = selected->index;
+			b2l_reader.writable_base = base;
+			b2l_reader.writable_size = size;
+		} else {
+			printf("B2L UFS: HFS SYSTEM write authorization denied: invalid volume geometry\n");
+		}
+	} else if (signature[1080] == 0x53 && signature[1081] == 0xef) kind = "ext4-family";
 	else {
 		unsigned char magic[4];
 		error = b2l_ufs_read_view(&b2l_reader, base, size, 4096, 4, 0, magic, &done);
@@ -258,9 +331,25 @@ b2l_probe_selected(void)
 			container = 1;
 		}
 	}
-	printf("B2L UFS: GPT %s p%u first=%llu blocks=%llu %s signature=%s read-only\n",
+	printf("B2L UFS: GPT %s p%u first=%llu blocks=%llu %s signature=%s %s\n",
 	    selected->name, selected->index, selected->first_lba, selected->block_count,
-	    container ? "container" : "partition", kind);
+	    container ? "container" : "partition", kind,
+	    b2l_system_index ? "SYSTEM read-write authorized" : "read-only");
+}
+
+int
+b2l_ufs_root_device(dev_t *dev)
+{
+	if (!dev) return EINVAL;
+	int error = ENXIO;
+	lck_mtx_lock(&b2l_ufs_disk_lock);
+	if (b2l_block_major >= 0 && b2l_system_index &&
+	    b2l_views[b2l_system_index].ready && b2l_views[b2l_system_index].writable) {
+		*dev = makedev(b2l_block_major, b2l_system_index);
+		error = 0;
+	}
+	lck_mtx_unlock(&b2l_ufs_disk_lock);
+	return error;
 }
 
 void
@@ -276,6 +365,7 @@ b2l_ufs_disk_init(void)
 	b2l_reader.block_size = geometry.block_size;
 	b2l_reader.read = b2l_ufs_transport_read;
 	b2l_reader.scratch = b2l_read_scratch;
+	b2l_reader.write = b2l_ufs_transport_write;
 	uint64_t capacity;
 	if ((error = b2l_ufs_capacity(&b2l_reader, &capacity))) {
 		printf("B2L UFS: invalid geometry error=%d\n", error); return;
@@ -306,14 +396,14 @@ b2l_ufs_disk_init(void)
 	}
 	printf("B2L UFS: primary+backup GPT CRC verified entries=%u partitions=%u\n",
 	    b2l_partitions.entry_count, b2l_partitions.partition_count);
+	lck_mtx_lock(&b2l_ufs_disk_lock);
+	b2l_probe_selected();
+	lck_mtx_unlock(&b2l_ufs_disk_lock);
 	for (unsigned i = 0; i < b2l_partitions.partition_count; i++) {
 		const struct b2l_gpt_partition *p = &b2l_partitions.partitions[i];
 		error = b2l_publish(p->index, p->first_lba * geometry.block_size,
 		    p->block_count * geometry.block_size);
 		if (error) printf("B2L UFS: partition node p%u failed error=%d\n", p->index, error);
 	}
-	lck_mtx_lock(&b2l_ufs_disk_lock);
-	b2l_probe_selected();
-	lck_mtx_unlock(&b2l_ufs_disk_lock);
-	printf("B2L UFS: native BSD devices only; IOMedia root search unchanged\n");
+	printf("B2L UFS: native BSD devices ready; only validated HFS SYSTEM can be a writable root\n");
 }

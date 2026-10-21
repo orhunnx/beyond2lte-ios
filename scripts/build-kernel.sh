@@ -15,6 +15,7 @@ export B2L_DEPSROOT
 }
 python3 "$repo_root/scripts/stage-libpthread.py" "$xnu_path"
 python3 "$repo_root/scripts/stage-bearssl.py" "$xnu_path"
+python3 "$repo_root/scripts/stage-hfs.py" "$xnu_path"
 cd "$xnu_path"
 exec make SDKROOT=macosx KDKROOT="$KDKROOT" \
   TARGET_CONFIGS='DEVELOPMENT ARM64 B2L' \

@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: MIT
- * Read-only byte views and bounded GPT decoding. No firmware or kernel pointers
+ * Bounded byte views and GPT decoding. No firmware or kernel pointers
  * are taken from the disk. GUIDs and sector contents are never printed.
  */
 #include "b2l_ufs_core.h"
@@ -106,6 +106,58 @@ b2l_ufs_read_view(struct b2l_ufs_reader *r, uint64_t base, uint64_t size,
 		count = (size_t)(size - offset);
 	}
 	return b2l_ufs_read_bytes(r, base + offset, count, out, done);
+}
+
+int
+b2l_ufs_write_bounds(const struct b2l_ufs_reader *r, uint64_t base, uint64_t size,
+    uint64_t offset, size_t count)
+{
+	uint64_t capacity;
+	int error;
+	/* An enclosing whole-LU or another partition view is never a write alias. */
+	if (!r || !r->write || !r->writable_size || base != r->writable_base ||
+	    size != r->writable_size) return EROFS;
+	if ((error = b2l_ufs_capacity(r, &capacity))) return error;
+	/* Validate the ENTIRE request before the first read-modify-write operation. */
+	if (base > capacity || size > capacity - base ||
+	    base % r->block_size || size % r->block_size || offset > size ||
+	    count > size - offset) return EINVAL;
+	return 0;
+}
+
+int
+b2l_ufs_write_view(struct b2l_ufs_reader *r, uint64_t base, uint64_t size,
+    uint64_t offset, size_t count, const void *in, size_t *done)
+{
+	int error;
+	if (!done) return EINVAL;
+	*done = 0;
+	if ((error = b2l_ufs_write_bounds(r, base, size, offset, count))) return error;
+	if (!in && count) return EINVAL;
+	while (*done < count) {
+		uint64_t pos = base + offset + *done;
+		size_t within = (size_t)(pos % r->block_size);
+		size_t remaining = count - *done;
+		if (within || remaining < r->block_size) {
+			size_t n = r->block_size - within;
+			if (n > remaining) n = remaining;
+			error = r->read(pos / r->block_size, 1, r->scratch);
+			if (error) return error;
+			memcpy(r->scratch + within, (const unsigned char *)in + *done, n);
+			error = r->write(pos / r->block_size, 1, r->scratch);
+			if (error) return error;
+			*done += n;
+		} else {
+			size_t bytes = remaining > B2L_UFS_MAX_IO_BYTES ?
+			    B2L_UFS_MAX_IO_BYTES : remaining;
+			uint32_t blocks = (uint32_t)(bytes / r->block_size);
+			error = r->write(pos / r->block_size, blocks,
+			    (const unsigned char *)in + *done);
+			if (error) return error;
+			*done += (size_t)blocks * r->block_size;
+		}
+	}
+	return 0;
 }
 
 struct gpt_header {

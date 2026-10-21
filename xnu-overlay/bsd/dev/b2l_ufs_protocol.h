@@ -47,23 +47,27 @@ static inline int b2l_ufs_read_opcode(const uint8_t cdb[16])
     return cdb[0]==0x00 || cdb[0]==0x03 || cdb[0]==0x25 ||
         cdb[0]==0x28 || cdb[0]==0x88 || (cdb[0]==0x9e && cdb[1]==0x10);
 }
-static inline int b2l_ufs_build_read(struct b2l_ufs_utrd *tr,
+static inline int b2l_ufs_write_opcode(const uint8_t cdb[16])
+{ return cdb[0]==0x2a || cdb[0]==0x8a; }
+static inline int b2l_ufs_build_command(struct b2l_ufs_utrd *tr,
     struct b2l_ufs_ucd *ucd,uint64_t command_pa,uint64_t data_pa,
-    uint8_t lun,uint8_t tag,const uint8_t cdb[16],uint32_t bytes)
+    uint8_t lun,uint8_t tag,const uint8_t cdb[16],uint32_t bytes,int data_out)
 {
     uint32_t n,i,part;
     if (!tr || !ucd || !cdb || lun>7 || tag!=0 || bytes>B2L_UFS_MAX_READ_BYTES ||
-        !b2l_ufs_read_opcode(cdb) || (command_pa&127) || (data_pa&4095) ||
+        (data_out ? (!bytes || !b2l_ufs_write_opcode(cdb)) :
+            !(b2l_ufs_read_opcode(cdb) || (cdb[0]==0x35 && !bytes))) ||
+        (command_pa&127) || (data_pa&4095) ||
         data_pa>UINT64_MAX-bytes) return B2L_UFS_BAD_ARGUMENT;
     b2l_ufs_zero(tr,sizeof(*tr));b2l_ufs_zero(ucd,sizeof(*ucd));
-    tr->dword[0]=(bytes?0x04000000U:0U)|0x01000000U;
+    tr->dword[0]=(bytes?(data_out?0x02000000U:0x04000000U):0U)|0x01000000U;
     tr->dword[2]=15;
     tr->command_low=(uint32_t)command_pa;tr->command_high=(uint32_t)(command_pa>>32);
     tr->response_length=1024;tr->response_offset=1024;
     n=(bytes+4095)/4096;
     tr->prdt_length=(uint16_t)(n*sizeof(struct b2l_ufs_prdt));
     tr->prdt_offset=bytes?2048:0;
-    ucd->command[0]=1;ucd->command[1]=bytes?0x40:0;
+    ucd->command[0]=1;ucd->command[1]=bytes?(data_out?0x20:0x40):0;
     ucd->command[2]=lun;ucd->command[3]=tag;
     b2l_ufs_be32_store(ucd->command+12,bytes);
     for(i=0;i<16;i++)ucd->command[16+i]=cdb[i];
@@ -75,6 +79,37 @@ static inline int b2l_ufs_build_read(struct b2l_ufs_utrd *tr,
     }
     return B2L_UFS_OK;
 }
+static inline int b2l_ufs_build_read(struct b2l_ufs_utrd *tr,
+    struct b2l_ufs_ucd *ucd,uint64_t command_pa,uint64_t data_pa,
+    uint8_t lun,uint8_t tag,const uint8_t cdb[16],uint32_t bytes)
+{ return b2l_ufs_build_command(tr,ucd,command_pa,data_pa,lun,tag,cdb,bytes,0); }
+static inline int b2l_ufs_build_write(struct b2l_ufs_utrd *tr,
+    struct b2l_ufs_ucd *ucd,uint64_t command_pa,uint64_t data_pa,
+    uint8_t lun,uint8_t tag,const uint8_t cdb[16],uint32_t bytes)
+{ return b2l_ufs_build_command(tr,ucd,command_pa,data_pa,lun,tag,cdb,bytes,1); }
+/* Produce the exact CDB used by both native read and write paths. Keep all
+ * address arithmetic bounded before selecting READ/WRITE(10) versus (16). */
+static inline int b2l_ufs_rw_cdb(uint8_t cdb[16],uint64_t lba,uint32_t blocks,int write)
+{
+    if(!cdb || !blocks || lba>UINT64_MAX-((uint64_t)blocks-1))return B2L_UFS_BAD_ARGUMENT;
+    b2l_ufs_zero(cdb,16);
+    if(lba<=UINT32_MAX && blocks<=UINT16_MAX && (uint64_t)blocks-1<=UINT32_MAX-lba) {
+        cdb[0]=write?0x2a:0x28;b2l_ufs_be32_store(cdb+2,(uint32_t)lba);
+        cdb[7]=(uint8_t)(blocks>>8);cdb[8]=(uint8_t)blocks;
+    } else {
+        cdb[0]=write?0x8a:0x88;b2l_ufs_be32_store(cdb+2,(uint32_t)(lba>>32));
+        b2l_ufs_be32_store(cdb+6,(uint32_t)lba);b2l_ufs_be32_store(cdb+10,blocks);
+    }
+    return B2L_UFS_OK;
+}
+static inline int b2l_ufs_transfer_bounds(const struct b2l_ufs_geometry *g,
+    uint64_t lba,uint32_t blocks,const void *buffer)
+{
+    if(!g || !g->block_size || lba>g->block_count || blocks>g->block_count-lba ||
+        blocks>B2L_UFS_MAX_TRANSFER_BYTES/g->block_size || (blocks&&!buffer))
+        return B2L_UFS_BAD_ARGUMENT;
+    return B2L_UFS_OK;
+}
 static inline int b2l_ufs_result(const struct b2l_ufs_utrd *tr,
     const struct b2l_ufs_ucd *ucd,uint8_t lun,uint8_t tag)
 {
@@ -84,8 +119,9 @@ static inline int b2l_ufs_result(const struct b2l_ufs_utrd *tr,
     if(r[7])return B2L_UFS_SCSI_ERROR;
     return B2L_UFS_OK;
 }
-/* All controller writes here are host-control or read-command submission.
- * No path accepts an outgoing SCSI write or a UFS query write. */
+/* The descriptor builder permits only explicit read/write block commands,
+ * capacity/sense probes, and SYNCHRONIZE CACHE. No query writes, UNMAP,
+ * FORMAT, security or device-configuration commands are accepted. */
 static inline int b2l_ufs_execute(struct b2l_ufs_io *io,
     struct b2l_ufs_utrd *tr,struct b2l_ufs_ucd *ucd,uint8_t lun,uint8_t tag)
 {

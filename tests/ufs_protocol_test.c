@@ -72,11 +72,61 @@ int main(void)
     assert(b2l_ufs_execute(&io,&f.tr,&f.ucd,3,0)==B2L_UFS_BUSY && !f.submitted);
     uint8_t cdb[16]={0x2a};
     assert(b2l_ufs_build_read(&f.tr,&f.ucd,0x1000,0x2000,0,0,cdb,4096)==B2L_UFS_BAD_ARGUMENT);
+    assert(!b2l_ufs_build_write(&f.tr,&f.ucd,0x950002000ULL,0x950003000ULL,3,0,cdb,65536));
+    assert(f.tr.dword[0]==0x03000000 && f.ucd.command[1]==0x20);
+    assert(f.tr.prdt_offset==2048 && f.tr.prdt_length==256);
+    assert(b2l_ufs_be32(f.ucd.command+12)==65536 && f.ucd.command[16]==0x2a);
+    for(unsigned i=0;i<16;i++)assert(f.ucd.prdt[i].length_minus_one==4095);
+    assert(b2l_ufs_build_write(&f.tr,&f.ucd,0x1000,0x2000,0,0,cdb,0)==B2L_UFS_BAD_ARGUMENT);
+    /* The exact native CDB encoder crosses the32-bit LBA boundary without
+     * truncation and never uses WRITE(10)'s special zero-block count. */
+    assert(!b2l_ufs_rw_cdb(cdb,0x12345678,16,1));
+    assert(cdb[0]==0x2a && cdb[1]==0 && b2l_ufs_be32(cdb+2)==0x12345678);
+    assert(cdb[7]==0 && cdb[8]==16);
+    assert(!b2l_ufs_rw_cdb(cdb,UINT32_MAX,2,1));
+    assert(cdb[0]==0x8a && b2l_ufs_be64(cdb+2)==UINT32_MAX && b2l_ufs_be32(cdb+10)==2);
+    assert(!b2l_ufs_build_write(&f.tr,&f.ucd,0x1000,0x2000,0,0,cdb,8192));
+    assert(f.tr.dword[0]==0x03000000 && f.ucd.command[16]==0x8a);
+    assert(!b2l_ufs_rw_cdb(cdb,0x123456789ULL,8,0));
+    assert(cdb[0]==0x88 && b2l_ufs_be64(cdb+2)==0x123456789ULL);
+    assert(!b2l_ufs_rw_cdb(cdb,1,65536,1));assert(cdb[0]==0x8a);
+    assert(b2l_ufs_rw_cdb(cdb,UINT64_MAX,2,1)==B2L_UFS_BAD_ARGUMENT);
+    assert(b2l_ufs_rw_cdb(cdb,0,0,1)==B2L_UFS_BAD_ARGUMENT);
+    /* Completed write, rejected SCSI status, and failed/timeout flush all use
+     * the same strict submission/completion engine as reads. */
+    memset(&f,0,sizeof(f));f.completion=1;cdb[0]=0x2a;
+    assert(!b2l_ufs_build_write(&f.tr,&f.ucd,0x1000,0x2000,3,0,cdb,4096));io=io_for(&f);
+    assert(!b2l_ufs_execute(&io,&f.tr,&f.ucd,3,0) && f.pre_sync==1 && f.post_sync==1);
+    f.ucd.response[7]=2;assert(b2l_ufs_result(&f.tr,&f.ucd,3,0)==B2L_UFS_SCSI_ERROR);
+    f.ucd.response[7]=0;f.ucd.response[1]=0x20;
+    assert(b2l_ufs_result(&f.tr,&f.ucd,3,0)==B2L_UFS_IO_ERROR);
+    memset(&f,0,sizeof(f));f.completion=1;memset(cdb,0,sizeof(cdb));cdb[0]=0x35;
+    assert(!b2l_ufs_build_read(&f.tr,&f.ucd,0x1000,0x2000,3,0,cdb,0));
+    assert(f.tr.dword[0]==0x01000000 && !f.tr.prdt_length && !f.ucd.command[1]);
+    assert(f.ucd.command[16]==0x35 && f.ucd.command[17]==0);io=io_for(&f);
+    assert(!b2l_ufs_execute(&io,&f.tr,&f.ucd,3,0));
+    f.tr.dword[2]=1;assert(b2l_ufs_result(&f.tr,&f.ucd,3,0)==B2L_UFS_IO_ERROR);
+    memset(&f,0,sizeof(f));
+    assert(!b2l_ufs_build_read(&f.tr,&f.ucd,0x1000,0x2000,3,0,cdb,0));io=io_for(&f);
+    assert(b2l_ufs_execute(&io,&f.tr,&f.ucd,3,0)==B2L_UFS_TIMEOUT);
+    assert(b2l_ufs_build_write(&f.tr,&f.ucd,0x1000,0x2000,3,0,cdb,4096)==B2L_UFS_BAD_ARGUMENT);
+    assert(b2l_ufs_build_read(&f.tr,&f.ucd,0x1000,0x2000,3,0,cdb,4096)==B2L_UFS_BAD_ARGUMENT);
+    cdb[0]=0x42;assert(b2l_ufs_build_write(&f.tr,&f.ucd,0x1000,0x2000,3,0,cdb,4096)==B2L_UFS_BAD_ARGUMENT);
+    cdb[0]=4;assert(b2l_ufs_build_write(&f.tr,&f.ucd,0x1000,0x2000,3,0,cdb,4096)==B2L_UFS_BAD_ARGUMENT);
+    struct b2l_ufs_geometry g={1000,4096,3};
+    assert(!b2l_ufs_transfer_bounds(&g,984,16,&f));
+    assert(b2l_ufs_transfer_bounds(&g,984,17,&f)==B2L_UFS_BAD_ARGUMENT);
+    assert(b2l_ufs_transfer_bounds(&g,999,2,&f)==B2L_UFS_BAD_ARGUMENT);
+    assert(b2l_ufs_transfer_bounds(&g,UINT64_MAX,1,&f)==B2L_UFS_BAD_ARGUMENT);
+    assert(b2l_ufs_transfer_bounds(&g,0,1,NULL)==B2L_UFS_BAD_ARGUMENT);
+    assert(!b2l_ufs_transfer_bounds(&g,1000,0,NULL));
+    assert(b2l_ufs_transfer_bounds(&g,1001,0,NULL)==B2L_UFS_BAD_ARGUMENT);
     cdb[0]=0x28;
+    assert(b2l_ufs_build_write(&f.tr,&f.ucd,0x1000,0x2000,0,0,cdb,4096)==B2L_UFS_BAD_ARGUMENT);
     assert(b2l_ufs_build_read(&f.tr,&f.ucd,0x1000,0x2000,0,1,cdb,4096)==B2L_UFS_BAD_ARGUMENT);
     assert(b2l_ufs_build_read(&f.tr,&f.ucd,0x1000,0x2000,0,0,cdb,65537)==B2L_UFS_BAD_ARGUMENT);
     assert(b2l_ufs_build_read(&f.tr,&f.ucd,0x1000,UINT64_MAX-4095,0,0,cdb,4096)==B2L_UFS_BAD_ARGUMENT);
     assert(b2l_ufs_build_read(&f.tr,&f.ucd,0x1001,0x2000,0,0,cdb,4096)==B2L_UFS_BAD_ARGUMENT);
     assert(b2l_ufs_build_read(&f.tr,&f.ucd,0x1000,0x2000,8,0,cdb,4096)==B2L_UFS_BAD_ARGUMENT);
-    puts("Native UFS descriptor, readonly opcode, status, deadline, and DMA bounds tests passed");
+    puts("Native UFS read/write/flush descriptors, CDB bounds, status, deadlines, and DMA tests passed");
 }
