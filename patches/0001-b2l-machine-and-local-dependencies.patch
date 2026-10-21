@@ -1,3 +1,37 @@
+diff --git a/bsd/conf/Makefile.template b/bsd/conf/Makefile.template
+index c4cbbe9..07dcabb 100644
+--- a/bsd/conf/Makefile.template
++++ b/bsd/conf/Makefile.template
+@@ -44,6 +44,15 @@ CFLAGS+= -include meta_features.h -DDRIVER_PRIVATE \
+         -Warray-bounds-pointer-arithmetic
+ SFLAGS+= -include meta_features.h
+ 
++# Only B2L embeds the immutable OSS pthread provider; other targets use a kext.
++ifeq ($(CURRENT_MACHINE_CONFIG),B2L)
++B2L_PTHREAD_ROOT = $(SRCROOT)/bsd/pthread/b2l_libpthread
++B2L_PTHREAD_INC = -I$(B2L_PTHREAD_ROOT) -I$(B2L_PTHREAD_ROOT)/private -I$(B2L_PTHREAD_ROOT)/include
++b2l_pthread_init.o_INCFLAGS = $(B2L_PTHREAD_INC)
++b2l_pthread_support.o_INCFLAGS = $(B2L_PTHREAD_INC)
++b2l_pthread_synch.o_INCFLAGS = $(B2L_PTHREAD_INC)
++endif
++
+ #
+ # Directories for mig generated files
+ #
+diff --git a/bsd/conf/files b/bsd/conf/files
+index 60d8aa6..7753de0 100644
+--- a/bsd/conf/files
++++ b/bsd/conf/files
+@@ -380,6 +380,9 @@ bsd/security/audit/audit_syscalls.c		standard
+ bsd/security/audit/audit_worker.c		optional config_audit
+ 
+ bsd/pthread/pthread_shims.c		standard
++bsd/pthread/b2l_pthread_init.c		optional b2l
++bsd/pthread/b2l_pthread_support.c		optional b2l
++bsd/pthread/b2l_pthread_synch.c		optional b2l
+ bsd/pthread/pthread_priority.c		standard
+ bsd/pthread/pthread_workqueue.c		standard
+ 
 diff --git a/bsd/kern/kern_trustcache.c b/bsd/kern/kern_trustcache.c
 index 4b1e8a9..c1de2cd 100644
 --- a/bsd/kern/kern_trustcache.c
@@ -232,6 +266,23 @@ index 24fb244..5eb9d3a 100755
  
  if [ ! -x "${AVAILABILITY_PL}" ] ; then
      echo "Unable to locate ${AVAILABILITY_PL} (or not executable)" >&2
+diff --git a/bsd/sys/pthread_internal.h b/bsd/sys/pthread_internal.h
+index 42e23d8..c400998 100644
+--- a/bsd/sys/pthread_internal.h
++++ b/bsd/sys/pthread_internal.h
+@@ -34,7 +34,12 @@
+ 
+ struct ksyn_waitq_element {
+ #if __LP64__
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	/* libpthread-539.100.4: trailing kwe_uth at offset 48. */
++	char opaque[56] __attribute__((aligned(8)));
++#else
+ 	char opaque[48];
++#endif
+ #else
+ 	char opaque[32];
+ #endif
 diff --git a/iokit/KernelConfigTables.cpp b/iokit/KernelConfigTables.cpp
 index 559a9db..4be6e48 100644
 --- a/iokit/KernelConfigTables.cpp

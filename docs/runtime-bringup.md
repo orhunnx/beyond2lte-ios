@@ -13,7 +13,12 @@ transition milestones. Build 0005 completed VM bootstrap and printed through
 the framebuffer serial sink, then faulted at the missing allocator RNG provider.
 Build 0006 registered the HMAC-SHA256 kernel PRNG and continued into later
 startup, where a skipped stock console attachment left a zero ticket lock.
-Working timer/SGI interrupt delivery remains unverified.
+Build 0008 physically verified the boot CPU at MPIDR 0, EL1, IRQs enabled:
+`1/1 CPU initialized`; timer counts advanced 43 → 45 → 47, SGI1 stayed 1,
+and the dedicated proof reported `scheduler awake`. Initial kernel entry, VM,
+CPU registration, interrupt delivery and timed scheduling are therefore device
+verified. BSD startup later stopped at its missing pthread provider; this is
+not a complete operating-system boot.
 
 The kernel owns the text renderer. It follows the A5 port's early-console and
 framebuffer serial-sink lifecycle, using the existing firmware GOP geometry
@@ -234,5 +239,40 @@ provider operations with a dispatch trap. It checks pre-init, absent, stale and
 each missing callback; all eight APIs; NULL output arguments; poisoned input
 addresses; cleared result data; and no downstream dispatch. A complete fixture
 is allowed through the presence gate. This test checks interface safety, not
-cryptographic signature verification. It passed for 0008. Physical execution
-of 0008 and interrupt proof remain pending. Physical guards are unchanged.
+cryptographic signature verification. It passed for 0008. The 0008 device
+photo confirms progress beyond trust-cache initialization and successful IRQ
+proof, followed by the separate missing pthread provider failure. Physical
+guards are unchanged.
+
+## Real built-in libpthread provider (build 0009)
+
+The 0008 device reached BSD startup and created the new AIO workqueue before
+`pthread_init` correctly rejected a NULL provider function table. B2L now embeds
+Apple OSS `libpthread-539.100.4`, the version listed by Apple's macOS 26.5 release
+manifest, pinned to commit `1f4f5265b319111142f1bf3a27d4484ef5a98314`. The A5
+port's `0019` staging/built-in provider and `0102` adaptation were reviewed as
+precedents; their older 514 implementation and hardware assumptions are not used.
+
+The real upstream `kern_init.c`, `kern_support.c` and `kern_synch.c` compile into
+the B2L kernel. Registration runs at `EARLY_BOOT/SECOND`, before lockdown and
+before BSD calls the unchanged `pthread_init` shim. That shim still calls the
+provider's real initialization, which creates synchronization lock groups,
+locks, process hash state, cleanup thread calls and sysctl state. No pthread
+syscall, wait queue, thread creation or workqueue function is replaced by a
+success stub.
+
+The complete LP64 provider wait element is 56 bytes with alignment 8 and its
+trailing `kwe_uth` at offset 48. B2L's kernel-side opaque storage now matches;
+compile-time assertions enforce all three properties. All 61 callback names
+used by the provider have real designated implementations in XNU 12377. The
+upstream function table intentionally remains version 0: changing it to version
+1 would select an unimplemented `bsdthread_register2` slot instead of the
+provider's supported legacy registration function.
+
+See [provider dependency and staging](libpthread-provider.md). Host ASan/UBSan
+tests execute the actual registration table/start/current-thread helper and
+`_pthread_init` sequence with hosted kernel services. They check storage bounds,
+registration ordering, retained duplicate/missing-provider panics, callback
+completeness and refusal to rebuild from edited staged input. The actual kernel
+build and linked symbols confirm the complete provider is present. Device
+execution of 0009 remains pending. Physical guards are unchanged.
