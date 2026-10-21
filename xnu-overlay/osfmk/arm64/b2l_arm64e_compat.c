@@ -13,6 +13,7 @@
 #include <mach/machine.h>
 #include <mach/arm/thread_status.h>
 #include <mach/arm/vm_param.h>
+#include <mach/vm_region.h>
 #include <pexpert/pexpert.h>
 /* Source-public sys/random.h contract, without mixing BSD and Mach types. */
 extern void read_frandom(void *, unsigned int);
@@ -100,10 +101,30 @@ static int
 b2l_compat_validate_pc(uint64_t address, void *opaque __unused)
 {
     uint32_t instruction;
+    static unsigned check_samples;
+    bool trace = check_samples < 2;
+    if (trace) { ++check_samples; b2l_early_trace("B2L COMPAT: execute-map check begin pc=0x%llx\n", address); }
     if ((address & 3u) || !b2l_user_range(address, sizeof(instruction))) return -1;
-    if (!vm_map_check_protection(current_map(), address, address + sizeof(instruction),
-                                 VM_PROT_EXECUTE, VM_SANITIZE_CALLER_USERACC)) return -1;
-    return copyin(address, &instruction, sizeof(instruction)) ? -1 : 0;
+    /* Shared-cache parent entries are intentionally r--. Descend to the
+     * actual constant-submap leaf before checking execute permission. The
+     * short-info query avoids scanning resident pages on every trap. */
+    vm_map_offset_ut region = vm_sanitize_wrap_addr(address);
+    vm_map_size_ut size = vm_sanitize_wrap_size(0);
+    natural_t depth = UINT32_MAX;
+    vm_region_submap_short_info_data_64_t info = {0};
+    mach_msg_type_number_t count = VM_REGION_SUBMAP_SHORT_INFO_COUNT_64;
+    kern_return_t kr = vm_map_region_recurse_64(current_map(), &region, &size,
+        &depth, (vm_region_submap_info_64_t)&info, &count);
+    uint64_t region_start = VM_SANITIZE_UNSAFE_UNWRAP(region);
+    uint64_t region_size = VM_SANITIZE_UNSAFE_UNWRAP(size);
+    if (kr != KERN_SUCCESS || count != VM_REGION_SUBMAP_SHORT_INFO_COUNT_64 ||
+        info.is_submap || !(info.protection & VM_PROT_EXECUTE) ||
+        region_start > address || region_size < sizeof(instruction) ||
+        address - region_start > region_size - sizeof(instruction)) return -1;
+    if (trace) b2l_early_trace("B2L COMPAT: execute-map check passed; copyin begin\n");
+    int error = copyin_atomic32(address, &instruction);
+    if (trace) b2l_early_trace("B2L COMPAT: execute-PC copyin result=%d\n", error);
+    return error ? -1 : 0;
 }
 
 static int
@@ -129,9 +150,13 @@ b2l_compat_pacga(uint64_t a, uint64_t b, uint64_t *out, void *opaque __unused)
 bool
 b2l_arm64e_compat_emulate(arm_saved_state_t *state, uint32_t instruction)
 {
+    static unsigned wrapper_samples;
+    bool trace = wrapper_samples < 2;
+    if (trace) { ++wrapper_samples; b2l_early_trace("B2L COMPAT: wrapper entered insn=0x%x\n", instruction); }
     if (!b2l_compat_requested || !state || !is_saved_state64(state) ||
         !PSR64_IS_USER64(get_saved_state_cpsr(state)) ||
         !b2l_arm64e_current_task()) return false;
+    if (trace) b2l_early_trace("B2L COMPAT: process and EL0 gates passed\n");
     struct b2l_compat_ctx context = {0};
     for (unsigned i = 0; i < 29; ++i) context.x[i] = get_saved_state_reg(state, i);
     context.x[29] = get_saved_state_fp(state);
@@ -145,7 +170,14 @@ b2l_arm64e_compat_emulate(arm_saved_state_t *state, uint32_t instruction)
         .read = b2l_compat_read, .read_acquire = b2l_compat_read_acquire,
         .validate_pc = b2l_compat_validate_pc, .pacga = b2l_compat_pacga
     };
-    if (b2l_compat_emulate(instruction, &context, &operations) != B2L_COMPAT_OK) return false;
+    if (trace) b2l_early_trace("B2L COMPAT: decoder begin\n");
+    enum b2l_compat_result result = b2l_compat_emulate(instruction, &context, &operations);
+    if (trace) b2l_early_trace("B2L COMPAT: decoder result=%u\n", result);
+    if (result != B2L_COMPAT_OK) {
+        b2l_early_trace("B2L COMPAT: rejected result=%u pc=0x%llx x8=0x%llx x16=0x%llx lr=0x%llx\n",
+            result, context.pc, context.x[8], context.x[16], context.x[30]);
+        return false;
+    }
     for (unsigned i = 0; i < 29; ++i) set_user_saved_state_reg(state, i, context.x[i]);
     set_saved_state_fp(state, context.x[29]);
     set_user_saved_state_lr(state, context.x[30]);

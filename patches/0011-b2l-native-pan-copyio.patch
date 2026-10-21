@@ -1,0 +1,17 @@
+--- a/osfmk/arm64/copyio.c
++++ b/osfmk/arm64/copyio.c
+@@ -455,12 +455,12 @@
+ 
+ 	user_addr_t guarded_user_addr = copy_ensure_address_space_spec(map, user_addr);
+ #if defined(ARM64_BOARD_CONFIG_B2L)
+-	if (trace) b2l_early_trace("B2L COPY32: scalar load begin\n");
++	if (trace) b2l_early_trace("B2L COPY32: scalar load begin PAN=%u SCTLR=0x%llx\n", __builtin_arm_rsr("pan"), __builtin_arm_rsr64("sctlr_el1"));
+ #endif
+ 	result = WRAP_COPYIO(USER_ACCESS_READ, map,
+ 	           _copyin_atomic32(guarded_user_addr, kernel_addr));
+ #if defined(ARM64_BOARD_CONFIG_B2L)
+-	if (trace) b2l_early_trace("B2L COPY32: scalar load result=%d\n", result);
++	if (trace) b2l_early_trace("B2L COPY32: scalar load result=%d PAN=%u\n", result, __builtin_arm_rsr("pan"));
+ #endif
+ 	return result;
+ }

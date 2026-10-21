@@ -1,0 +1,21 @@
+--- a/osfmk/arm64/sleh.c
++++ b/osfmk/arm64/sleh.c
+@@ -1207,9 +1207,16 @@
+ 	mach_msg_type_number_t     numcodes  = 2;
+ 	uint32_t                   instr     = 0;
+ 
+-	COPYIN(get_saved_state_pc(state), (char *)&instr, sizeof(instr));
+-
+ #if defined(ARM64_BOARD_CONFIG_B2L)
++	static unsigned instruction_read_samples;
++	bool read_trace = os_atomic_load(&instruction_read_samples, relaxed) < 2 &&
++	    os_atomic_inc_orig(&instruction_read_samples, relaxed) < 2;
++	if (read_trace) b2l_early_trace("B2L TRAP: instruction copyin begin pc=0x%llx\n", get_saved_state_pc(state));
++#endif
++	int instruction_read_error __unused = COPYIN(get_saved_state_pc(state), (char *)&instr, sizeof(instr));
++
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	if (read_trace) b2l_early_trace("B2L TRAP: instruction copyin result=%d insn=0x%x\n", instruction_read_error, instr);
+ 	uint64_t original_pc = get_saved_state_pc(state);
+ 	if (b2l_arm64e_compat_emulate(state, instr)) {
+ 		static unsigned emulated_samples;

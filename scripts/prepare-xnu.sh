@@ -13,7 +13,13 @@ python3 "$repo_root/scripts/apply-board-patches.py" "$xnu_path" \
   "$repo_root/patches/0003-b2l-hfs-md5.patch" \
   "$repo_root/patches/0004-b2l-unavailable-amfi-entitlements.patch" \
   "$repo_root/patches/0005-b2l-userdata-root.patch" \
-  "$repo_root/patches/0006-b2l-arm64e-compat.patch"
+  "$repo_root/patches/0006-b2l-arm64e-compat.patch" \
+  "$repo_root/patches/0007-b2l-disable-signature-enforcement.patch" \
+  "$repo_root/patches/0008-b2l-userspace-progress-trace.patch" \
+  "$repo_root/patches/0009-b2l-first-compat-trap-stages.patch" \
+  "$repo_root/patches/0010-b2l-scalar-instruction-fetch.patch" \
+  "$repo_root/patches/0011-b2l-native-pan-copyio.patch" \
+  "$repo_root/patches/0012-b2l-unsigned-shared-cache.patch"
 # New files have separate provenance and are kept as an overlay.
 while IFS= read -r -d '' source_file; do
   relative="${source_file#"$repo_root/xnu-overlay/"}"

@@ -58,6 +58,19 @@ b2l_early_putc(char c)
 
 static void b2l_string(const char *s) { while (*s) b2l_early_putc(*s++); }
 
+/* Bounded callers only: no allocation or regular printf/log locks. */
+void
+b2l_early_trace(const char *fmt, ...)
+{
+	if (!b2l_active) return;
+	va_list args;
+	va_start(args, fmt);
+	_doprnt(fmt, &args, b2l_early_putc, 16);
+	va_end(args);
+	__asm__ volatile("dsb sy" ::: "memory");
+}
+
+
 void
 b2l_early_init(const boot_args *args)
 {

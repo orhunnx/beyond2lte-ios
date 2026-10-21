@@ -21,7 +21,9 @@
 #define __ARM_DEBUG__                   7
 #define __ARM_ENABLE_SWAP__             1
 #define __ARM_V8_CRYPTO_EXTENSIONS__     1
-#define __ARM_PAN_AVAILABLE__           0
+/* Exynos 9820 implements PAN. Exception entry may set PSTATE.PAN;
+ * stock XNU copyio must temporarily clear it for checked EL0 accesses. */
+#define __ARM_PAN_AVAILABLE__           1
 #define HAS_GIC_V3                      0
 #define B2L_TIMER_INTID                 27
 #define B2L_GICD_PA                     0x10101000ULL

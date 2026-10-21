@@ -1,0 +1,31 @@
+--- a/bsd/kern/mach_loader.c
++++ b/bsd/kern/mach_loader.c
+@@ -1754,6 +1754,15 @@
+ 					break;
+ 				}
+ 
++#if defined(ARM64_BOARD_CONFIG_B2L)
++				/* Development-only unsigned execution. Do not attach an
++				 * unverified cs_blob or mark its VM object signed. */
++				if (!cs_process_global_enforcement()) {
++					printf("B2L CS: signature verification bypassed for %s\n", vp->v_name);
++					ret = LOAD_SUCCESS;
++					break;
++				}
++#endif
+ 				/* pager -> uip ->
+ 				 *  load signatures & store in uip
+ 				 *  set VM object "signed_pages"
+@@ -1979,7 +1988,11 @@
+ 				ret = LOAD_FAILURE;
+ 			}
+ #if CONFIG_ENFORCE_SIGNED_CODE
+-			if (!(result->csflags & CS_NO_UNTRUSTED_HELPERS)) {
++			if (!(result->csflags & CS_NO_UNTRUSTED_HELPERS)
++#if defined(ARM64_BOARD_CONFIG_B2L)
++			    && cs_process_global_enforcement()
++#endif
++			    ) {
+ 				ret = LOAD_FAILURE;
+ 			}
+ #endif

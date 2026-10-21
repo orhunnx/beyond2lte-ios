@@ -1,0 +1,73 @@
+--- a/osfmk/arm64/sleh.c
++++ b/osfmk/arm64/sleh.c
+@@ -1211,12 +1211,18 @@
+ 	static unsigned instruction_read_samples;
+ 	bool read_trace = os_atomic_load(&instruction_read_samples, relaxed) < 2 &&
+ 	    os_atomic_inc_orig(&instruction_read_samples, relaxed) < 2;
+-	if (read_trace) b2l_early_trace("B2L TRAP: instruction copyin begin pc=0x%llx\n", get_saved_state_pc(state));
+-#endif
+-	int instruction_read_error __unused = COPYIN(get_saved_state_pc(state), (char *)&instr, sizeof(instr));
+-
++	if (read_trace) b2l_early_trace("B2L TRAP: instruction fetch32 begin pc=0x%llx\n", get_saved_state_pc(state));
++#endif
++	int instruction_read_error __unused;
+ #if defined(ARM64_BOARD_CONFIG_B2L)
+-	if (read_trace) b2l_early_trace("B2L TRAP: instruction copyin result=%d insn=0x%x\n", instruction_read_error, instr);
++	if (b2l_arm64e_compat_enabled() && is_saved_state64(state) && PSR64_IS_USER64(get_saved_state_cpsr(state)))
++		instruction_read_error = copyin_atomic32(get_saved_state_pc(state), &instr);
++	else
++#endif
++		instruction_read_error = COPYIN(get_saved_state_pc(state), (char *)&instr, sizeof(instr));
++
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	if (read_trace) b2l_early_trace("B2L TRAP: instruction fetch32 result=%d insn=0x%x\n", instruction_read_error, instr);
+ 	uint64_t original_pc = get_saved_state_pc(state);
+ 	if (b2l_arm64e_compat_emulate(state, instr)) {
+ 		static unsigned emulated_samples;
+--- a/osfmk/arm64/copyio.c
++++ b/osfmk/arm64/copyio.c
+@@ -37,6 +37,10 @@
+ #include <san/kasan.h>
+ #include <arm/pmap.h>
+ #include <arm64/speculation.h>
++#if defined(ARM64_BOARD_CONFIG_B2L)
++#include <arm64/b2l_early.h>
++#include <arm64/b2l_arm64e_compat.h>
++#endif
+ 
+ #undef copyin
+ #undef copyout
+@@ -434,17 +438,31 @@
+ int
+ copyin_atomic32(const user_addr_t user_addr, uint32_t *kernel_addr)
+ {
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	static unsigned samples;
++	bool trace = b2l_arm64e_compat_enabled() && samples < 2;
++	if (trace) { ++samples; b2l_early_trace("B2L COPY32: validate begin address=0x%llx\n", user_addr); }
++#endif
+ 	vm_map_t map = current_thread()->map;
+ 	int result = copy_validate(map, user_addr, (uintptr_t)kernel_addr, 4,
+ 	    COPYIO_IN | COPYIO_ATOMIC);
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	if (trace) b2l_early_trace("B2L COPY32: validate result=%d\n", result);
++#endif
+ 	if (__improbable(result)) {
+ 		return result;
+ 	}
+ 
+ 	user_addr_t guarded_user_addr = copy_ensure_address_space_spec(map, user_addr);
+-
+-	return WRAP_COPYIO(USER_ACCESS_READ, map,
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	if (trace) b2l_early_trace("B2L COPY32: scalar load begin\n");
++#endif
++	result = WRAP_COPYIO(USER_ACCESS_READ, map,
+ 	           _copyin_atomic32(guarded_user_addr, kernel_addr));
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	if (trace) b2l_early_trace("B2L COPY32: scalar load result=%d\n", result);
++#endif
++	return result;
+ }
+ 
+ #if HAS_MTE

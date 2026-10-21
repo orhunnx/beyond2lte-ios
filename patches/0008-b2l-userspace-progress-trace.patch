@@ -1,0 +1,186 @@
+--- a/bsd/kern/kern_exec.c
++++ b/bsd/kern/kern_exec.c
+@@ -80,6 +80,7 @@
+  */
+ #if defined(ARM64_BOARD_CONFIG_B2L)
+ #include <arm64/b2l_arm64e_compat.h>
++#include <arm64/b2l_early.h>
+ #endif
+ #include <machine/reg.h>
+ #include <machine/cpu_capabilities.h>
+@@ -2078,7 +2079,13 @@
+ 	/*
+ 	 * Actually load the image file we previously decided to load.
+ 	 */
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	if (proc_getpid(p) == 1) b2l_early_trace("B2L EXEC: load_machfile begin\n");
++#endif
+ 	lret = load_machfile(imgp, mach_header, thread, &map, &load_result);
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	if (proc_getpid(p) == 1) b2l_early_trace("B2L EXEC: load_machfile result=%d entry=0x%llx\n", lret, (uint64_t)load_result.entry_point);
++#endif
+ 	if (lret != LOAD_SUCCESS) {
+ 		error = load_return_to_errno(lret);
+ 
+@@ -5540,7 +5547,13 @@
+ 	 * fire.
+ 	 */
+ 	if (error == 0) {
++#if defined(ARM64_BOARD_CONFIG_B2L)
++		if (proc_getpid(p) == 1) b2l_early_trace("B2L EXEC: process_signature begin\n");
++#endif
+ 		error = process_signature(p, imgp);
++#if defined(ARM64_BOARD_CONFIG_B2L)
++		if (proc_getpid(p) == 1) b2l_early_trace("B2L EXEC: process_signature result=%d\n", error);
++#endif
+ 
+ 		/*
+ 		 * Pay for our earlier safety; deliver the delayed signals from
+@@ -6192,7 +6205,13 @@
+ 		 * Similarly, this must happen after resettextvp.
+ 		 */
+ 		ipc_task_enable(new_task);
++#if defined(ARM64_BOARD_CONFIG_B2L)
++		if (proc_getpid(p) == 1) b2l_early_trace("B2L EXEC: process_signature begin\n");
++#endif
+ 		error = process_signature(p, imgp);
++#if defined(ARM64_BOARD_CONFIG_B2L)
++		if (proc_getpid(p) == 1) b2l_early_trace("B2L EXEC: process_signature result=%d\n", error);
++#endif
+ 	}
+ 
+ 
+@@ -8035,7 +8054,14 @@
+ 	 */
+ 	set_security_token(p, proc_ucred_unsafe(p));
+ 
+-	return execve(p, &init_exec_args, retval);
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	b2l_early_trace("B2L INIT: execve begin %s\n", path);
++#endif
++	error = execve(p, &init_exec_args, retval);
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	b2l_early_trace("B2L INIT: execve returned %d for %s\n", error, path);
++#endif
++	return error;
+ }
+ 
+ static const char * init_programs[] = {
+--- a/bsd/kern/mach_loader.c
++++ b/bsd/kern/mach_loader.c
+@@ -38,6 +38,9 @@
+  */
+ 
+ #include <sys/param.h>
++#if defined(ARM64_BOARD_CONFIG_B2L)
++#include <arm64/b2l_early.h>
++#endif
+ #include <sys/vnode_internal.h>
+ #include <sys/uio.h>
+ #include <sys/namei.h>
+@@ -1999,6 +2002,9 @@
+ 		}
+ 	}
+ 
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	if (proc_getpid(p) == 1) b2l_early_trace("B2L EXEC: parse %s depth=%d result=%d entry=0x%llx\n", vp->v_name, depth, ret, (uint64_t)result->entry_point);
++#endif
+ 	if (ret == LOAD_BADMACHO && found_xhdr) {
+ 		ret = LOAD_BADMACHO_UPX;
+ 	}
+--- a/osfmk/arm64/sleh.c
++++ b/osfmk/arm64/sleh.c
+@@ -37,6 +37,7 @@
+ #include <arm64/machine_machdep.h>
+ #if defined(ARM64_BOARD_CONFIG_B2L)
+ #include <arm64/b2l_arm64e_compat.h>
++#include <arm64/b2l_early.h>
+ #endif
+ #include <kern/cpc.h>
+ #include <arm64/instructions.h>
+@@ -786,6 +787,20 @@
+ #endif /* CONFIG_XNUPOST */
+ 
+ 	ASSERT_CONTEXT_SANITY(context);
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	/* At most one record per EC. Direct early output avoids console locks
++	 * while an exception may have interrupts masked. No user memory reads. */
++	if (b2l_arm64e_compat_enabled() && is_saved_state64(state) &&
++	    PSR64_IS_USER64(get_saved_state_cpsr(state))) {
++		static uint64_t seen_classes;
++		uint64_t bit = UINT64_C(1) << (unsigned)class;
++		if (!(os_atomic_or_orig(&seen_classes, bit, relaxed) & bit)) {
++			b2l_early_trace("B2L EL0: sync ec=0x%x pc=0x%llx lr=0x%llx far=0x%llx esr=0x%llx x16=0x%llx\n",
++			    (unsigned)class, get_saved_state_pc(state), get_saved_state_lr(state),
++			    (uint64_t)far, esr, get_saved_state_reg(state, 16));
++		}
++	}
++#endif
+ 
+ 	task_vtimer_check(thread);
+ 
+@@ -1195,7 +1210,20 @@
+ 	COPYIN(get_saved_state_pc(state), (char *)&instr, sizeof(instr));
+ 
+ #if defined(ARM64_BOARD_CONFIG_B2L)
+-	if (b2l_arm64e_compat_emulate(state, instr)) return;
++	uint64_t original_pc = get_saved_state_pc(state);
++	if (b2l_arm64e_compat_emulate(state, instr)) {
++		static unsigned emulated_samples;
++		if (os_atomic_load(&emulated_samples, relaxed) < 4 &&
++		    os_atomic_inc_orig(&emulated_samples, relaxed) < 4)
++			b2l_early_trace("B2L ARM64e: emulated pc=0x%llx insn=0x%x next=0x%llx\n", original_pc, instr, get_saved_state_pc(state));
++		return;
++	}
++	if (b2l_arm64e_compat_enabled() && is_saved_state64(state) && PSR64_IS_USER64(get_saved_state_cpsr(state))) {
++		static unsigned unhandled_samples;
++		if (os_atomic_load(&unhandled_samples, relaxed) < 4 &&
++		    os_atomic_inc_orig(&unhandled_samples, relaxed) < 4)
++			b2l_early_trace("B2L ARM64e: unhandled-or-fault pc=0x%llx insn=0x%x\n", original_pc, instr);
++	}
+ #endif
+ 
+ #if CONFIG_DTRACE
+@@ -3025,6 +3053,12 @@
+ 	sleh_interrupt_handler_prologue(state, DBG_INTR_TYPE_OTHER);
+ 
+ #if defined(B2L)
++	if (b2l_arm64e_compat_enabled() && is_saved_state64(state) && PSR64_IS_USER64(get_saved_state_cpsr(state))) {
++		static unsigned user_irq_samples;
++		if (os_atomic_load(&user_irq_samples, relaxed) < 2 &&
++		    os_atomic_inc_orig(&user_irq_samples, relaxed) < 2)
++			b2l_early_trace("B2L EL0: IRQ sampled pc=0x%llx lr=0x%llx\n", get_saved_state_pc(state), get_saved_state_lr(state));
++	}
+ 	uint32_t iar = b2l_irq_ack();
+ 	unsigned intid = iar & 0x3ffU;
+ 	/* GICv2 reserves 1020..1023 as special/spurious acknowledgements. */
+--- a/bsd/kern/kern_exit.c
++++ b/bsd/kern/kern_exit.c
+@@ -77,6 +77,9 @@
+ #include <stdatomic.h>
+ 
+ #include <sys/param.h>
++#if defined(ARM64_BOARD_CONFIG_B2L)
++#include <arm64/b2l_early.h>
++#endif
+ #include <sys/systm.h>
+ #include <sys/ioctl.h>
+ #include <sys/proc_internal.h>
+@@ -2037,6 +2040,17 @@
+ 	task_t task = proc_task(p);
+ 
+ 
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	/* Before PID 1's critical-exit handler can panic or start a coredump. */
++	if (p == current_proc()) {
++		static unsigned exit_samples;
++		if (exit_samples < 8 || p == initproc) {
++			++exit_samples;
++			b2l_early_trace("B2L EXIT: %s[%d] status=0x%x exception=%u code=0x%llx sub=0x%llx\n",
++			    p->p_comm, proc_getpid(p), rv, ut->uu_exception, (uint64_t)ut->uu_code, (uint64_t)ut->uu_subcode);
++		}
++	}
++#endif
+ 	if (p->p_crash_behavior != 0 || p == initproc) {
+ 		proc_handle_critical_exit(p, rv);
+ 	}

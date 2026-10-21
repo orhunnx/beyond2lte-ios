@@ -1,0 +1,99 @@
+--- a/bsd/kern/kern_descrip.c
++++ b/bsd/kern/kern_descrip.c
+@@ -2841,6 +2841,27 @@
+ 	return sys_fcntl_outdrop(p, fd, fp, vp, error);
+ }
+ 
++#if defined(ARM64_BOARD_CONFIG_B2L)
++/* Unsigned development registration never attaches a cs_blob or signs VM pages. */
++static int
++b2l_unsigned_cache_extent(off_t file_size, off_t file_start,
++    uint64_t blob_start, uint64_t blob_size, off_t *extent)
++{
++	if (file_size < 0 || file_start < 0 || file_start > file_size || blob_size == 0) {
++		return EINVAL;
++	}
++	if (blob_size > 40ULL * 1024ULL * 1024ULL) {
++		return E2BIG;
++	}
++	uint64_t available = (uint64_t)(file_size - file_start);
++	if (blob_start > available || blob_size > available - blob_start) {
++		return EINVAL;
++	}
++	*extent = file_size - file_start;
++	return 0;
++}
++#endif
++
+ int
+ sys_fcntl_nocancel(proc_t p, struct fcntl_nocancel_args *uap, int32_t *retval)
+ {
+@@ -4121,6 +4142,31 @@
+ 			goto outdrop;
+ 		}
+ 
++#if defined(ARM64_BOARD_CONFIG_B2L)
++		if (cmd == F_ADDFILESIGS_RETURN && !cs_system_enforcement()) {
++			off_t file_size = 0, extent = 0;
++			error = vnode_vtype(vp) == VREG ? vnode_size(vp, &file_size, &context) : EINVAL;
++			if (error == 0) {
++				error = b2l_unsigned_cache_extent(file_size, fs.fs_file_start,
++				    fs.fs_blob_start, fs.fs_blob_size, &extent);
++			}
++			if (error == 0) {
++				/* This is an unsigned file extent, not a verified code limit. */
++				error = copyout(&extent, argp, sizeof(extent));
++				static uint32_t reports;
++				if (error == 0 && os_atomic_inc_orig(&reports, relaxed) < 4) {
++					printf("B2L cache: unsigned registration extent=%llu\n",
++					    (unsigned long long)extent);
++				}
++			}
++			vnode_put(vp);
++			if (error) {
++				goto outdrop;
++			}
++			break;
++		}
++#endif
++
+ 		/*
+ 		 * First check if we have something loaded a this offset
+ 		 */
+--- a/osfmk/vm/vm_shared_region.c
++++ b/osfmk/vm/vm_shared_region.c
+@@ -77,6 +77,9 @@
+ #include <sys/random.h>
+ #include <sys/errno.h>
+ #include <sys/code_signing.h>
++#if defined(ARM64_BOARD_CONFIG_B2L)
++#include <sys/codesign.h>
++#endif
+ 
+ #if defined(__arm64__)
+ #include <arm/cpu_data_internal.h>
+@@ -852,13 +855,17 @@
+ 		goto done;
+ 	}
+ 
+-	/* shared regions should always enforce code-signing */
+-	vm_map_cs_enforcement_set(sub_map, true);
+-	assert(vm_map_cs_enforcement(sub_map));
+-	assert(pmap_get_vm_map_cs_enforced(vm_map_pmap(sub_map)));
+-	vm_map_cs_enforcement_set(config_map, true);
+-	assert(vm_map_cs_enforcement(config_map));
+-	assert(pmap_get_vm_map_cs_enforced(vm_map_pmap(config_map)));
++	/* B2L unsigned development mode uses the same global policy as exec. */
++	boolean_t enforce_shared_code = TRUE;
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	enforce_shared_code = cs_system_enforcement() != 0;
++#endif
++	vm_map_cs_enforcement_set(sub_map, enforce_shared_code);
++	assert(!!vm_map_cs_enforcement(sub_map) == !!enforce_shared_code);
++	assert(!!pmap_get_vm_map_cs_enforced(vm_map_pmap(sub_map)) == !!enforce_shared_code);
++	vm_map_cs_enforcement_set(config_map, enforce_shared_code);
++	assert(!!vm_map_cs_enforcement(config_map) == !!enforce_shared_code);
++	assert(!!pmap_get_vm_map_cs_enforced(vm_map_pmap(config_map)) == !!enforce_shared_code);
+ 
+ 	assert(!sub_map->disable_vmentry_reuse);
+ 	sub_map->is_nested_map = TRUE;
