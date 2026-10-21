@@ -47,4 +47,19 @@ execution. The BOOT package layout and exact embedded loader were also verified.
 The authorized BOOT-only update completed after a full verified backup of the
 previous BOOT. The original backup remains intact. Exact image-prefix readback
 matched, then the device was rebooted. Identifiers and raw installation receipts
-remain local and ignored. Runtime proof beyond the Image4 gate is pending.
+remain local and ignored. The subsequent screen report is recorded below.
+
+## Device result
+
+The user's photograph establishes the first interrupt milestone on physical
+hardware: the boot CPU reports MPIDR 0, EL1, IRQs enabled and 1/1 CPU initialized.
+Three timed reporter lines show timer counts 43, 45 and 47 with SGI1 count 1 and
+`scheduler awake`. This proves real timer interrupt delivery, self-SGI delivery
+and scheduler wakeup. Platform expert registration and later BSD startup follow.
+The trust-cache provider panic is passed with the explicit unavailable message.
+
+The next failure is `pthread kernel extension not loaded (function table is
+NULL)` in pthread_shims.c:319. The open-source libpthread kernel provider must
+be linked and registered before BSD pthread initialization. This is a separate
+missing software component, not a failed CPU/interrupt test. No root filesystem
+or iOS userspace is running yet.

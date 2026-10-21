@@ -34,11 +34,10 @@ firmware profile build locally. Packaging produces a single Android v1
 loader reads that payload through the existing firmware UFS service from GPT
 partition `BOOT`; no separate ESP or SYSTEM/USERDATA transfer is required.
 
-**Build 0003 reached XNU C initialization on the device, with its own readable
-framebuffer output. MMU enable and platform initialization are verified by the
-user photograph. Build 0005 completes VM bootstrap and reaches later kernel startup. The
-current blocker is trust-cache initialization requiring absent Image4/AMFI
-providers. Interrupt delivery remains unverified.**
+**Physical device proof now covers XNU entry, its own framebuffer console,
+VM bootstrap, boot CPU registration, real timer and self-SGI interrupts, and
+timed scheduler wakeup. Build 0008 reaches later BSD startup, where the absent
+libpthread kernel provider is the current blocker.**
 [Build 0004](docs/build-0004.md) supplies the required 256-byte seed; its
 device result identified the next DT contract gap. [Build 0005](docs/build-0005.md)
 adds the required /chosen/memory-map and /defaults containers.
@@ -49,7 +48,7 @@ display-control backend while preserving early text. Its device test passes
 console attachment and reaches the missing Image4 provider.
 [Build 0008](docs/build-0008.md) adapts the A5/SWEET 0015 unavailable-provider
 handling to the current trust-cache APIs. Its BOOT-only installation is verified;
-the device screen result is pending.
+the device photograph confirms progress into BSD startup and real IRQ proof.
 BOOT writes were backed up and readback-verified.
 [Build 0002](docs/build-0002.md) uses a dynamic 1–2 GiB RAM arena within the
 unchanged firmware memory guards. [Build 0003](docs/build-0003.md) adds XNU-owned
