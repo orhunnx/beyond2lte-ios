@@ -215,7 +215,11 @@ EFI_STATUS EFIAPI UefiMain(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
         return EFI_UNSUPPORTED;
     }
     Status = B2lLoadBootPayload(&Kernel, &KernelSize, Dt.random_seed);
-    if (!EFI_ERROR(Status)) PayloadSeed = TRUE;
+    if (!EFI_ERROR(Status)) {
+        PayloadSeed = TRUE;
+        if (!EFI_ERROR(B2lGetBootUfsLun(&Dt.boot_ufs_lun))) Dt.has_boot_ufs_lun = 1;
+        else Print(L"B2L: BOOT UFS device path unrecognized; native storage will remain unavailable.\r\n");
+    }
     else if (Status == EFI_NOT_FOUND || Status == EFI_UNSUPPORTED) {
         Status = OpenRoot(ImageHandle, &Root);
         if (!EFI_ERROR(Status))

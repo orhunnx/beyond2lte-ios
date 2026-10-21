@@ -1,9 +1,12 @@
 // SPDX-License-Identifier: BSD-2-Clause-Patent
 // Read the XNU payload from an Android v1 BOOT partition through firmware UFS.
 #include "BootPayload.h"
+#include "BootDevicePath.h"
 #include <Protocol/BlockIo.h>
 #include <Protocol/DiskIo.h>
 #include <Protocol/PartitionInfo.h>
+#include <Protocol/DevicePath.h>
+#include <Library/DevicePathLib.h>
 #include <Library/BaseMemoryLib.h>
 #include <Library/MemoryAllocationLib.h>
 #include <Library/UefiBootServicesTableLib.h>
@@ -11,6 +14,14 @@
 
 #define PAYLOAD_LIMIT (128U * 1024U * 1024U)
 #define PAYLOAD_HEADER_SIZE 320U
+STATIC UINT32 mBootUfsLun = MAX_UINT32;
+
+EFI_STATUS B2lGetBootUfsLun(UINT32 *Lun) {
+  if (Lun == NULL) return EFI_INVALID_PARAMETER;
+  if (mBootUfsLun > 7) return EFI_NOT_FOUND;
+  *Lun = mBootUfsLun;
+  return EFI_SUCCESS;
+}
 
 STATIC UINT32 Le32(CONST UINT8 *P) {
   return (UINT32)P[0] | (UINT32)P[1] << 8 | (UINT32)P[2] << 16 | (UINT32)P[3] << 24;
@@ -26,6 +37,7 @@ EFI_STATUS B2lLoadBootPayload(VOID **Kernel, UINTN *KernelSize, UINT8 Seed[B2L_B
   if (Kernel == NULL || KernelSize == NULL || Seed == NULL) return EFI_INVALID_PARAMETER;
   *Kernel = NULL;
   *KernelSize = 0;
+  mBootUfsLun = MAX_UINT32;
   Status = gBS->LocateHandleBuffer(ByProtocol, &gEfiBlockIoProtocolGuid, NULL, &Count, &Handles);
   if (EFI_ERROR(Status)) return Status;
   Status = EFI_NOT_FOUND;
@@ -84,6 +96,12 @@ EFI_STATUS B2lLoadBootPayload(VOID **Kernel, UINTN *KernelSize, UINT8 Seed[B2L_B
     CopyMem(Seed, Payload + 32, B2L_BOOT_SEED_SIZE);
     *Kernel = Buffer;
     *KernelSize = (UINTN)Length;
+    EFI_DEVICE_PATH_PROTOCOL *Path;
+    if (!EFI_ERROR(gBS->HandleProtocol(Handles[Index], &gEfiDevicePathProtocolGuid, (VOID **)&Path))) {
+      UINTN PathSize = GetDevicePathSize(Path);
+      UINT32 Lun;
+      if (b2l_boot_ufs_lun(Path, PathSize, &Lun) == 0) mBootUfsLun = Lun;
+    }
     Print(L"B2L: read %u kernel bytes from BOOT trailer payload\r\n", (UINT32)Length);
     Status = EFI_SUCCESS;
     break;

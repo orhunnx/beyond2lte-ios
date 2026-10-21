@@ -50,7 +50,8 @@ int b2l_build_device_tree(void *buffer, b2l_size capacity,
     b2l_u64 ranges[] = { 0, 0x10000000ULL, 0x20000000ULL };
     b2l_u64 gic_regs[] = { 0x101000, 0x1000, 0x102000, 0x1000 };
     b2l_u64 mem_regs[2];
-    if (!buffer || !c || !used || !c->counter_frequency || capacity < 8) return -1;
+    if (!buffer || !c || !used || !c->counter_frequency || capacity < 8 ||
+        (c->has_boot_ufs_lun && c->boot_ufs_lun > 7)) return -1;
     cpu_reg = (b2l_u32)(c->mpidr & 0x0000ffffULL);
     mem_regs[0] = c->memory_base; mem_regs[1] = c->memory_size;
     root = begin(&w, 0, "device-tree");
@@ -66,6 +67,8 @@ int b2l_build_device_tree(void *buffer, b2l_size capacity,
     /* Exynos does not provide Apple's CTRR. XNU requires an explicit native
      * int policy value, including zero, to initialize ml_unsafe_kernel_text. */
     prop(&w, &chosen, "kernel-ctrr-to-be-enabled", &zero, sizeof(zero));
+    if(c->has_boot_ufs_lun)
+        prop(&w, &chosen, "b2l,boot-ufs-lun", &c->boot_ufs_lun, sizeof(c->boot_ufs_lun));
     text_prop(&w, &chosen, "firmware-version", "beyond2lte-ios EFI loader");
     text_prop(&w, &chosen, "stdout-path", "/framebuffer");
     /* XNU requires this container even without a TrustCache or AuxKC.

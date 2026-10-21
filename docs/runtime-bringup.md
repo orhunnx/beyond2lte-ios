@@ -391,3 +391,54 @@ That research-root policy must be explicit rather than falsely reporting a
 verified seal. An empty HFS volume also contains no init/launchd userspace. No
 filesystem integration, kernel build or device/storage writes were performed
 as part of this audit.
+
+## Native read-only UFS BSD adapter (build 0012 candidate)
+
+The native disk adapter is initialized after BSD pseudo devices and before
+`IOKitBSDInit`. It consumes the transport's actual READ CAPACITY geometry;
+neither a device-tree capacity nor a recovery partition alias is treated as
+storage geometry. The initial `/dev/b2lufs0` and `/dev/rb2lufs0` nodes represent
+the selected physical UFS logical unit. Validated GPT partitions receive
+`b2lufs0pN` and `rb2lufs0pN` nodes using their original one-based entry index.
+These are native BSD devices, not an invented IOMedia service. Root matching
+and the existing stable root-device wait are unchanged.
+
+The portable decoder verifies both primary and backup GPT header CRCs, both
+entry-array CRCs, header locations and reciprocal backup references. It checks
+usable ranges, table bounds, matching metadata, entry-size/count limits,
+nonempty partition GUID fields, partition bounds and overlapping extents.
+Unknown or invalid GPT metadata produces no partition nodes. GUID values and
+raw sectors are never printed. The short proof log reports geometry, validated
+entry/partition counts, device readiness and the selected partition signature.
+
+SYSTEM matching is case-insensitive; `super` is the fallback label. Ambiguous
+matches are not probed. The probe recognizes HFS+/HFSX and ext4-family signatures
+and checks Android LP geometry even when the GPT label is SYSTEM: a recovery
+SYSTEM alias can refer to a dynamic-partition container. A signature identifies
+metadata only; it is not a filesystem validation, mount or logical-partition
+implementation.
+
+Every native device is read-only. Write opens, character writes and block-write
+strategy requests fail with `EROFS` before transport access. Unknown controls,
+including modification controls, are unsupported. Capacity and offsets use
+checked 64-bit arithmetic. Reads expose a 512-byte logical view over the actual
+UFS logical block size, including unaligned byte access and partial final reads;
+the block-size control accepts only 512 or the actual UFS logical-block
+size. Physical-media block geometry is not measured by this adapter and its
+physical-size ioctl is unsupported. Completion preserves residual counts and
+transport errors. The disk mutex serializes shared bounce-buffer access,
+including initialization probes, and is not held across user copyout.
+This adapter has no transport write API, HFS port, root-selection change or
+partition-format operation.
+
+`tests/test_ufs_disk.py` compiles the actual portable decoder/read functions and
+the actual BSD strategy, open, write, ioctl and signature-probe bodies under
+ASan/UBSan. Synthetic 512/4096-byte GPT fixtures cover both CRC copies, malformed
+headers/tables, overflow, overlapping/out-of-range entries, I/O failure and
+ambiguous labels. Read tests cover unaligned cross-block access, truncation,
+EOF, canaries and partial errors. Strategy tests verify residuals, completion,
+mapping failures, sector-size controls and rejection of writes before I/O.
+The SYSTEM-named Android LP container case is exercised explicitly. Both new
+disk translation units also compile with the current B2L BSD kernel flags.
+Device UFS read success remains a separate test; the prior 0011 photo proves
+only the kernel milestone and root-device wait described above.

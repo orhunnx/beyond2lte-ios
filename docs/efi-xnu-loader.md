@@ -14,6 +14,14 @@ The trailer contains a 320-byte header followed by a plain ARM64 Mach-O kernel.
 The payload reader rejects recognized but malformed payloads. It never writes
 partitions or persistent EFI variables.
 
+For native UFS takeover, the loader also decodes that exact BOOT partition's
+parent device path. Only the public Exynos UfsDxe vendor GUID, its one-byte LUN
+(0 through 7), and a following GPT hard-drive node are accepted. The resulting
+`/chosen/b2l,boot-ufs-lun` property is a native 32-bit value. Filesystem fallback
+or an unknown/malformed device path omits the property; the kernel must then
+leave native storage unavailable instead of guessing LUN 0. No firmware driver
+pointer, DMA descriptor address or device-unique identifier is handed to XNU.
+
 For independent EFI Shell testing, the fallback source is
 `\EFI\B2L\kernel` on the application's own filesystem volume. The file must be
 fully linked `MH_EXECUTE` for ARM64, with a file-backed executable entry, bounded

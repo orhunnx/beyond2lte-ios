@@ -5,6 +5,7 @@
 #include <string.h>
 #include "../uefi/XnuLoader/DeviceTree.h"
 static unsigned seed_properties, memory_map_nodes, defaults_nodes, ctrr_properties;
+static unsigned boot_lun_properties;
 static uint32_t read32(const unsigned char *p) { uint32_t n; memcpy(&n,p,4); return n; }
 static size_t decode(const unsigned char *buf, size_t size, size_t off,
                      unsigned depth, unsigned *nodes, unsigned *properties, const char *parent_path)
@@ -33,6 +34,11 @@ static size_t decode(const unsigned char *buf, size_t size, size_t off,
             assert(depth==1 && node_name && !strcmp(node_name,"chosen"));
             assert(len==4 && read32(buf+off)==0);
         }
+        if (!strcmp(name,"b2l,boot-ufs-lun")) {
+            ++boot_lun_properties;
+            assert(depth==1 && node_name && !strcmp(node_name,"chosen"));
+            assert(len==4 && read32(buf+off)==3);
+        }
         if (!strcmp(name,"timebase-frequency")) assert(len==4 && read32(buf+off)==26000000);
         if (!strcmp(name,"state")) assert(len==8 && !memcmp(buf+off,"running",8));
         if (!strcmp(name,"device_type")) assert(len && buf[off+len-1]==0);
@@ -58,6 +64,7 @@ int main(void)
     struct b2l_dt_config c={0}; size_t used=0;
     c.memory_base=0x900000000ULL; c.memory_size=512ULL*1024*1024;
     c.mpidr=0x80000100; c.counter_frequency=26000000;
+    c.has_boot_ufs_lun=1;c.boot_ufs_lun=3;
     c.video.base=0xca000000; c.video.row_bytes=1440*4; c.video.width=1440; c.video.height=3040;
     _Static_assert(B2L_SEED_BYTES == 256, "XNU PRNG seed length");
     for(unsigned i=0;i<B2L_SEED_BYTES;++i)c.random_seed[i]=(unsigned char)(i+1);
@@ -66,6 +73,7 @@ int main(void)
     assert(decode(buf,used,0,0,&nodes,&props,"")==used);
     assert(nodes==11 && props>42 && seed_properties==1);
     assert(memory_map_nodes==1 && defaults_nodes==1 && ctrr_properties==1);
+    assert(boot_lun_properties==1);
     for(size_t capacity=0;capacity<used;++capacity) {
         size_t ignored=0; memset(small,0x5a,sizeof(small));
         assert(b2l_build_device_tree(small,capacity,&c,&ignored)<0);
@@ -73,6 +81,12 @@ int main(void)
     }
     assert(b2l_build_device_tree(small,used,&c,&used)==0);
     assert(!memcmp(buf,small,used));
+    c.boot_ufs_lun=8;
+    assert(b2l_build_device_tree(buf,sizeof(buf),&c,&used)<0);
+    c.has_boot_ufs_lun=0;boot_lun_properties=0;
+    assert(b2l_build_device_tree(buf,sizeof(buf),&c,&used)==0);
+    nodes=0;props=0;assert(decode(buf,used,0,0,&nodes,&props,"")==used);
+    assert(boot_lun_properties==0); /* Filesystem fallback must not guess LUN0. */
     c.counter_frequency=0;
     assert(b2l_build_device_tree(buf,sizeof(buf),&c,&used)<0);
     assert(sizeof(struct b2l_boot_args)==1152);

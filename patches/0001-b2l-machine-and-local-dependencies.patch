@@ -19,10 +19,20 @@ index c4cbbe9..07dcabb 100644
  # Directories for mig generated files
  #
 diff --git a/bsd/conf/files b/bsd/conf/files
-index 60d8aa6..7753de0 100644
+index 60d8aa6..36996c1 100644
 --- a/bsd/conf/files
 +++ b/bsd/conf/files
-@@ -380,6 +380,9 @@ bsd/security/audit/audit_syscalls.c		standard
+@@ -103,6 +103,9 @@ bsd/dev/dtrace/fasttrap.c		optional config_dtrace
+ bsd/dev/random/randomdev.c		standard
+ 
+ bsd/dev/memdev.c			standard
++bsd/dev/b2l_ufs_core.c			optional b2l
++bsd/dev/b2l_ufs_disk.c			optional b2l
++bsd/dev/b2l_ufs_transport.c		optional b2l
+ bsd/dev/mem.c				standard
+ bsd/dev/munge.c 			optional config_requires_u32_munging
+ bsd/dev/unix_startup.c			standard
+@@ -380,6 +383,9 @@ bsd/security/audit/audit_syscalls.c		standard
  bsd/security/audit/audit_worker.c		optional config_audit
  
  bsd/pthread/pthread_shims.c		standard
@@ -31,6 +41,23 @@ index 60d8aa6..7753de0 100644
 +bsd/pthread/b2l_pthread_synch.c		optional b2l
  bsd/pthread/pthread_priority.c		standard
  bsd/pthread/pthread_workqueue.c		standard
+ 
+diff --git a/bsd/kern/bsd_init.c b/bsd/kern/bsd_init.c
+index ffe7ce0..fa5497d 100644
+--- a/bsd/kern/bsd_init.c
++++ b/bsd/kern/bsd_init.c
+@@ -1126,6 +1126,12 @@ bsd_autoconf(void)
+ 		}
+ 	}
+ 
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	/* Native read-only UFS discovery; does not change root selection. */
++	extern void b2l_ufs_disk_init(void);
++	b2l_ufs_disk_init();
++#endif
++
+ 	return IOKitBSDInit();
+ }
  
 diff --git a/bsd/kern/kern_trustcache.c b/bsd/kern/kern_trustcache.c
 index 4b1e8a9..c1de2cd 100644
