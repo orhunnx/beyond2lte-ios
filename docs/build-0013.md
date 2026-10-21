@@ -61,3 +61,16 @@ The reference firmware physical guard map remains byte-identical.
 
 The final kernel is 18,479,952 bytes and the validated BOOT image is
 23,053,456 bytes, within the confirmed target BOOT capacity.
+
+## Authorized installation
+
+The final BOOT-only installation completed. Target identity and capacity were
+rechecked; the exact image prefix read back from BOOT matched the packaged
+image, and reboot was requested. The original Android backups are retained and
+no additional backups were taken. The previously verified empty HFS+ SYSTEM
+image remains the root candidate. Raw receipts and identifiers stay ignored.
+
+Device proof of the HFS mount and native write/cache flush remains pending.
+The expected success lines are `B2L HFS: native root mounted read-write` and
+`B2L UFS: first native write and cache flush completed`. A later failure to find
+init on this deliberately empty filesystem is a separate expected boundary.
