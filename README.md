@@ -40,7 +40,9 @@ user photograph. Build 0005 completes VM bootstrap and reaches later kernel star
 current blocker is an unregistered crypto RNG function table. Interrupt delivery remains unverified.**
 [Build 0004](docs/build-0004.md) supplies the required 256-byte seed; its
 device result identified the next DT contract gap. [Build 0005](docs/build-0005.md)
-adds the required /chosen/memory-map and /defaults containers. BOOT writes were backed up and readback-verified.
+adds the required /chosen/memory-map and /defaults containers.
+[Build 0006](docs/build-0006.md) adds allocator RNG and real kernel PRNG startup;
+its physical test is pending. BOOT writes were backed up and readback-verified.
 [Build 0002](docs/build-0002.md) uses a dynamic 1–2 GiB RAM arena within the
 unchanged firmware memory guards. [Build 0003](docs/build-0003.md) adds XNU-owned
 text from assembly entry through C and the normal printf/kprintf console.

@@ -8,7 +8,10 @@ not assume that this CPU has MPIDR 0; the loader records the actual MPIDR.
 ## Display and progress evidence
 
 Build 0002 reached XNU assembly on the device: the user confirmed its separate
-green entry marker. C initialization and working interrupts remain unverified.
+green entry marker. Build 0003 visibly reached C initialization and MMU
+transition milestones. Build 0005 completed VM bootstrap and printed through
+the framebuffer serial sink, then faulted at the missing allocator RNG provider.
+Working timer/SGI interrupt delivery remains unverified.
 
 The kernel owns the text renderer. It follows the A5 port's early-console and
 framebuffer serial-sink lifecycle, using the existing firmware GOP geometry
@@ -43,7 +46,7 @@ UART input, receive interrupts or a keyboard. No late stock video-console
 acquisition clears the early stage history.
 
 These milestones must be observed on the physical device. Compilation and
-symbol inspection do not establish that C initialization or interrupts worked.
+symbol inspection alone do not establish physical execution or interrupt delivery.
 
 ### Mapping lifetime and unchanged physical guards
 
@@ -134,3 +137,37 @@ renderer against host-backed buffers with ASan/UBSan. It checks ring wrapping,
 carriage return, high-bit character indexing, stride-padding canaries, pointer
 relocation and rejection of geometry outside the original display guard.
 Only the MMIO pointer and architectural barrier are substituted in the harness.
+
+## First-boot random services (build 0006)
+
+The photographed 0005 abort was a NULL external corecrypto table dispatch from
+`vm_map_store_crypto_init` into `crypto_random_kmem_ctx_size`. The B2L adapter
+provides the allocator's explicitly noncryptographic, lock-free context contract
+using independent SplitMix64 contexts seeded from real `early_random()` output.
+Bounded output uses rejection sampling; this generator never supplies strong
+random bytes for the rest of the kernel.
+
+A distinct HMAC-SHA256 DRBG registers through XNU's kernel PRNG API at
+`EARLY_BOOT/FIRST`, before the allocator's `EARLY_BOOT/MIDDLE` initializer. It
+uses the DRBG and digest implementations already linked by upstream XNU, real
+boot-derived seed material, serialized generation/reseeding, and the existing
+entropy conditioner and health tests. No FIPS validation is claimed. Refresh
+uses try-lock semantics and accepts the existing conditioner's complete output.
+The original 256-byte EFI entropy requirement remains enforced.
+
+`cc_rand_generate` and `random_buf` use the real early/registered DRBG when no
+external provider exists. Full `size_t` requests are split into unsigned-sized
+chunks. SHA-256 and SHA-512 wrappers similarly select existing built-in digests;
+the latter is required by the live entropy conditioner and user reseeding.
+These narrow adapters do not register a partial global corecrypto table.
+AES, RSA, SHA-384 and other external-provider services are not implemented by
+this first-boot target; it does not load a later external crypto provider.
+
+`tests/test_random_services.py /path/to/patched/xnu` compiles the actual adapter
+bodies and locally supplied upstream crypto implementation under ASan/UBSan.
+Only kernel startup/locking hooks are hosted; real pthread mutexes serialize
+the same state. Independent Python HMAC-DRBG/SHA known answers verify initial
+output, reseeding, entropy refresh and streaming digests. Tests also check
+concurrent nonduplicate output, allocator vectors, independent seeds, unaligned
+output canaries, bounded rejection and startup rank ordering. Tests passed for
+0006; physical progress beyond the 0005 failure remains pending.

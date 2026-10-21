@@ -52,6 +52,209 @@ index c72c690..c50d136 100644
 +OPTIONS/b2l optional b2l
 +iokit/Kernel/arm/B2LPlatformExpert.cpp optional iokitcpp b2l
 +iokit/Kernel/arm/B2LCPU.cpp optional iokitcpp b2l
+diff --git a/libkern/crypto/corecrypto_rand.c b/libkern/crypto/corecrypto_rand.c
+index d46815b..4f0bb6e 100644
+--- a/libkern/crypto/corecrypto_rand.c
++++ b/libkern/crypto/corecrypto_rand.c
+@@ -29,6 +29,14 @@
+ #include <libkern/crypto/crypto_internal.h>
+ #include <corecrypto/ccrng.h>
+ #include <libkern/crypto/rand.h>
++#if defined(ARM64_BOARD_CONFIG_B2L)
++#include <sys/random.h>
++/* Internal XNU declaration from kern/misc_protos.h, not exported to libkern. */
++extern uint64_t early_random(void);
++#include <limits.h>
++#include <kern/assert.h>
++#include "b2l_kmem_random.h"
++#endif
+ 
+ int
+ cc_rand_generate(void *out, size_t outlen)
+@@ -43,6 +51,19 @@ cc_rand_generate(void *out, size_t outlen)
+ 		}
+ 	}
+ 
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	if (g_crypto_funcs == NULL) {
++		/* Genuine boot-seeded early DRBG, then the registered kernel DRBG. */
++		uint8_t *cursor = out;
++		while (outlen != 0) {
++			u_int chunk = outlen > UINT_MAX ? UINT_MAX : (u_int)outlen;
++			read_frandom(cursor, chunk);
++			cursor += chunk;
++			outlen -= chunk;
++		}
++		return 0;
++	}
++#endif
+ 	return error;
+ }
+ 
+@@ -58,6 +79,12 @@ crypto_random_generate(
+ 	void *random,
+ 	size_t random_size)
+ {
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	if (g_crypto_funcs == NULL) {
++		b2l_kmem_generate(ctx, random, random_size);
++		return;
++	}
++#endif
+ 	g_crypto_funcs->random_generate_fn(ctx, random, random_size);
+ }
+ 
+@@ -67,12 +94,22 @@ crypto_random_uniform(
+ 	uint64_t bound,
+ 	uint64_t *random)
+ {
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	if (g_crypto_funcs == NULL) {
++		assert(bound != 0);
++		*random = b2l_kmem_bounded(ctx, bound);
++		return;
++	}
++#endif
+ 	g_crypto_funcs->random_uniform_fn(ctx, bound, random);
+ }
+ 
+ size_t
+ crypto_random_kmem_ctx_size(void)
+ {
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	if (g_crypto_funcs == NULL) return sizeof(struct b2l_kmem_rng);
++#endif
+ 	return g_crypto_funcs->random_kmem_ctx_size_fn();
+ }
+ 
+@@ -80,5 +117,11 @@ void
+ crypto_random_kmem_init(
+ 	crypto_random_ctx_t ctx)
+ {
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	if (g_crypto_funcs == NULL) {
++		((struct b2l_kmem_rng *)ctx)->state = early_random();
++		return;
++	}
++#endif
+ 	g_crypto_funcs->random_kmem_init_fn(ctx);
+ }
+diff --git a/libkern/crypto/corecrypto_sha2.c b/libkern/crypto/corecrypto_sha2.c
+index 7392f0c..d06360b 100644
+--- a/libkern/crypto/corecrypto_sha2.c
++++ b/libkern/crypto/corecrypto_sha2.c
+@@ -31,6 +31,9 @@
+ #include <libkern/libkern.h>
+ #include <kern/debug.h>
+ #include <corecrypto/ccdigest.h>
++#if defined(ARM64_BOARD_CONFIG_B2L)
++#include <corecrypto/ccsha2.h>
++#endif
+ 
+ #if defined(CRYPTO_SHA2)
+ 
+@@ -38,30 +41,50 @@ void
+ SHA256_Init(SHA256_CTX *ctx)
+ {
+ 	const struct ccdigest_info *di;
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	di = g_crypto_funcs == NULL ? &ccsha256_ltc_di : g_crypto_funcs->ccsha256_di;
++#else
+ 	di = g_crypto_funcs->ccsha256_di;
++#endif
+ 
+ 	/* Make sure the context size for the digest info fits in the one we have */
+ 	if (ccdigest_di_size(di) > sizeof(SHA256_CTX)) {
+ 		panic("%s: inconsistent size for SHA256 context", __FUNCTION__);
+ 	}
+ 
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	ccdigest_init(di, ctx->ctx);
++#else
+ 	g_crypto_funcs->ccdigest_init_fn(di, ctx->ctx);
++#endif
+ }
+ 
+ void
+ SHA256_Update(SHA256_CTX *ctx, const void *data, size_t len)
+ {
+ 	const struct ccdigest_info *di;
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	di = g_crypto_funcs == NULL ? &ccsha256_ltc_di : g_crypto_funcs->ccsha256_di;
++#else
+ 	di = g_crypto_funcs->ccsha256_di;
++#endif
+ 
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	ccdigest_update(di, ctx->ctx, len, data);
++#else
+ 	g_crypto_funcs->ccdigest_update_fn(di, ctx->ctx, len, data);
++#endif
+ }
+ 
+ void
+ SHA256_Final(void *digest, SHA256_CTX *ctx)
+ {
+ 	const struct ccdigest_info *di;
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	di = g_crypto_funcs == NULL ? &ccsha256_ltc_di : g_crypto_funcs->ccsha256_di;
++#else
+ 	di = g_crypto_funcs->ccsha256_di;
++#endif
+ 
+ 	ccdigest_final(di, ctx->ctx, digest);
+ }
+@@ -103,30 +126,50 @@ void
+ SHA512_Init(SHA512_CTX *ctx)
+ {
+ 	const struct ccdigest_info *di;
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	di = g_crypto_funcs == NULL ? &ccsha512_ltc_di : g_crypto_funcs->ccsha512_di;
++#else
+ 	di = g_crypto_funcs->ccsha512_di;
++#endif
+ 
+ 	/* Make sure the context size for the digest info fits in the one we have */
+ 	if (ccdigest_di_size(di) > sizeof(SHA512_CTX)) {
+ 		panic("%s: inconsistent size for SHA512 context", __FUNCTION__);
+ 	}
+ 
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	ccdigest_init(di, ctx->ctx);
++#else
+ 	g_crypto_funcs->ccdigest_init_fn(di, ctx->ctx);
++#endif
+ }
+ 
+ void
+ SHA512_Update(SHA512_CTX *ctx, const void *data, size_t len)
+ {
+ 	const struct ccdigest_info *di;
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	di = g_crypto_funcs == NULL ? &ccsha512_ltc_di : g_crypto_funcs->ccsha512_di;
++#else
+ 	di = g_crypto_funcs->ccsha512_di;
++#endif
+ 
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	ccdigest_update(di, ctx->ctx, len, data);
++#else
+ 	g_crypto_funcs->ccdigest_update_fn(di, ctx->ctx, len, data);
++#endif
+ }
+ 
+ void
+ SHA512_Final(void *digest, SHA512_CTX *ctx)
+ {
+ 	const struct ccdigest_info *di;
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	di = g_crypto_funcs == NULL ? &ccsha512_ltc_di : g_crypto_funcs->ccsha512_di;
++#else
+ 	di = g_crypto_funcs->ccsha512_di;
++#endif
+ 
+ 	ccdigest_final(di, ctx->ctx, digest);
+ }
 diff --git a/makedefs/MakeInc.def b/makedefs/MakeInc.def
 index e37762b..4fa871c 100644
 --- a/makedefs/MakeInc.def
@@ -1116,6 +1319,112 @@ index 3e35085..65dd3b4 100644
  	[RUNNING_TIMER_PERFCONTROL] = perfcontrol_timer_expire,
  };
  static_assert(sizeof(running_timer_funcs) / sizeof(running_timer_funcs[0])
+diff --git a/osfmk/prng/prng_random.c b/osfmk/prng/prng_random.c
+index 504b3fa..d6438ff 100644
+--- a/osfmk/prng/prng_random.c
++++ b/osfmk/prng/prng_random.c
+@@ -279,6 +279,101 @@ early_random(void)
+ 	return result;
+ }
+ 
++#if defined(ARM64_BOARD_CONFIG_B2L)
++/* Register the real built-in HMAC-SHA256 DRBG before allocator initialization.
++ * This registers only the kernel PRNG, not unrelated corecrypto services.
++ * Boot entropy validation and entropy health tests remain unchanged. */
++#include <kern/startup.h>
++static LCK_GRP_DECLARE(b2l_prng_group, "b2l-prng");
++static LCK_MTX_DECLARE(b2l_prng_lock, &b2l_prng_group);
++static struct cckprng_ctx b2l_prng_ctx;
++static const struct ccdrbg_nisthmac_custom b2l_prng_custom = {
++	.di = &ccsha256_ltc_di, .strictFIPS = 0,
++};
++static cckprng_getentropy b2l_getentropy;
++static void *b2l_getentropy_arg;
++static unsigned b2l_max_ngens;
++static bool b2l_generators[MAX_CPUS];
++
++static struct ccdrbg_state *b2l_prng_state(struct cckprng_ctx *ctx)
++{
++	return (struct ccdrbg_state *)ctx->drbg_state;
++}
++static void b2l_prng_check(int result)
++{
++	if (result != CCDRBG_STATUS_OK) panic("B2L HMAC DRBG error %d", result);
++}
++static void
++b2l_prng_init_with_getentropy(struct cckprng_ctx *ctx, unsigned max_ngens,
++    size_t seed_nbytes, const void *seed, size_t nonce_nbytes, const void *nonce,
++    cckprng_getentropy getentropy, void *getentropy_arg)
++{
++	assert(max_ngens > 0 && max_ngens <= MAX_CPUS);
++	ccdrbg_factory_nisthmac(&ctx->drbg_info, &b2l_prng_custom);
++	assert(ctx->drbg_info.size <= sizeof(ctx->drbg_state));
++	const char personalization[] = "xnu b2l kernel random";
++	b2l_prng_check(ccdrbg_init(&ctx->drbg_info, b2l_prng_state(ctx), seed_nbytes,
++	    seed, nonce_nbytes, nonce, sizeof(personalization) - 1, personalization));
++	b2l_getentropy = getentropy; b2l_getentropy_arg = getentropy_arg;
++	b2l_max_ngens = max_ngens;
++}
++static void
++b2l_prng_init(struct cckprng_ctx *ctx, size_t seed_nbytes, const void *seed,
++    size_t nonce_nbytes, const void *nonce, cckprng_getentropy getentropy, void *arg)
++{
++	b2l_prng_init_with_getentropy(ctx, MAX_CPUS, seed_nbytes, seed,
++	    nonce_nbytes, nonce, getentropy, arg);
++}
++static void b2l_prng_initgen(struct cckprng_ctx *ctx __unused, unsigned index)
++{
++	lck_mtx_lock(&b2l_prng_lock);
++	assert(index < b2l_max_ngens && !b2l_generators[index]);
++	b2l_generators[index] = true;
++	lck_mtx_unlock(&b2l_prng_lock);
++}
++static void b2l_prng_reseed(struct cckprng_ctx *ctx, size_t size, const void *seed)
++{
++	lck_mtx_lock(&b2l_prng_lock);
++	b2l_prng_check(ccdrbg_reseed(&ctx->drbg_info, b2l_prng_state(ctx), size, seed, 0, NULL));
++	lck_mtx_unlock(&b2l_prng_lock);
++}
++static void b2l_prng_refresh(struct cckprng_ctx *ctx)
++{
++	if (!lck_mtx_try_lock(&b2l_prng_lock)) return;
++	uint8_t entropy[CCKPRNG_ENTROPY_SIZE];
++	size_t size = sizeof(entropy);
++	int32_t samples = b2l_getentropy(&size, entropy, b2l_getentropy_arg);
++	if (samples < 0) panic("B2L PRNG entropy health test failed");
++	/* XNU 12377's SHA512 conditioner requires 512+64 accepted samples. */
++	if (samples >= 512 + 64) {
++		assert(size >= SEED_SIZE && size <= sizeof(entropy));
++		b2l_prng_check(ccdrbg_reseed(&ctx->drbg_info, b2l_prng_state(ctx), size, entropy, 0, NULL));
++	}
++	cc_clear(sizeof(entropy), entropy);
++	lck_mtx_unlock(&b2l_prng_lock);
++}
++static void b2l_prng_generate(struct cckprng_ctx *ctx, unsigned index, size_t size, void *out)
++{
++	assert(size <= CCKPRNG_GENERATE_MAX_NBYTES);
++	lck_mtx_lock(&b2l_prng_lock);
++	assert(index < b2l_max_ngens && b2l_generators[index]);
++	b2l_prng_check(ccdrbg_generate(&ctx->drbg_info, b2l_prng_state(ctx), size, out, 0, NULL));
++	lck_mtx_unlock(&b2l_prng_lock);
++}
++__startup_func static void b2l_prng_startup(void)
++{
++	(void)early_random(); /* Populate boot-derived seeds before registration. */
++	const struct cckprng_funcs funcs = {
++		.init = b2l_prng_init, .initgen = b2l_prng_initgen,
++		.reseed = b2l_prng_reseed, .refresh = b2l_prng_refresh,
++		.generate = b2l_prng_generate, .init_with_getentropy = b2l_prng_init_with_getentropy,
++	};
++	register_and_init_prng(&b2l_prng_ctx, &funcs);
++	kprintf("B2L PRNG: boot-seeded HMAC-SHA256 registered\n");
++}
++STARTUP(EARLY_BOOT, STARTUP_RANK_FIRST, b2l_prng_startup);
++#endif
++
+ static void
+ read_random_generate(uint8_t *buffer, size_t numbytes);
+ 
 diff --git a/pexpert/arm/pe_fiq.c b/pexpert/arm/pe_fiq.c
 index 3ad743f..b038275 100644
 --- a/pexpert/arm/pe_fiq.c
