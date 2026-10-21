@@ -70,7 +70,14 @@ image, and reboot was requested. The original Android backups are retained and
 no additional backups were taken. The previously verified empty HFS+ SYSTEM
 image remains the root candidate. Raw receipts and identifiers stay ignored.
 
-Device proof of the HFS mount and native write/cache flush remains pending.
-The expected success lines are `B2L HFS: native root mounted read-write` and
-`B2L UFS: first native write and cache flush completed`. A later failure to find
-init on this deliberately empty filesystem is a separate expected boundary.
+The device photograph confirms the native SYSTEM root selection, first native
+write and completed cache flush, and `B2L HFS: native root mounted read-write`.
+It also reports the explicit unsealed development-root policy. Native HFS root
+mounting and physical write/flush operation are therefore verified on the phone.
+
+Startup then reaches a separate data abort in `IOCurrentTaskHasEntitlement`.
+The exact 0013 dSYM and instruction at the photographed PC identify a NULL AMFI
+interface dereference at callback offset 0x1c0. This is after the successful HFS
+mount; it is not a storage or filesystem mount failure. The empty root also
+lacks `/dev`, swap directories and init; corresponding path errors are distinct
+from the AMFI fault. Build 0014 addresses unavailable entitlement dispatch.

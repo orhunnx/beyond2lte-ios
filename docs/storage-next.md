@@ -44,8 +44,8 @@ successful build or filesystem mount.
 Build 0013 supplies direct native SYSTEM selection and optional IOStorageFamily
 handling for this BSD path. Its explicit development root policy accepts the
 unencrypted, unsealed HFS root without claiming Apple authentication. The real
-MD5 implementation required by HFS volume UUIDs is included. Physical root-mount
-and write/flush proof remain a device test. Empty HFS supplies no init or userspace.
+MD5 implementation required by HFS volume UUIDs is included. The 0013 device photograph verifies the read/write HFS root mount and native
+write/cache flush. Empty HFS supplies no init or userspace.
 See [HFS integration](hfs-provider.md) and [build 0013](build-0013.md).
 
 ## Disk boundary

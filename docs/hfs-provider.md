@@ -117,6 +117,10 @@ An empty HFS volume is not an iOS root. It has no init/launchd and cannot establ
 userspace boot. Real HFS mounting, writes/synchronization and later missing-init
 behavior must be distinguished in device evidence. No proprietary init program
 is supplied by this integration and no success claim relies on bypassing init.
+The 0013 device result confirms a read/write native HFS mount and completed
+native writes/flushes; it then reached the separate missing AMFI entitlement
+interface fault described in [unavailable AMFI handling](amfi-unavailable.md).
+It does not establish init or iOS userspace execution.
 
 All 37 upstream HFS core C files and the builtin wrapper compile against the
 current B2L XNU headers. `tests/test_hfs_provider.py /path/to/prepared/xnu` uses

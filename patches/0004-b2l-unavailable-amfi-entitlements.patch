@@ -1,0 +1,300 @@
+--- a/iokit/bsddev/IOKitBSDInit.cpp
++++ b/iokit/bsddev/IOKitBSDInit.cpp
+@@ -1588,6 +1588,13 @@
+ extern "C" boolean_t
+ IOTaskHasStringEntitlement(task_t task, const char *entitlement, const char *value)
+ {
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	if (!amfi || amfi->OSEntitlements.version < OSENTITLEMENTS_INTERFACE_VERSION ||
++	    !amfi->OSEntitlements.queryEntitlementStringWithProc) {
++		return false;
++	}
++#endif
++
+ 	if (task == NULL) {
+ 		task = current_task();
+ 	}
+@@ -1631,6 +1638,13 @@
+ extern "C" boolean_t
+ IOTaskHasEntitlement(task_t task, const char *entitlement)
+ {
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	if (!amfi || amfi->OSEntitlements.version < OSENTITLEMENTS_INTERFACE_VERSION ||
++	    !amfi->OSEntitlements.queryEntitlementBooleanWithProc) {
++		return false;
++	}
++#endif
++
+ 	if (task == NULL) {
+ 		task = current_task();
+ 	}
+@@ -1659,6 +1673,17 @@
+ extern "C" boolean_t
+ IOTaskGetIntegerEntitlement(task_t task, const char *entitlement, uint64_t *value)
+ {
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	if (value) *value = 0;
++#endif
++
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	if (!amfi || amfi->OSEntitlements.version < OSENTITLEMENTS_INTERFACE_VERSION ||
++	    !amfi->OSEntitlements.copyEntitlementAsOSObjectWithProc) {
++		return false;
++	}
++#endif
++
+ 	void *entitlement_object = NULL;
+ 
+ 	if (task == NULL) {
+@@ -1683,7 +1708,11 @@
+ 	if (ret != KERN_SUCCESS) {
+ 		return false;
+ 	}
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	if (entitlement_object == NULL) return false;
++#else
+ 	assert(entitlement_object != NULL);
++#endif
+ 
+ 	OSObject *os_object = (OSObject*)entitlement_object;
+ 	OSNumber *os_number = OSDynamicCast(OSNumber, os_object);
+@@ -1708,6 +1737,13 @@
+ extern "C" char*
+ IOTaskGetEntitlement(task_t task, const char *entitlement)
+ {
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	if (!amfi || amfi->OSEntitlements.version < OSENTITLEMENTS_INTERFACE_VERSION ||
++	    !amfi->OSEntitlements.copyEntitlementAsOSObjectWithProc) {
++		return NULL;
++	}
++#endif
++
+ 	void *entitlement_object = NULL;
+ 	char *return_value = NULL;
+ 
+@@ -1733,7 +1769,11 @@
+ 	if (ret != KERN_SUCCESS) {
+ 		return NULL;
+ 	}
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	if (entitlement_object == NULL) return NULL;
++#else
+ 	assert(entitlement_object != NULL);
++#endif
+ 
+ 	OSObject *os_object = (OSObject*)entitlement_object;
+ 	OSString *os_string = OSDynamicCast(OSString, os_object);
+@@ -1750,6 +1790,10 @@
+ extern "C" boolean_t
+ IOTaskHasEntitlementAsBooleanOrObject(task_t task, const char *entitlement)
+ {
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	if (!amfi || amfi->OSEntitlements.version < OSENTITLEMENTS_INTERFACE_VERSION) return false;
++#endif
++
+ 	if (task == NULL) {
+ 		task = current_task();
+ 	}
+@@ -1764,7 +1808,11 @@
+ 		return false;
+ 	}
+ 
+-	kern_return_t ret = amfi->OSEntitlements.queryEntitlementBooleanWithProc(
++	kern_return_t ret = KERN_NOT_SUPPORTED;
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	if (amfi->OSEntitlements.queryEntitlementBooleanWithProc)
++#endif
++	ret = amfi->OSEntitlements.queryEntitlementBooleanWithProc(
+ 		proc,
+ 		entitlement);
+ 	if (ret == KERN_SUCCESS) {
+@@ -1773,6 +1821,9 @@
+ 
+ 	/* Check for the presence of an object */
+ 	void *entitlement_object = NULL;
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	if (!amfi->OSEntitlements.copyEntitlementAsOSObjectWithProc) return false;
++#endif
+ 	ret = amfi->OSEntitlements.copyEntitlementAsOSObjectWithProc(
+ 		proc,
+ 		entitlement,
+@@ -1780,7 +1831,11 @@
+ 	if (ret != KERN_SUCCESS) {
+ 		return false;
+ 	}
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	if (entitlement_object == NULL) return false;
++#else
+ 	assert(entitlement_object != NULL);
++#endif
+ 
+ 	OSObject *os_object = (OSObject*)entitlement_object;
+ 
+@@ -1841,6 +1896,11 @@
+ 	const char *entitlement,
+ 	bool *value)
+ {
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	if (!value) return false;
++	*value = false;
++#endif
++
+ 	OSObject * obj;
+ 	off_t offset = (off_t)off;
+ 
+@@ -1864,6 +1924,11 @@
+ extern boolean_t
+ IOVnodeGetIntegerEntitlement(struct vnode *vnode, int64_t off, const char *entitlement, uint64_t *value)
+ {
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	if (!value) return false;
++	*value = 0;
++#endif
++
+ 	OSObject *obj;
+ 	boolean_t ret = false;
+ 	off_t offset = (off_t)off;
+--- a/iokit/Kernel/IOUserClient.cpp
++++ b/iokit/Kernel/IOUserClient.cpp
+@@ -1575,6 +1575,13 @@
+ IOUserClient::copyClientEntitlement( task_t task,
+     const char * entitlement )
+ {
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	if (!amfi || amfi->OSEntitlements.version < OSENTITLEMENTS_INTERFACE_VERSION ||
++	    !amfi->OSEntitlements.copyEntitlementAsOSObjectWithProc) {
++		return NULL;
++	}
++#endif
++
+ 	void *entitlement_object = NULL;
+ 
+ 	if (task == NULL) {
+@@ -1599,7 +1606,11 @@
+ 	if (ret != KERN_SUCCESS) {
+ 		return NULL;
+ 	}
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	if (entitlement_object == NULL) return NULL;
++#else
+ 	assert(entitlement_object != NULL);
++#endif
+ 
+ 	return (OSObject*)entitlement_object;
+ }
+@@ -1610,6 +1621,10 @@
+ 	off_t offset,
+ 	const char *entitlement)
+ {
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	if (!vnode || !entitlement) return NULL;
++#endif
++
+ 	OSDictionary *entitlements;
+ 	OSObject *value;
+ 
+--- a/bsd/kern/kern_cs.c
++++ b/bsd/kern/kern_cs.c
+@@ -511,6 +511,9 @@
+ 	}
+ 
+ 	if (csblob->csb_entitlements != NULL) {
++#if defined(ARM64_BOARD_CONFIG_B2L)
++		if (amfi && amfi->OSEntitlements_invalidate)
++#endif
+ 		amfi->OSEntitlements_invalidate(csblob->csb_entitlements);
+ 	}
+ 
+@@ -786,6 +789,10 @@
+ void *
+ csblob_entitlements_dictionary_copy(struct cs_blob *csblob)
+ {
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	if (!csblob || !amfi || !amfi->OSEntitlements_asdict) return NULL;
++#endif
++
+ 	if (!csblob->csb_entitlements) {
+ 		return NULL;
+ 	}
+--- a/bsd/kern/ubc_subr.c
++++ b/bsd/kern/ubc_subr.c
+@@ -3955,6 +3955,9 @@
+ cs_blob_cleanup(struct cs_blob *blob)
+ {
+ 	if (blob->csb_entitlements != NULL) {
++#if defined(ARM64_BOARD_CONFIG_B2L)
++		if (amfi && amfi->OSEntitlements_invalidate)
++#endif
+ 		amfi->OSEntitlements_invalidate(blob->csb_entitlements);
+ 		osobject_release(blob->csb_entitlements);
+ 		blob->csb_entitlements = NULL;
+@@ -4431,6 +4434,17 @@
+ accelerate_entitlement_queries(
+ 	struct cs_blob *cs_blob)
+ {
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	if (!amfi || amfi->OSEntitlements.version < OSENTITLEMENTS_INTERFACE_VERSION) return EPERM;
++#if CODE_SIGNING_MONITOR
++	if (!amfi->OSEntitlements.adjustContext &&
++	    (!amfi->OSEntitlements.adjustContextWithMonitor || !libCoreEntitlements)) return EPERM;
++#else
++	if (!amfi->OSEntitlements.adjustContext &&
++	    !amfi->OSEntitlements.adjustContextWithoutMonitor) return EPERM;
++#endif
++#endif
++
+ 	kern_return_t ret = KERN_NOT_SUPPORTED;
+ 
+ #if CODE_SIGNING_MONITOR
+@@ -4487,6 +4501,9 @@
+ 	if (amfi->OSEntitlements.adjustContext != NULL) {
+ 		ret = amfi->OSEntitlements.adjustContext(cs_blob->csb_entitlements, cs_blob, NULL);
+ 	} else {
++#if defined(ARM64_BOARD_CONFIG_B2L)
++		if (!amfi->OSEntitlements.adjustContextWithoutMonitor) return EPERM;
++#endif
+ 		ret = amfi->OSEntitlements.adjustContextWithoutMonitor(
+ 			cs_blob->csb_entitlements,
+ 			cs_blob);
+--- a/bsd/kern/kern_proc.c
++++ b/bsd/kern/kern_proc.c
+@@ -3925,6 +3925,9 @@
+ 			goto out;
+ 		}
+ 		CS_GenericBlob* xmlblob = NULL;
++#if defined(ARM64_BOARD_CONFIG_B2L)
++		if (!amfi || !amfi->OSEntitlements_get_xml) { error = ENOTSUP; goto out; }
++#endif
+ 		if (amfi->OSEntitlements_get_xml(osent, &xmlblob)) {
+ 			start = (void*)xmlblob;
+ 			length = (size_t)ntohl(xmlblob->length);
+@@ -3961,6 +3964,9 @@
+ 				void* osent = csblob_os_entitlements_get(blob);
+ 
+ 				const CS_GenericBlob* transmuted = NULL;
++#if defined(ARM64_BOARD_CONFIG_B2L)
++				if (!amfi->OSEntitlements_get_transmuted) { error = ENOTSUP; goto out; }
++#endif
+ 				if (amfi->OSEntitlements_get_transmuted(osent, &transmuted)) {
+ 					start = transmuted;
+ 					length = (size_t)ntohl(transmuted->length);
+--- a/bsd/kern/kern_exec.c
++++ b/bsd/kern/kern_exec.c
+@@ -1352,7 +1352,7 @@
+ 	 */
+ 	if (load_result->platform_binary) {
+ #if KERN_AMFI_SUPPORTS_MTE >= 2
+-		if (__improbable(amfi->has_mte_opt_out && amfi->has_mte_opt_out(cs_blob))) {
++		if (__improbable(amfi && amfi->has_mte_opt_out && amfi->has_mte_opt_out(cs_blob))) {
+ 			EXEC_LOG("Binary checked-allocations enablement was denied by AMFI static list\n");
+ 			return EXEC_SECURITY_NOT_ENTITLED;
+ 		}
+@@ -4187,7 +4187,7 @@
+ 
+ #if KERN_AMFI_SUPPORTS_MTE
+ 		if (get_lockdown_mode_state() == 0 &&
+-		    amfi->has_mte_soft_mode &&
++		    amfi && amfi->has_mte_soft_mode &&
+ 		    amfi->has_mte_soft_mode(p)) {
+ 			EXEC_LOG("AMFI says: enable soft-mode\n");
+ 			task_set_sec_soft_mode(task);

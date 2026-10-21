@@ -470,3 +470,9 @@ marshals the legacy context explicitly, preserving incremental updates, copied
 state and the existing high/low byte-counter ABI. MD5, AES regression and
 actual-source HFS registration/root-policy/native-alias tests pass under
 ASan/UBSan; physical mount/write proof is still separate.
+
+The 0013 photograph now confirms both success lines, native root device selection
+and explicit unsealed-root logging. HFS mounting and native write/cache flush
+are physically verified. A subsequent NULL AMFI dereference in
+`IOCurrentTaskHasEntitlement` is matched to the exact dSYM and callback load.
+It occurs after the successful mount; empty-root path failures are separate.

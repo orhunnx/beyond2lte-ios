@@ -68,8 +68,9 @@ The subsequent authorized [empty SYSTEM HFS+ image](docs/system-hfs.md) is a
 separate storage preparation step.
 [Build 0013](docs/build-0013.md) links the real OSS HFS provider, selects the
 validated SYSTEM root and adds bounded SYSTEM writes with real cache flushing.
-HFS mounting and writes on the phone remain distinct from compilation and the
-already verified 0012 read-only UFS milestone.
+The device photograph verifies the read/write HFS root mount and a completed
+native write/cache flush. Startup then exposes a separate absent-AMFI entitlement
+helper fault; the empty volume contains no init or iOS userspace.
 BOOT writes retain the original Android backup and are readback-verified.
 [Build 0002](docs/build-0002.md) uses a dynamic 1–2 GiB RAM arena within the
 unchanged firmware memory guards. [Build 0003](docs/build-0003.md) adds XNU-owned
