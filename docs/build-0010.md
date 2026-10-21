@@ -50,6 +50,11 @@ These checks do not establish physical progress past TCP initialization.
 
 ## Installation and device boundary
 
-The package is ready; device execution is pending. The next screen report must
+The authorized BOOT-only update completed after a full verified backup of the
+previous BOOT. The original backup remains intact. Exact image-prefix readback
+matched, then the device was rebooted. SYSTEM was only inspected read-only; no
+SYSTEM/HFS image was written. Raw receipts and identifiers stay local and ignored.
+
+The next screen report must
 establish progress past TCP initialization, followed by the next startup stage.
 No root filesystem or native UFS driver is supplied by this AES-only change.
