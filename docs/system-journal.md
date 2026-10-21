@@ -60,3 +60,13 @@ device tests. The empty root still contains no init or iOS userspace.
 Future empty root images must use `-fs 'Journaled HFS+'` with `-layout NONE`
 and exact partition geometry. A previously dirty filesystem must first pass
 real repair; clearing its dirty flag or bypassing HFS checks is not a repair.
+
+## Device result
+
+The subsequent build 0014 photograph confirms the native HFS SYSTEM root
+mounted read/write again, passed the previous AMFI fault and reached
+`load_init_program`. It attempted `/sbin/launchd` and stopped with errno 2
+(ENOENT), as expected for the intentionally empty filesystem. The prior dirty
+non-journaled root refusal is resolved with the repaired journaled volume.
+This verifies mounting the converted volume; journal replay after another
+interrupted write/reboot remains a separate durability test.

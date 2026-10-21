@@ -54,3 +54,9 @@ dirty non-journaled root left by the earlier 0013 panic. This does not establish
 whether the AMFI fix has passed on the phone. The filesystem was subsequently
 [repaired and journaling enabled](system-journal.md), then the unchanged 0014
 BOOT was retried. Physical continuation remains a separate device test.
+
+After the journal correction, the device photograph confirms a successful native
+read/write HFS root mount, continuation beyond the previous AMFI callback fault,
+and an actual attempt to load `/sbin/launchd`. The final panic is ENOENT (errno 2),
+matching the deliberately absent init file. The XNU kernel/native-storage/root
+mount milestone is achieved; no iOS userspace execution is claimed.

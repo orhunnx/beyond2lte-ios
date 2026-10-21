@@ -45,5 +45,5 @@ partial provider fixtures; malformed success without an object; negative output
 defaults; real Boolean/string/integer values; object reference release; and
 unavailable, legacy and current adjustment dispatch. The fixtures model only
 these source contracts, not a production AMFI provider or userspace boot.
-The full standalone 0014 kernel and dSYM build passed. Physical boot beyond the
-0013 fault is a separate gate.
+The full standalone 0014 kernel and dSYM build passed. The subsequent 0014 photograph confirms progress beyond the 0013 fault to
+loading `/sbin/launchd`; the final ENOENT matches the empty root.

@@ -75,7 +75,10 @@ helper fault; the empty volume contains no init or iOS userspace.
 without granting privileges. Its device test initially stopped on the dirty
 non-journaled volume left by the prior panic. SYSTEM was then
 [repaired and converted to Journaled HFS+](docs/system-journal.md), with only the
-changed blocks written back; the existing 0014 BOOT was retried.
+changed blocks written back. The subsequent 0014 device photograph confirms
+another successful read/write root mount, progress past the AMFI fault and an
+attempt to load `/sbin/launchd`. The final ENOENT panic is expected because that
+file and iOS userspace are not present.
 BOOT writes retain the original Android backup and are readback-verified.
 [Build 0002](docs/build-0002.md) uses a dynamic 1–2 GiB RAM arena within the
 unchanged firmware memory guards. [Build 0003](docs/build-0003.md) adds XNU-owned
