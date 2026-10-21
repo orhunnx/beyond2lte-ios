@@ -58,3 +58,13 @@ SYSTEM/HFS image was written. Raw receipts and identifiers stay local and ignore
 The next screen report must
 establish progress past TCP initialization, followed by the next startup stage.
 No root filesystem or native UFS driver is supplied by this AES-only change.
+
+## Device result
+
+The screen report confirms progress past TCP/AES initialization. Skywalk's
+copy, zeroing and masked-compare self-tests all pass. BSD autoconfiguration
+then reaches kminit. The next panic asserts _unsafe_kernel_text_initialized
+in machine_routines.c:3379, because the EFI device tree omits the chosen
+kernel-ctrr-to-be-enabled property required by the DEVELOPMENT kernel.
+No raw photograph or dump is committed. This failure is a boot metadata
+contract gap; it is not evidence of an AES test failure.

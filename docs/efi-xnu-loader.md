@@ -56,6 +56,9 @@ Unmeasured CPU and bus clocks are not advertised as counter frequencies.
 The tree also includes the mandatory `/chosen/memory-map` and `/defaults`
 containers. They have no fabricated trust-cache, auxiliary-kernel, protected I/O
 range or filter properties; absent optional values retain the kernel defaults.
+`/chosen/kernel-ctrr-to-be-enabled` is an explicit native 32-bit zero because
+Apple CTRR is unavailable on this platform. XNU consumes this policy during
+TUNABLES startup and retains its initialized-state assertion.
 
 GOP must expose direct 32-bit B,G,R,X pixels and at least 1,184 by 864 pixels
 for the enlarged handoff progress panel. The

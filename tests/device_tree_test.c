@@ -4,7 +4,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "../uefi/XnuLoader/DeviceTree.h"
-static unsigned seed_properties, memory_map_nodes, defaults_nodes;
+static unsigned seed_properties, memory_map_nodes, defaults_nodes, ctrr_properties;
 static uint32_t read32(const unsigned char *p) { uint32_t n; memcpy(&n,p,4); return n; }
 static size_t decode(const unsigned char *buf, size_t size, size_t off,
                      unsigned depth, unsigned *nodes, unsigned *properties, const char *parent_path)
@@ -28,6 +28,11 @@ static size_t decode(const unsigned char *buf, size_t size, size_t off,
             uint64_t pa; memcpy(&pa,buf+off,8); assert(depth==1 && len==16 && pa==0xca000000);
         }
         if (!strcmp(name,"random-seed")) { ++seed_properties; assert(len==256); for(unsigned j=0;j<256;++j)assert(buf[off+j]==(unsigned char)(j+1)); }
+        if (!strcmp(name,"kernel-ctrr-to-be-enabled")) {
+            ++ctrr_properties;
+            assert(depth==1 && node_name && !strcmp(node_name,"chosen"));
+            assert(len==4 && read32(buf+off)==0);
+        }
         if (!strcmp(name,"timebase-frequency")) assert(len==4 && read32(buf+off)==26000000);
         if (!strcmp(name,"state")) assert(len==8 && !memcmp(buf+off,"running",8));
         if (!strcmp(name,"device_type")) assert(len && buf[off+len-1]==0);
@@ -60,7 +65,7 @@ int main(void)
     unsigned nodes=0, props=0;
     assert(decode(buf,used,0,0,&nodes,&props,"")==used);
     assert(nodes==11 && props>42 && seed_properties==1);
-    assert(memory_map_nodes==1 && defaults_nodes==1);
+    assert(memory_map_nodes==1 && defaults_nodes==1 && ctrr_properties==1);
     for(size_t capacity=0;capacity<used;++capacity) {
         size_t ignored=0; memset(small,0x5a,sizeof(small));
         assert(b2l_build_device_tree(small,capacity,&c,&ignored)<0);
@@ -73,6 +78,6 @@ int main(void)
     assert(sizeof(struct b2l_boot_args)==1152);
     assert(offsetof(struct b2l_boot_args,device_tree)==96);
     assert(offsetof(struct b2l_boot_args,flags)==1136);
-    puts("Apple DT capacity, topology, entropy, and boot_args ABI tests passed");
+    puts("Apple DT capacity, topology, entropy, CTRR policy, and boot_args ABI tests passed");
     return 0;
 }

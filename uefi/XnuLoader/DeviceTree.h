@@ -12,6 +12,7 @@ struct b2l_dt_config {
 };
 /* Apple flattened device tree: native little endian, property names 32 bytes,
  * lengths and node counts 32 bits, property contents padded to four bytes.
+ * /chosen explicitly reports kernel-ctrr-to-be-enabled as a 32-bit zero.
  * Includes the mandatory /chosen/memory-map and /defaults containers without
  * fabricating trust-cache, auxiliary-kernel or protected I/O memory ranges. */
 int b2l_build_device_tree(void *buffer, b2l_size capacity,

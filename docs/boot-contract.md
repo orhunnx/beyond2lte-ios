@@ -36,7 +36,7 @@ The loader supplies these nodes for the current non-SPTM ARM64 path:
 
 | Path | Required contents | Consumer |
 | --- | --- | --- |
-| `/chosen` | `random-seed` (256 bytes), `dram-base` and `dram-size` (64-bit arena bounds) | PRNG and `arm_init` |
+| `/chosen` | `random-seed` (256 bytes), `dram-base` and `dram-size` (64-bit arena bounds), `kernel-ctrr-to-be-enabled` (native 32-bit zero) | PRNG, `arm_init` and kernel-text policy initialization |
 | `/chosen/memory-map` | Container with a `name`; no range properties for absent payloads | `arm_vm_prot_init` |
 | `/defaults` | Container with a `name`; omitted tuning properties preserve kernel defaults | pmap ASID/PV initialization |
 | `/cpus/cpu0` | `state=running`, 32-bit MPIDR affinity `reg`, actual counter frequency | CPU topology and clock setup |
@@ -50,6 +50,13 @@ creating the container does not claim or authorize any protected memory range.
 Likewise, pmap requires `/defaults` even when it uses its built-in ASID and PV
 allocation policy. Optional `pmap-io-ranges` and `pmap-io-filters` remain absent.
 No artificial I/O ownership or filter entries are added to satisfy lookups.
+
+Exynos 9820 has no Apple CTRR provider. The loader explicitly publishes
+`/chosen/kernel-ctrr-to-be-enabled` as a four-byte native-endian zero, rather
+than claiming that CTRR will protect kernel text. XNU's TUNABLES startup handler
+requires this property, even when its value is zero, before
+`ml_unsafe_kernel_text()` may be queried. The kernel's initialization assertion
+is retained; no assertion or text-protection state is bypassed.
 
 ## Platform configuration
 

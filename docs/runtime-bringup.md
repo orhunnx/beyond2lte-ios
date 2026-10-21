@@ -319,4 +319,30 @@ and decryption, including bit/byte lengths, copied contexts, in-place and overla
 buffers, const and chained IV semantics, zero blocks, invalid keys, overflow and
 all unavailable GCM APIs. These are implementation tests, not FIPS validation.
 See [AES dependency details](aes-provider.md). The standalone build passed;
-physical execution of 0010 remains pending. Physical guards are unchanged.
+The 0010 device photo confirms AES/TCP initialization passed, followed by
+Skywalk self-tests and BSD autoconfiguration (`bsd_autoconf: calling kminit`).
+It then stopped at the separate missing CTRR-state handoff described below.
+Physical guards are unchanged.
+
+## Truthful CTRR-state handoff (loader-only build 0011)
+
+Build 0010 stopped at the unchanged assertion in `ml_unsafe_kernel_text`: its
+state initializer had never received the required firmware policy property.
+The initializer runs at `TUNABLES/FIRST`, before VM/BSD startup, and accepts
+`/chosen/kernel-ctrr-to-be-enabled` only when its byte length is exactly
+`sizeof(int)` (four bytes on this target). Omitting the field does not mean
+"disabled" to XNU; it leaves the state uninitialized and a later consumer asserts.
+
+The loader supplies a native little-endian four-byte zero. B2L has no Apple
+CTRR/KTRR hardware integration; zero truthfully classifies kernel text as unsafe
+for this policy interface. It does not claim that Apple hardware protection
+will be enabled. The kernel assertion and initialization logic stay unchanged.
+This is a loader device-tree contract correction, using the same compiled kernel.
+
+The inspected consumers are DTrace FBT/SDT restriction checks, optional CTRR
+platform tests, and the PPL bootstrap when `XNU_MONITOR` is configured. The
+current B2L target has neither Apple CTRR/KTRR/paravirtualized CTRR nor PPL/SPTM;
+no associated protected-region property is required by this current build.
+The policy value does not itself program a protection register, change normal
+page-table read-only/execute permissions or expand physical RAM/MMIO guards.
+Actual loader-only 0011 device execution remains pending.

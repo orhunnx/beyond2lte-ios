@@ -37,7 +37,7 @@ partition `BOOT`; no separate ESP or SYSTEM/USERDATA transfer is required.
 **Physical device proof now covers XNU entry, its own framebuffer console,
 VM bootstrap, boot CPU registration, real timer and self-SGI interrupts, and
 timed scheduler wakeup. Build 0008 reaches later BSD startup, where the absent
-AES provider used by TCP initialization is the current blocker.**
+CTRR policy metadata expected by the DEVELOPMENT kernel is the current blocker.**
 [Build 0004](docs/build-0004.md) supplies the required 256-byte seed; its
 device result identified the next DT contract gap. [Build 0005](docs/build-0005.md)
 adds the required /chosen/memory-map and /defaults containers.
@@ -53,8 +53,10 @@ the device photograph confirms progress into BSD startup and real IRQ proof.
 libpthread kernel provider. Its device test passes into network initialization;
 the next failure identifies the absent AES mode provider.
 [Build 0010](docs/build-0010.md) adds real portable AES CBC/ECB and rejects
-unavailable GCM operations safely. Its BOOT-only installation is verified;
-the device screen result is pending.
+unavailable GCM operations safely. Its device test passes into BSD autoconfiguration
+and exposes a missing boot-policy property.
+[Build 0011](docs/build-0011.md) supplies the explicit existing non-CTRR policy
+in the Apple device tree. Its device test is pending.
 BOOT writes were backed up and readback-verified.
 [Build 0002](docs/build-0002.md) uses a dynamic 1–2 GiB RAM arena within the
 unchanged firmware memory guards. [Build 0003](docs/build-0003.md) adds XNU-owned
