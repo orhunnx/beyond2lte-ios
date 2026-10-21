@@ -4,6 +4,7 @@
  */
 #ifndef B2L_AMFI_HOST_TEST
 #include <IOKit/IOLib.h>
+#include <sys/errno.h>
 #include <libkern/c++/OSArray.h>
 #include <libkern/c++/OSBoolean.h>
 #include <libkern/c++/OSDictionary.h>
@@ -19,19 +20,22 @@ public:
     void *xml;
     size_t xml_len;
     bool platform;
+    char *identity;
+    size_t identity_len;
     bool init(void) APPLE_KEXT_OVERRIDE;
     void free(void) APPLE_KEXT_OVERRIDE;
 };
 OSDefineMetaClassAndStructors(B2LMetadataEntitlements, OSObject);
 bool B2LMetadataEntitlements::init(void)
 {
-    dict=nullptr;xml=nullptr;xml_len=0;platform=false;
+    dict=nullptr;xml=nullptr;xml_len=0;platform=false;identity=nullptr;identity_len=0;
     return OSObject::init();
 }
 void B2LMetadataEntitlements::free(void)
 {
     OSSafeReleaseNULL(dict);
     if(xml)kfree_data(xml,xml_len);
+    if(identity)kfree_data(identity,identity_len);
     OSObject::free();
 }
 static B2LMetadataEntitlements *ent(const void*p)
@@ -75,8 +79,13 @@ static bool xml_bounded(const char*s,size_t n)
     return depth==0;
 }
 extern "C" {
-void *b2l_ent_create(const void*blob,size_t length,bool platform)
+void *b2l_ent_create_metadata(const void*blob,size_t length,bool platform,const void*identifier,size_t identifier_len)
 {
+    if(identifier){
+        if(identifier_len<2||identifier_len>B2L_AMFI_IDENTITY_MAX)return nullptr;
+        const char*text=(const char*)identifier;
+        for(size_t i=0;i<identifier_len;i++)if((text[i]==0)!=(i==identifier_len-1))return nullptr;
+    }else if(identifier_len)return nullptr;
     OSDictionary *dict=nullptr;
     if(blob){
         if(length<=8||length>B2L_AMFI_XML_MAX)return nullptr;
@@ -118,7 +127,22 @@ void *b2l_ent_create(const void*blob,size_t length,bool platform)
         if(!object->xml){object->release();return nullptr;}
         memcpy(object->xml,blob,length);object->xml_len=length;
     }
+    if(identifier){
+        object->identity=(char*)kalloc_data(identifier_len,Z_WAITOK);
+        if(!object->identity){object->release();return nullptr;}
+        memcpy(object->identity,identifier,identifier_len);object->identity_len=identifier_len;
+    }
     return object;
+}
+void *b2l_ent_create(const void*blob,size_t length,bool platform)
+{return b2l_ent_create_metadata(blob,length,platform,nullptr,0);}
+int b2l_ent_copy_identity(const void*p,void**out,size_t*length)
+{
+    if(out)*out=nullptr;if(length)*length=0;
+    if(!out||!length)return EINVAL;
+    auto e=ent(p);if(!e||!e->identity)return ENOENT;
+    void*copy=kalloc_data(e->identity_len,Z_WAITOK);if(!copy)return ENOMEM;
+    memcpy(copy,e->identity,e->identity_len);*out=copy;*length=e->identity_len;return 0;
 }
 void b2l_ent_retain(void*p){if(p)((OSObject*)p)->retain();}
 void b2l_ent_release(void*p){if(p)((OSObject*)p)->release();}

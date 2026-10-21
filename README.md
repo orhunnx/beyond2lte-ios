@@ -97,7 +97,8 @@ ARM64e launchd and shared-cache execution, followed by a startup assertion.
 [Build 0028](docs/build-0028.md) adds A5-style development Sandbox, work-interval
 and AMFI XML/platform metadata support. Its first device test exposed a late
 policy-registration fault; [0028b](docs/build-0028b.md) moves registration before
-lockdown. See the [shim audit](docs/shim-audit.md)
+lockdown. [0029](docs/build-0029.md) adds the boot-task identifier query after
+0028b reaches real launchd boot tasks. See the [shim audit](docs/shim-audit.md)
 for confirmed gaps and the distinction between local tests and runtime proof.
 BOOT writes retain the original Android backup and are readback-verified.
 [Build 0002](docs/build-0002.md) uses a dynamic 1–2 GiB RAM arena within the

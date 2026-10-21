@@ -126,3 +126,11 @@ a policy in bsd_init is too late even though the API accepts late registration
 on other targets. Build 0028 physically exposed that ordering error. No memory
 protections are relaxed by the fix. `tests/test_policy_startup.py` checks this
 ordering against the actual pinned startup graph.
+
+## Identifier metadata (0029)
+
+The credential object also stores the bounded primary CodeDirectory identifier
+as unauthenticated metadata. CS_OPS_IDENTITY returns an owned copy in the native
+wire format for unsigned opted-in processes; it does not set CS_VALID/SIGNED.
+The [signing API inventory](signing-api-inventory.md) lists the distinct team,
+hash, DER, validation and vnode interfaces that remain outside this bridge.

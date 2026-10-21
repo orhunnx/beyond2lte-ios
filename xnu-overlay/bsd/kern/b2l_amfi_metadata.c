@@ -7,12 +7,13 @@ static uint32_t le32(const uint8_t *p){return (uint32_t)p[3]<<24|(uint32_t)p[2]<
 static uint64_t be64(const uint8_t *p){return (uint64_t)be32(p)<<32|be32(p+4);}
 static int range(uint64_t at,uint64_t n,uint64_t end){return at<=end&&n<=end-at;}
 static int read_at(const struct b2l_amfi_reader*r,uint64_t at,void*out,size_t n){return !r||!r->read||!range(at,n,r->bytes)||r->read(r->opaque,at,out,n);}
-enum b2l_amfi_metadata_result
-b2l_amfi_read_xml(const struct b2l_amfi_reader*r,uint64_t base,void*out,size_t capacity,size_t*length)
+struct b2l_amfi_locations { uint64_t signature; uint32_t xml_at,xml_size,cd_at,cd_size; };
+static enum b2l_amfi_metadata_result
+find_metadata(const struct b2l_amfi_reader*r,uint64_t base,struct b2l_amfi_locations*locations)
 {
     uint8_t h[32],cmd[16],idx[8],bh[8];uint64_t end;uint32_t csat=0,cssize=0;
-    if(length)*length=0;
-    if(!length||!out||!r||!r->read||!range(base,32,r->bytes))return B2L_AMFI_XML_INVALID;
+    *locations=(struct b2l_amfi_locations){0};
+    if(!r||!r->read||!range(base,32,r->bytes))return B2L_AMFI_XML_INVALID;
     end=r->bytes;
     if(base){
         if(read_at(r,0,h,8))return B2L_AMFI_XML_IO;
@@ -52,7 +53,7 @@ b2l_amfi_read_xml(const struct b2l_amfi_reader*r,uint64_t base,void*out,size_t c
     if(read_at(r,sig,h,12))return B2L_AMFI_XML_IO;
     uint32_t total=be32(h+4),entries=be32(h+8);
     if(be32(h)!=0xfade0cc0u||total>cssize||total<12||entries>64||entries>(total-12)/8)return B2L_AMFI_XML_INVALID;
-    uint32_t starts[64],sizes[64],xmlat=0,xmlsize=0;
+    uint32_t starts[64],sizes[64],xmlat=0,xmlsize=0,cdat=0,cdsize=0;
     for(uint32_t i=0;i<entries;i++){
         if(read_at(r,sig+12+8u*i,idx,8))return B2L_AMFI_XML_IO;
         uint32_t type=be32(idx),off=be32(idx+4);
@@ -62,10 +63,61 @@ b2l_amfi_read_xml(const struct b2l_amfi_reader*r,uint64_t base,void*out,size_t c
         if(n<8||!range(off,n,total))return B2L_AMFI_XML_INVALID;
         for(uint32_t j=0;j<i;j++)if(off<starts[j]+sizes[j]&&starts[j]<off+n)return B2L_AMFI_XML_INVALID;
         starts[i]=off;sizes[i]=n;
+        if(type==0){if(cdat)return B2L_AMFI_XML_INVALID;cdat=off;cdsize=n;}
         if(type==5){if(xmlat||be32(bh)!=0xfade7171u||n<=8||n>B2L_AMFI_XML_MAX)return B2L_AMFI_XML_INVALID;xmlat=off;xmlsize=n;}
     }
-    if(!xmlat)return B2L_AMFI_XML_ABSENT;
-    if(xmlsize>capacity)return B2L_AMFI_XML_INVALID;
-    if(read_at(r,sig+xmlat,out,xmlsize))return B2L_AMFI_XML_IO;
-    *length=xmlsize;return B2L_AMFI_XML_PRESENT;
+    locations->signature=sig;locations->xml_at=xmlat;locations->xml_size=xmlsize;
+    locations->cd_at=cdat;locations->cd_size=cdsize;
+    return B2L_AMFI_XML_PRESENT;
+}
+enum b2l_amfi_metadata_result
+b2l_amfi_read_xml(const struct b2l_amfi_reader*r,uint64_t base,void*out,size_t capacity,size_t*length)
+{
+    if(length)*length=0;
+    if(!out||!length)return B2L_AMFI_XML_INVALID;
+    struct b2l_amfi_locations where;
+    enum b2l_amfi_metadata_result result=find_metadata(r,base,&where);
+    if(result!=B2L_AMFI_XML_PRESENT)return result;
+    if(!where.xml_at)return B2L_AMFI_XML_ABSENT;
+    if(where.xml_size>capacity)return B2L_AMFI_XML_INVALID;
+    if(read_at(r,where.signature+where.xml_at,out,where.xml_size))return B2L_AMFI_XML_IO;
+    *length=where.xml_size;return B2L_AMFI_XML_PRESENT;
+}
+enum b2l_amfi_metadata_result
+b2l_amfi_read_identity(const struct b2l_amfi_reader*r,uint64_t base,void*out,size_t capacity,size_t*length)
+{
+    if(length)*length=0;
+    if(out&&capacity)((char*)out)[0]=0;
+    if(!out||!length||!capacity)return B2L_AMFI_XML_INVALID;
+    struct b2l_amfi_locations where;
+    enum b2l_amfi_metadata_result result=find_metadata(r,base,&where);
+    if(result!=B2L_AMFI_XML_PRESENT)return result;
+    if(!where.cd_at)return B2L_AMFI_XML_ABSENT;
+    uint8_t header[24];
+    if(where.cd_size<44)return B2L_AMFI_XML_INVALID;
+    if(read_at(r,where.signature+where.cd_at,header,sizeof(header)))return B2L_AMFI_XML_IO;
+    if(be32(header)!=0xfade0c02u)return B2L_AMFI_XML_INVALID;
+    uint32_t version=be32(header+8),offset=be32(header+20),minimum=44;
+    /* Pinned public CS_CodeDirectory versioned header sizes. Future layouts
+     * are rejected; the identifier must not alias any fixed header field. */
+    if(version<0x20000u||version>0x20600u)return B2L_AMFI_XML_INVALID;
+    if(version>=0x20100u)minimum=48;
+    if(version>=0x20200u)minimum=52;
+    if(version>=0x20300u)minimum=64;
+    if(version>=0x20400u)minimum=88;
+    if(version>=0x20500u)minimum=96;
+    if(version>=0x20600u)minimum=108;
+    if(where.cd_size<minimum||offset<minimum||offset>=where.cd_size)return B2L_AMFI_XML_INVALID;
+    size_t limit=where.cd_size-offset;
+    if(limit>B2L_AMFI_IDENTITY_MAX)limit=B2L_AMFI_IDENTITY_MAX;
+    if(limit>capacity)limit=capacity;
+    /* Stack staging keeps caller's output empty on IO/malformed failures. */
+    uint8_t text[B2L_AMFI_IDENTITY_MAX];
+    if(read_at(r,where.signature+where.cd_at+offset,text,limit))return B2L_AMFI_XML_IO;
+    for(size_t i=0;i<limit;i++)if(!text[i]){
+        if(i==0)return B2L_AMFI_XML_INVALID;
+        for(size_t j=0;j<=i;j++)((uint8_t*)out)[j]=text[j];
+        *length=i+1;return B2L_AMFI_XML_PRESENT;
+    }
+    return B2L_AMFI_XML_INVALID;
 }

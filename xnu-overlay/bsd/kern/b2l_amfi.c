@@ -78,6 +78,13 @@ int b2l_amfi_proc_copy_xml(proc_t process,void**out,size_t*length)
     void*e=proc_copy_ent(process);bool ok=b2l_ent_copy_xml(e,out,length);
     b2l_ent_release(e);return ok?0:ENOENT;
 }
+int b2l_amfi_proc_copy_identity(proc_t process,void**out,size_t*length)
+{
+    if(out)*out=NULL;if(length)*length=0;
+    if(!out||!length)return EINVAL;
+    void*e=proc_copy_ent(process);int error=b2l_ent_copy_identity(e,out,length);
+    b2l_ent_release(e);return error;
+}
 struct vnode_reader {struct vnode*vp;};
 static int vnode_read_metadata(void*opaque,uint64_t at,void*out,size_t length)
 {
@@ -98,7 +105,15 @@ static void *vnode_copy_ent(struct vnode*vp,off_t offset)
     struct b2l_amfi_reader reader={(uint64_t)bytes,vnode_read_metadata,&input};
     size_t length=0;
     enum b2l_amfi_metadata_result result=b2l_amfi_read_xml(&reader,(uint64_t)offset,xml,B2L_AMFI_XML_MAX,&length);
-    void*e=result==B2L_AMFI_XML_PRESENT?b2l_ent_create(xml,length,true):NULL;
+    char identifier[B2L_AMFI_IDENTITY_MAX];size_t identifier_len=0;
+    enum b2l_amfi_metadata_result id_result=b2l_amfi_read_identity(&reader,(uint64_t)offset,
+        identifier,sizeof(identifier),&identifier_len);
+    const void*id=id_result==B2L_AMFI_XML_PRESENT?identifier:NULL;
+    if(!id)identifier_len=0;
+    void*e=b2l_ent_create_metadata(result==B2L_AMFI_XML_PRESENT?xml:NULL,
+        result==B2L_AMFI_XML_PRESENT?length:0,true,id,identifier_len);
+    /* Malformed XML must not discard a separately well-formed identifier. */
+    if(!e&&id)e=b2l_ent_create_metadata(NULL,0,true,id,identifier_len);
     kfree_data(xml,B2L_AMFI_XML_MAX);
     /* Malformed/absent/DER-only XML grants no entitlements. Rootfs platform
      * classification is the separate, explicitly enabled development policy. */

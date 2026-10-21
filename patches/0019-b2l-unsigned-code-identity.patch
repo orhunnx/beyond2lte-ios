@@ -1,0 +1,55 @@
+--- a/bsd/kern/kern_proc.c
++++ b/bsd/kern/kern_proc.c
+@@ -3696,6 +3696,38 @@
+ 	return copyout(start, uaddr, length);
+ }
+ 
++#if defined(ARM64_BOARD_CONFIG_B2L)
++/* Match the native CS_OPS_IDENTITY wire format. Identity is unauthenticated
++ * development metadata, not a statement of signature validity or team trust. */
++static int
++b2l_csops_copy_identity(proc_t process, size_t usize, user_addr_t uaddr)
++{
++	uint8_t header[8] = { 0 };
++	void *identity = NULL;
++	size_t length = 0;
++	int error;
++	if (usize < sizeof(header)) return ERANGE;
++	error = b2l_amfi_proc_copy_identity(process, &identity, &length);
++	if (error) return error;
++	if (!identity || length < 2 || length > 1024 ||
++	    ((const char *)identity)[length - 1] != '\0' ||
++	    strnlen(identity, length) != length - 1) {
++		error = EINVAL;
++		goto done;
++	}
++	uint32_t total = htonl((uint32_t)(sizeof(header) + length));
++	memcpy(header + 4, &total, sizeof(total));
++	error = copyout(header, uaddr, sizeof(header));
++	if (!error) {
++		if (usize < sizeof(header) + length) error = ERANGE;
++		else error = copyout(identity, uaddr + sizeof(header), length);
++	}
++done:
++	if (identity) kfree_data(identity, length);
++	return error;
++}
++#endif
++
+ static int
+ csops_internal(pid_t pid, int ops, user_addr_t uaddr, user_size_t usersize, user_addr_t uaudittoken)
+ {
+@@ -4117,6 +4149,13 @@
+ 	}
+ 	case CS_OPS_IDENTITY:
+ 	case CS_OPS_TEAMID: {
++#if defined(ARM64_BOARD_CONFIG_B2L)
++		if (ops == CS_OPS_IDENTITY && b2l_amfi_active() &&
++		    !(proc_getcsflags(pt) & CS_SIGNED)) {
++			error = b2l_csops_copy_identity(pt, usize, uaddr);
++			goto out;
++		}
++#endif
+ 		const char *identity;
+ 		uint8_t fakeheader[8];
+ 		uint32_t idlen;

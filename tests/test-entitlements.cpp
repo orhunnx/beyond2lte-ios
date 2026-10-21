@@ -1,5 +1,6 @@
 #define B2L_AMFI_HOST_TEST 1
 #include <cassert>
+#include <cerrno>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -38,4 +39,11 @@ int main(){int base=live_objects;auto b=blob("<?xml version=\"1.0\"?><plist vers
  for(auto text:{"<dict ID=\"1\"></dict>","<dict><array IDREF=\"1\"/></dict>","<!DOCTYPE plist [<!ENTITY x 'x'>]><dict/>","<dict>BAD_DICT</dict>"}){auto bad=blob(text);assert(!b2l_ent_create(bad.data(),bad.size(),true));}
  std::string deep;for(unsigned i=0;i<33;i++)deep+="<array>";for(unsigned i=0;i<33;i++)deep+="</array>";auto bad=blob(deep);assert(!b2l_ent_create(bad.data(),bad.size(),true));
  allocation_fail=true;assert(!b2l_ent_create(b.data(),b.size(),true));allocation_fail=false;assert(live_objects==base&&live_buffers==0);
+ const char identity[]="example.fixture";p=b2l_ent_create_metadata(nullptr,0,true,identity,sizeof(identity));assert(p);
+ copy=(void*)1;n=99;assert(!b2l_ent_copy_identity(p,&copy,&n)&&n==sizeof(identity)&&!memcmp(copy,identity,n));
+ b2l_ent_release(p);assert(!memcmp(copy,identity,n));kfree_data(copy,n);
+ p=b2l_ent_create(nullptr,0,true);copy=(void*)1;n=1;assert(b2l_ent_copy_identity(p,&copy,&n)==ENOENT&&copy==nullptr&&!n);b2l_ent_release(p);
+ assert(!b2l_ent_create_metadata(nullptr,0,true,"",1));assert(!b2l_ent_create_metadata(nullptr,0,true,"a\0b",4));
+ p=b2l_ent_create_metadata(nullptr,0,true,identity,sizeof(identity));allocation_fail=true;copy=(void*)1;n=1;assert(b2l_ent_copy_identity(p,&copy,&n)==ENOMEM&&!copy&&!n);allocation_fail=false;b2l_ent_release(p);
+ assert(live_objects==base&&live_buffers==0);
  puts("Actual C++ metadata adapter: typed queries, retained copies, immutable nesting, bounded XML, failure cleanup PASS");return 0;}
