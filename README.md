@@ -39,8 +39,10 @@ its framebuffer console, completes VM startup and reaches BSD root discovery,
 registers its boot
 CPU, and receives real timer/self-SGI interrupts with timed scheduler wakeups.
 Build 0011 reaches a root-device wait for Apple_HFS without a panic. Native
-read-only UFS access is also verified on the device in build 0012. An HFS root
-and iOS userspace remain separate next milestones.**
+read-only UFS access is also verified on the device in build 0012. Build 0015
+mounts the populated native USERDATA HFS root read/write, then
+rejects the ARM64e launchd executable with EBADARCH. iOS userspace execution
+remains unverified.**
 [Build 0004](docs/build-0004.md) supplies the required 256-byte seed; its
 device result identified the next DT contract gap. [Build 0005](docs/build-0005.md)
 adds the required /chosen/memory-map and /defaults containers.
@@ -79,6 +81,11 @@ changed blocks written back. The subsequent 0014 device photograph confirms
 another successful read/write root mount, progress past the AMFI fault and an
 attempt to load `/sbin/launchd`. The final ENOENT panic is expected because that
 file and iOS userspace are not present.
+[Build 0015](docs/build-0015-arm64e.md) selects the populated USERDATA root.
+Its device photograph confirms the read/write mount and a launchd load attempt,
+ending with errno 86 (EBADARCH). Recovery instruction probes catch PACIA as
+SIGILL on every core; a coherent ARM64e execution and dyld/cache implementation
+is required before this iOS userspace can run.
 BOOT writes retain the original Android backup and are readback-verified.
 [Build 0002](docs/build-0002.md) uses a dynamic 1–2 GiB RAM arena within the
 unchanged firmware memory guards. [Build 0003](docs/build-0003.md) adds XNU-owned
