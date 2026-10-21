@@ -47,3 +47,11 @@ initial output, reseeding, refresh and digest answers. Four-thread generation,
 allocator known vectors, rejection ranges, unaligned buffers/canaries and
 startup ordering also pass. The full patch applies to the pristine pinned
 XNU index, and the prepared overlays match the built source.
+
+## Installation
+
+The authorized BOOT-only update completed after a full backup of the previous
+image. The original backup remains intact. Readback of the exact image prefix
+matched and the device was rebooted. Raw installation receipts and identifiers
+remain local and ignored. Progress past the prior data abort awaits a screen
+report.
