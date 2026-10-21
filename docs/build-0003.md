@@ -49,3 +49,13 @@ image. The original pre-0001 backup remains intact. The exact image prefix
 matched on device readback, then a reboot was requested. No other partition
 was written. The installation receipt is local and ignored. Actual kernel text
 from this build still requires a user screen report.
+
+## Device result
+
+The user photograph confirms XNU ENTRY, MMU PREP, MMU ON, C entry and stages
+1 through 7, including platform initialization and entry into arm_vm_init.
+The early panic renderer reports: Expected 256 seed bytes from bootloader,
+but got 64 (prng_random.c). Thus assembly entry, MMU enable, C execution and
+the framebuffer console work. VM initialization and interrupt proof are still
+pending. The next image supplies 256 genuine seed bytes through the loader
+and Apple device tree; the kernel's entropy requirement is retained.

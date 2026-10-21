@@ -19,6 +19,7 @@
 #include "BootPayload.h"
 #include "Progress.h"
 #include "Arena.h"
+STATIC_ASSERT(B2L_SEED_BYTES == B2L_BOOT_SEED_SIZE, "BOOT payload and XNU seed sizes must match");
 
 #define B2L_DT_SPACE (64 * 1024)
 #define B2L_MAP_SPACE (1024 * 1024)
@@ -75,29 +76,29 @@ static EFI_STATUS OpenRoot(EFI_HANDLE ImageHandle, EFI_FILE_PROTOCOL **Root)
     return Fs->OpenVolume(Fs, Root);
 }
 
-static EFI_STATUS GetSeed(EFI_FILE_PROTOCOL *Root, BOOLEAN HavePayloadSeed, UINT8 Seed[64])
+static EFI_STATUS GetSeed(EFI_FILE_PROTOCOL *Root, BOOLEAN HavePayloadSeed, UINT8 Seed[B2L_SEED_BYTES])
 {
     EFI_RNG_PROTOCOL *Rng;
     EFI_STATUS Status;
-    UINT8 RngSeed[64];
+    UINT8 RngSeed[B2L_SEED_BYTES];
     VOID *SeedFile;
     UINTN SeedSize;
     Status = gBS->LocateProtocol(&gEfiRngProtocolGuid, NULL, (VOID **)&Rng);
     if (!EFI_ERROR(Status)) {
-        Status = Rng->GetRNG(Rng, NULL, 64, RngSeed);
+        Status = Rng->GetRNG(Rng, NULL, sizeof(RngSeed), RngSeed);
         if (!EFI_ERROR(Status)) {
-            CopyMem(Seed, RngSeed, 64); ZeroMem(RngSeed, 64);
+            CopyMem(Seed, RngSeed, sizeof(RngSeed)); ZeroMem(RngSeed, sizeof(RngSeed));
             return EFI_SUCCESS;
         }
-        ZeroMem(RngSeed, 64);
+        ZeroMem(RngSeed, sizeof(RngSeed));
     }
     if (HavePayloadSeed) return EFI_SUCCESS;
     if (!Root) return EFI_NOT_FOUND;
-    Status = ReadFile(Root, L"\\EFI\\B2L\\seed.bin", 64, &SeedFile, &SeedSize);
+    Status = ReadFile(Root, L"\\EFI\\B2L\\seed.bin", B2L_SEED_BYTES, &SeedFile, &SeedSize);
     if (EFI_ERROR(Status)) return Status;
-    if (SeedSize != 64) { FreePool(SeedFile); return EFI_BAD_BUFFER_SIZE; }
-    CopyMem(Seed, SeedFile, 64);
-    ZeroMem(SeedFile, 64); FreePool(SeedFile);
+    if (SeedSize != B2L_SEED_BYTES) { ZeroMem(SeedFile, SeedSize); FreePool(SeedFile); return EFI_BAD_BUFFER_SIZE; }
+    CopyMem(Seed, SeedFile, B2L_SEED_BYTES);
+    ZeroMem(SeedFile, SeedSize); FreePool(SeedFile);
     return EFI_SUCCESS;
 }
 
@@ -232,7 +233,7 @@ EFI_STATUS EFIAPI UefiMain(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
     }
     Status = GetSeed(Root, PayloadSeed, Dt.random_seed);
     if (EFI_ERROR(Status)) {
-        Print(L"No genuine entropy: EFI RNG or a fresh 64-byte host seed is required.\r\n");
+        Print(L"No genuine entropy: EFI RNG or a fresh 256-byte host seed is required.\r\n");
         goto Fail;
     }
     Status = GetVideo(&Dt.video);

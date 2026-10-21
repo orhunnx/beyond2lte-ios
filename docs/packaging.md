@@ -23,18 +23,22 @@ to load or understand it. The EFI loader reads that trailer from storage.
 This avoids introducing an unverified Samsung ramdisk physical load address.
 
 The trailer begins at `page_size + align(kernel_size, page_size)`. Page size is
-2048 bytes. Its 128-byte little-endian header is:
+2048 bytes. Its version 2, 320-byte little-endian header is:
 
 | Offset | Size | Value |
 | --- | --- | --- |
-| 0 | 8 | ASCII `B2LXNU01` |
-| 8 | 4 | Version, 1 |
-| 12 | 4 | Header size, 128 |
+| 0 | 8 | ASCII `B2LXNU02` |
+| 8 | 4 | Version, 2 |
+| 12 | 4 | Header size, 320 |
 | 16 | 8 | Mach-O byte length |
-| 24 | 8 | Mach-O offset from header, 128 |
-| 32 | 64 | Host-generated random seed |
-| 96 | 32 | Reserved, zero |
-| 128 | variable | Thin ARM64 Mach-O |
+| 24 | 8 | Mach-O offset from header, 320 |
+| 32 | 256 | Host-generated random seed |
+| 288 | 32 | Reserved, zero |
+| 320 | variable | Thin ARM64 Mach-O |
+
+XNU requires all 256 seed bytes. Packaging obtains those bytes directly from
+`os.urandom(256)`; it does not repeat or pad a shorter seed. The loader rejects
+legacy `B2LXNU01` trailers, which supplied only 64 bytes, with a repackage error.
 
 The host seed changes when the image is packaged, **not on every reboot**.
 The loader prefers the firmware RNG. The static seed fallback is only for

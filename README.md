@@ -34,14 +34,15 @@ firmware profile build locally. Packaging produces a single Android v1
 loader reads that payload through the existing firmware UFS service from GPT
 partition `BOOT`; no separate ESP or SYSTEM/USERDATA transfer is required.
 
-**Build 0002 reached XNU's assembly entry on the device: the user confirmed
-its separate green entry marker. C initialization and real interrupt delivery
-remain unverified.** BOOT writes were backed up and readback-verified.
-The first photo confirms EFI execution; the later user report confirms XNU entry.
+**Build 0003 reached XNU C initialization on the device, with its own readable
+framebuffer output. MMU enable and platform initialization are verified by the
+user photograph. VM initialization currently stops at an insufficient boot seed
+(64 supplied; 256 required). Interrupt delivery remains unverified.**
+[Build 0004](docs/build-0004.md) supplies the required 256-byte seed and is ready
+for its device test. BOOT writes were backed up and readback-verified.
 [Build 0002](docs/build-0002.md) uses a dynamic 1–2 GiB RAM arena within the
-unchanged firmware memory guards, a large handoff panel and a scaled console.
-[Build 0003](docs/build-0003.md) adds XNU-owned text from assembly entry through
-VM initialization and the normal printf/kprintf console. Its device test is pending.
+unchanged firmware memory guards. [Build 0003](docs/build-0003.md) adds XNU-owned
+text from assembly entry through C and the normal printf/kprintf console.
 It does not contain an iOS root filesystem. Progress after the scheduler may
 stop while looking for a root device; that is separate from initial kernel
 entry and interrupt bring-up.

@@ -59,7 +59,7 @@ int b2l_build_device_tree(void *buffer, b2l_size capacity,
     prop(&w, &root, "#address-cells", &two, 4);
     prop(&w, &root, "#size-cells", &two, 4);
     chosen = begin(&w, &root, "chosen");
-    prop(&w, &chosen, "random-seed", c->random_seed, 64);
+    prop(&w, &chosen, "random-seed", c->random_seed, sizeof(c->random_seed));
     prop(&w, &chosen, "dram-base", &c->memory_base, 8);
     prop(&w, &chosen, "dram-size", &c->memory_size, 8);
     prop(&w, &chosen, "debug-enabled", &one, 4);

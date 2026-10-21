@@ -20,8 +20,10 @@ import uuid
 FD_BASE = 0xC9000000
 FD_SIZE = 0x400000
 PAGE = 2048
-MAGIC = b"B2LXNU01"
-HEADER_SIZE = 128
+MAGIC = b"B2LXNU02"
+PAYLOAD_VERSION = 2
+HEADER_SIZE = 320
+SEED_SIZE = 256
 
 
 def align(value, alignment=PAGE):
@@ -30,6 +32,12 @@ def align(value, alignment=PAGE):
 
 def sha256(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def make_payload_header(kernel_size):
+    """Supply the full XNU boot seed directly from the host operating system."""
+    header = struct.pack("<8sIIQQ", MAGIC, PAYLOAD_VERSION, HEADER_SIZE, kernel_size, HEADER_SIZE)
+    return header + os.urandom(SEED_SIZE) + bytes(32)
 
 
 def volume_contains_loader(data, loader):
@@ -103,7 +111,9 @@ def check_boot(path):
     if trailer + HEADER_SIZE > len(data):
         raise ValueError("BOOT trailer is truncated")
     magic, payload_version, header_size, size, offset = struct.unpack_from("<8sIIQQ", data, trailer)
-    if (magic, payload_version, header_size, offset) != (MAGIC, 1, HEADER_SIZE, HEADER_SIZE):
+    if magic == b"B2LXNU01":
+        raise ValueError("legacy BOOT trailer provides only 64 seed bytes; repackage v2 with 256 seed bytes")
+    if (magic, payload_version, header_size, offset) != (MAGIC, PAYLOAD_VERSION, HEADER_SIZE, HEADER_SIZE):
         raise ValueError("invalid BOOT trailer header")
     if size < 4096 or size > 128 * 1024 * 1024 or trailer + offset + size != len(data):
         raise ValueError("invalid BOOT trailer size")
@@ -111,7 +121,8 @@ def check_boot(path):
     if struct.unpack_from("<III", data, macho) != (0xfeedfacf, 0x0100000c, 0):
         raise ValueError("XNU must be a thin, plain ARM64 Mach-O image")
     return {"android_kernel_bytes": kernel_size, "trailer_file_offset": trailer,
-            "xnu_bytes": size, "boot_bytes": len(data), "ramdisk_bytes": 0}
+            "xnu_bytes": size, "boot_bytes": len(data), "ramdisk_bytes": 0,
+            "payload_version": PAYLOAD_VERSION, "seed_bytes": SEED_SIZE}
 
 
 def main():
@@ -174,8 +185,7 @@ def main():
     expected_trailer = PAGE + align(len(shim) + len(fd) + len(dtb))
     if len(boot) != expected_trailer:
         p.error("unexpected Android BOOT component padding")
-    header = struct.pack("<8sIIQQ", MAGIC, 1, HEADER_SIZE, len(kernel), HEADER_SIZE)
-    header += os.urandom(64) + bytes(32)
+    header = make_payload_header(len(kernel))
     final_size = len(boot) + len(header) + len(kernel)
     limit = min(a.max_image_bytes, a.boot_partition_bytes or a.max_image_bytes)
     if final_size > limit:
@@ -186,7 +196,7 @@ def main():
         out.write(kernel)
     layout = check_boot(image)
     manifest = {
-        "format": "beyond2lte-xnu-boot-v1", "device": "beyond2lte", "model": "SM-G975F",
+        "format": "beyond2lte-xnu-boot-v2", "device": "beyond2lte", "model": "SM-G975F",
         "status": "offline-built; not device-boot-verified", "layout": layout,
         "firmware_base": hex(FD_BASE), "firmware_bytes": FD_SIZE,
         "confirmed_target_boot_partition_bytes": a.boot_partition_bytes,

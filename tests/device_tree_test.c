@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "../uefi/XnuLoader/DeviceTree.h"
+static unsigned seed_properties;
 static uint32_t read32(const unsigned char *p) { uint32_t n; memcpy(&n,p,4); return n; }
 static size_t decode(const unsigned char *buf, size_t size, size_t off,
                      unsigned depth, unsigned *nodes, unsigned *properties)
@@ -23,7 +24,7 @@ static size_t decode(const unsigned char *buf, size_t size, size_t off,
         if (!strcmp(name,"reg") && node_name && !strcmp(node_name,"framebuffer")) {
             uint64_t pa; memcpy(&pa,buf+off,8); assert(depth==1 && len==16 && pa==0xca000000);
         }
-        if (!strcmp(name,"random-seed")) { assert(len==64); for(unsigned j=0;j<64;++j)assert(buf[off+j]==j+1); }
+        if (!strcmp(name,"random-seed")) { ++seed_properties; assert(len==256); for(unsigned j=0;j<256;++j)assert(buf[off+j]==(unsigned char)(j+1)); }
         if (!strcmp(name,"timebase-frequency")) assert(len==4 && read32(buf+off)==26000000);
         if (!strcmp(name,"state")) assert(len==8 && !memcmp(buf+off,"running",8));
         if (!strcmp(name,"device_type")) assert(len && buf[off+len-1]==0);
@@ -41,11 +42,12 @@ int main(void)
     c.memory_base=0x900000000ULL; c.memory_size=512ULL*1024*1024;
     c.mpidr=0x80000100; c.counter_frequency=26000000;
     c.video.base=0xca000000; c.video.row_bytes=1440*4; c.video.width=1440; c.video.height=3040;
-    for(unsigned i=0;i<64;++i)c.random_seed[i]=i+1;
+    _Static_assert(B2L_SEED_BYTES == 256, "XNU PRNG seed length");
+    for(unsigned i=0;i<B2L_SEED_BYTES;++i)c.random_seed[i]=(unsigned char)(i+1);
     assert(b2l_build_device_tree(buf,sizeof(buf),&c,&used)==0);
     unsigned nodes=0, props=0;
     assert(decode(buf,used,0,0,&nodes,&props)==used);
-    assert(nodes==9 && props>40);
+    assert(nodes==9 && props>40 && seed_properties==1);
     for(size_t capacity=0;capacity<used;++capacity) {
         size_t ignored=0; memset(small,0x5a,sizeof(small));
         assert(b2l_build_device_tree(small,capacity,&c,&ignored)<0);

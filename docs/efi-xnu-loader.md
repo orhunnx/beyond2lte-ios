@@ -8,9 +8,9 @@ reference firmware's ACPI and Windows platform material.
 
 The preferred source is the logical GPT partition named exactly `BOOT`, read
 through EFI Block I/O and Disk I/O. An Android v1 header locates a bounded opaque
-`B2LXNU01` trailer after the page-aligned kernel field. The Android ramdisk size
+`B2LXNU02` trailer after the page-aligned kernel field. The Android ramdisk size
 stays zero, so this data is not offered to Samsung S-Boot as a Linux initramfs.
-The trailer contains a 128-byte header followed by a plain ARM64 Mach-O kernel.
+The trailer contains a 320-byte header followed by a plain ARM64 Mach-O kernel.
 The payload reader rejects recognized but malformed payloads. It never writes
 partitions or persistent EFI variables.
 
@@ -22,7 +22,7 @@ AArch64 PAC (`arm64e`) kernels are rejected. The virtual slide is zero.
 
 ## Entropy
 
-EFI RNG is preferred. If unavailable, the loader uses the 64-byte host-generated
+EFI RNG is preferred. If unavailable, the loader uses the 256-byte host-generated
 seed in the BOOT payload, or `\EFI\B2L\seed.bin` for filesystem loading.
 The packager must generate this seed from the host operating system's random
 source. The loader does not substitute timestamps, counter values, zeros or

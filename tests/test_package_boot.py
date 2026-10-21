@@ -4,7 +4,9 @@ import importlib.util
 import lzma
 from pathlib import Path
 import struct
+import tempfile
 import unittest
+from unittest.mock import patch
 import uuid
 
 spec = importlib.util.spec_from_file_location("package_boot", Path(__file__).resolve().parents[1] / "scripts/package-boot.py")
@@ -58,6 +60,60 @@ class FirmwarePayloadTests(unittest.TestCase):
 
     def test_missing_loader_rejected(self):
         self.assertFalse(pack.firmware_contains_loader(guided_lzma(section(0x17, volume(b""))), self.loader))
+
+
+class BootTrailerTests(unittest.TestCase):
+    def kernel(self):
+        image = bytearray(4096)
+        struct.pack_into("<III", image, 0, 0xfeedfacf, 0x0100000c, 0)
+        return bytes(image)
+
+    def android_prefix(self):
+        prefix = bytearray(pack.PAGE + pack.align(4096))
+        prefix[:8] = b"ANDROID!"
+        struct.pack_into("<I", prefix, 8, 4096)
+        struct.pack_into("<II", prefix, 36, pack.PAGE, 1)
+        struct.pack_into("<I", prefix, 1644, 1648)
+        return prefix
+
+    def verify(self, data):
+        with tempfile.NamedTemporaryFile() as image:
+            image.write(data)
+            image.flush()
+            return pack.check_boot(Path(image.name))
+
+    def test_seed_uses_all_256_host_bytes_once(self):
+        seed = bytes(range(256))
+        with patch.object(pack.os, "urandom", return_value=seed) as random:
+            header = pack.make_payload_header(4096)
+        random.assert_called_once_with(256)
+        self.assertEqual(len(header), 320)
+        self.assertEqual(header[32:288], seed)
+        self.assertEqual(header[288:320], bytes(32))
+        result = self.verify(self.android_prefix() + header + self.kernel())
+        self.assertEqual(result["payload_version"], 2)
+        self.assertEqual(result["seed_bytes"], 256)
+
+    def test_legacy_64_byte_seed_requires_repackaging(self):
+        header = struct.pack("<8sIIQQ", b"B2LXNU01", 1, 128, 4096, 128) + bytes(range(64)) + bytes(32)
+        with self.assertRaisesRegex(ValueError, "legacy.*64.*256"):
+            self.verify(self.android_prefix() + header + self.kernel())
+
+    def test_truncated_v2_seed_rejected(self):
+        with self.assertRaisesRegex(ValueError, "truncated"):
+            self.verify(self.android_prefix() + pack.make_payload_header(4096)[:200])
+
+    def test_wrong_v2_offset_rejected(self):
+        header = bytearray(pack.make_payload_header(4096))
+        struct.pack_into("<Q", header, 24, 128)
+        with self.assertRaisesRegex(ValueError, "invalid BOOT trailer header"):
+            self.verify(self.android_prefix() + header + self.kernel())
+
+    def test_declared_kernel_length_overflow_rejected(self):
+        header = bytearray(pack.make_payload_header(4096))
+        struct.pack_into("<Q", header, 16, 2**64 - 1)
+        with self.assertRaisesRegex(ValueError, "invalid BOOT trailer size"):
+            self.verify(self.android_prefix() + header + self.kernel())
 
 
 if __name__ == "__main__":
