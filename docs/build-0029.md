@@ -28,3 +28,12 @@ beyond the prior boot task requires the next device screen.
 See [signing API inventory](signing-api-inventory.md) for remaining metadata
 and authentication surfaces. Their presence in the source does not mean they
 are all required by the current boot path.
+
+## Device continuation
+
+The next physical screen confirms that launchd starts real boot tasks and child
+processes. MobileAssetEarlyBootTask completes and keybagd starts. The original
+mount-task identity failure is passed. The new fatal condition is failure to
+load the system keybag; keybagd requests recovery, processes terminate and the
+HFS root unmounts. The final halt/restart timeout is a secondary platform reset
+limitation, not the initiating keybag failure.

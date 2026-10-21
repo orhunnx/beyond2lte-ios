@@ -100,6 +100,9 @@ policy-registration fault; [0028b](docs/build-0028b.md) moves registration befor
 lockdown. [0029](docs/build-0029.md) adds the boot-task identifier query after
 0028b reaches real launchd boot tasks. See the [shim audit](docs/shim-audit.md)
 for confirmed gaps and the distinction between local tests and runtime proof.
+The 0029 device subsequently reaches keybagd; [0030](docs/build-0030.md) adds a
+scoped [volatile development KeyStore](docs/development-keystore.md) for this
+no-passcode HFS bring-up.
 BOOT writes retain the original Android backup and are readback-verified.
 [Build 0002](docs/build-0002.md) uses a dynamic 1–2 GiB RAM arena within the
 unchanged firmware memory guards. [Build 0003](docs/build-0003.md) adds XNU-owned
