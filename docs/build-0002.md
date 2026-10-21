@@ -54,3 +54,16 @@ output. A successful KERNEL JUMP stage establishes only that the branch is
 about to execute. The marker establishes assembly entry; the C banner and
 real timer interrupt proof are separate milestones. No root filesystem is
 included, so a later root-device wait is expected.
+
+## Device result
+
+The BOOT write completed after a full backup of the preceding image; the
+original pre-0001 backup was preserved. The exact 22,499,912-byte image prefix
+matched on readback and the device was rebooted. The local receipt is ignored.
+
+The user photograph shows all six handoff stages green, including KERNEL JUMP.
+This confirms ExitBootServices returned and the MMU-off path reached the final
+branch preparation. No XNU-owned entry marker or kernel console is visible.
+Kernel entry, C initialization and interrupts remain unverified. The next
+iteration adds the early framebuffer text path used in the A5 reference port.
+The photograph itself and device identifiers are not committed.
