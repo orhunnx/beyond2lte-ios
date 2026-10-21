@@ -1,0 +1,59 @@
+--- a/bsd/kern/kern_exec.c
++++ b/bsd/kern/kern_exec.c
+@@ -7074,6 +7074,41 @@
+ 
+ _Atomic uint64_t libmalloc_experiment_factors = 0;
+ 
++#if defined(ARM64_BOARD_CONFIG_B2L)
++/* Malloc requires a boot-scoped executable identity even for unsigned exec.
++ * This is not a CodeDirectory digest, signature, entitlement or trust claim. */
++static int
++b2l_exec_unsigned_boothash(struct image_params *imgp)
++{
++	if (imgp->ip_vattr == NULL) {
++		return EINVAL;
++	}
++	static const char domain[] = "B2L unsigned executable identity";
++	uint64_t identity[3] = {
++		vnode_get_va_fsid(imgp->ip_vattr),
++		imgp->ip_vattr->va_fileid,
++		imgp->ip_arch_offset,
++	};
++	uint8_t digest[SHA256_DIGEST_LENGTH];
++	SHA256_CTX ctx;
++	SHA256_Init(&ctx);
++	SHA256_Update(&ctx, domain, sizeof(domain));
++	SHA256_Update(&ctx, &exe_boothash_salt, sizeof(exe_boothash_salt));
++	SHA256_Update(&ctx, bootsessionuuid_string, sizeof(bootsessionuuid_string));
++	SHA256_Update(&ctx, identity, sizeof(identity));
++	SHA256_Final(digest, &ctx);
++
++	char value[sizeof(APP_BOOT_SESSION_KEY) + 2 * SHA1_RESULTLEN];
++	memcpy(value, APP_BOOT_SESSION_KEY, sizeof(APP_BOOT_SESSION_KEY) - 1);
++	char *p = value + sizeof(APP_BOOT_SESSION_KEY) - 1;
++	for (unsigned i = 0; i < SHA1_RESULTLEN; ++i) {
++		snprintf(p, 3, "%02x", (unsigned)digest[i]);
++		p += 2;
++	}
++	return exec_add_user_string(imgp, CAST_USER_ADDR_T(value), UIO_SYSSPACE, FALSE);
++}
++#endif
++
+ static int
+ exec_add_apple_strings(struct image_params *imgp,
+     const load_result_t *load_result, task_t task)
+@@ -7235,6 +7270,14 @@
+ 			goto bad;
+ 		}
+ 		imgp->ip_applec++;
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	} else if (!cs_process_global_enforcement()) {
++		error = b2l_exec_unsigned_boothash(imgp);
++		if (error) {
++			goto bad;
++		}
++		imgp->ip_applec++;
++#endif
+ 	}
+ #if (DEVELOPMENT || DEBUG)
+ 	if (dyld_flags) {
