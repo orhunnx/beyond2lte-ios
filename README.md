@@ -92,6 +92,11 @@ PoC, with scalar assembly control-flow handling, software QARMA5 PACGA and
 host tests pass. BOOT installation was readback-verified and reboot accepted;
 physical EL0 execution remains unverified. Signed execution and other iOS
 services remain follow-on work.
+Subsequent device tests through [0027](docs/build-0027.md) demonstrate real
+ARM64e launchd and shared-cache execution, followed by a startup assertion.
+[Build 0028](docs/build-0028.md) adds A5-style development Sandbox, work-interval
+and AMFI XML/platform metadata support. See the [shim audit](docs/shim-audit.md)
+for confirmed gaps and the distinction between local tests and runtime proof.
 BOOT writes retain the original Android backup and are readback-verified.
 [Build 0002](docs/build-0002.md) uses a dynamic 1–2 GiB RAM arena within the
 unchanged firmware memory guards. [Build 0003](docs/build-0003.md) adds XNU-owned

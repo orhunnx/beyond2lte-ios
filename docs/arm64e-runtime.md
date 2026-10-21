@@ -2,8 +2,9 @@
 
 This is an opt-in runtime compatibility service for the plain ARM64 B2L kernel.
 It leaves `HAS_APPLE_PAC` disabled and retains the real ARM64_V8 host subtype.
-It does not modify executable files, install a fake crypto/AMFI provider, or
-claim authenticated-pointer security.
+It does not modify executable files or claim authenticated-pointer security.
+[Build 0028](build-0028.md) separately supplies explicitly unauthenticated
+AMFI development metadata, without a verified signature or fake crypto provider.
 
 ## Activation and execution
 
@@ -88,8 +89,9 @@ a 4 KiB kernel. The existing CodeDirectory admission guard remains unchanged;
 simply relaxing it would risk hashing beyond a physical page. That is a
 separate signed-execution integration requirement.
 
-The existing unavailable-AMFI adapter still fails signed-executable entitlement
-processing closed with EPERM. Other unimplemented ARM instruction extensions,
+The unavailable-AMFI guards remain in place. Build 0028 provides unsigned
+rootfs XML entitlement/platform metadata; signed-executable context adjustment
+and DER/CoreEntitlements remain unsupported. Other unimplemented ARM instruction extensions,
 userspace ABI expectations, page-size assumptions, dyld per-image fixups,
 code-signing formats and unavailable device/framework services remain possible
 subsequent blockers. Passing host/native compilation does not establish that

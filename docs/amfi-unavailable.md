@@ -1,5 +1,9 @@
 # Unavailable AMFI entitlement interface
 
+This documents the 0014 absent-provider guards. [Build 0028](build-0028.md)
+adds a separate opt-in unsigned development metadata provider; these guards
+remain effective when that provider is disabled, missing or incomplete.
+
 Build 0013 physically mounted the native HFS SYSTEM volume read/write and
 completed native writes/flushes. Startup then faulted in the inlined
 `IOCurrentTaskHasEntitlement` path because `amfi` was NULL. The next change is

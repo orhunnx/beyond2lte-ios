@@ -11,8 +11,8 @@ def main():
     xnu = Path(sys.argv[1]).resolve()
     stage = Path(__file__).resolve().parent.parent
     patches = sorted((stage / 'patches').glob('[0-9][0-9][0-9][0-9]-*.patch'))
-    if len(patches) != 15:
-        raise SystemExit('Expected exactly fifteen board patches')
+    if len(patches) != 17:
+        raise SystemExit('Expected exactly seventeen board patches')
     head = subprocess.check_output(['git', '-C', str(xnu), 'rev-parse', 'HEAD'], text=True).strip()
     objects = subprocess.check_output(['git', '-C', str(xnu), 'rev-parse',
                                       '--git-path', 'objects'], text=True).strip()
@@ -44,7 +44,7 @@ def main():
             elif result.returncode != 158:
                 raise SystemExit('Cannot read pinned source fixture')
         command = [sys.executable, str(helper), str(fixture)]
-        subprocess.run(command + list(map(str, patches[:14])), check=True)
+        subprocess.run(command + list(map(str, patches[:15])), check=True)
         subprocess.run(command + list(map(str, patches)), check=True)
         subprocess.run(command + list(map(str, patches)), check=True)
         target = fixture / 'iokit/bsddev/IOKitBSDInit.cpp'
@@ -53,7 +53,7 @@ def main():
         result = subprocess.run(command + list(map(str, patches)), capture_output=True)
         assert result.returncode != 0 and target.read_bytes() == before
         assert b'Refusing modified or partial board patch state' in result.stderr
-    print('Actual patch sequence: 0014->0015, idempotence and local-edit refusal passed')
+    print('Actual patch sequence: 0015->0017, idempotence and local-edit refusal passed')
 
 
 if __name__ == '__main__':

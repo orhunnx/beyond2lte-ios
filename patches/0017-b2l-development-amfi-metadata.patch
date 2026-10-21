@@ -1,0 +1,142 @@
+--- a/bsd/conf/Makefile.template
++++ b/bsd/conf/Makefile.template
+@@ -660,3 +660,6 @@
+ 
+ include $(MakeInc_rule)
+ include $(MakeInc_dir)
++
++b2l_amfi.o_CFLAGS_ADD += -mgeneral-regs-only
++b2l_amfi_metadata.o_CFLAGS_ADD += -mgeneral-regs-only
+--- a/bsd/conf/files
++++ b/bsd/conf/files
+@@ -672,3 +672,6 @@
+ bsd/b2l_hfs/b2l_hfs_iokit.c	optional b2l
+ bsd/kern/b2l_root_policy.c	optional b2l
+ bsd/kern/b2l_sandbox.c	optional b2l
++
++bsd/kern/b2l_amfi.c optional b2l
++bsd/kern/b2l_amfi_metadata.c optional b2l
+--- a/bsd/kern/bsd_init.c
++++ b/bsd/kern/bsd_init.c
+@@ -582,6 +582,8 @@
+ #if defined(ARM64_BOARD_CONFIG_B2L)
+ 	extern void b2l_sandbox_register(void);
+ 	b2l_sandbox_register();
++	extern void b2l_amfi_policy_register(void);
++	b2l_amfi_policy_register();
+ #endif
+ 
+ #if defined (__i386__) || defined (__x86_64__)
+--- a/bsd/kern/kern_cs.c
++++ b/bsd/kern/kern_cs.c
+@@ -26,6 +26,9 @@
+  * @APPLE_OSREFERENCE_LICENSE_HEADER_END@
+  */
+ 
++#if defined(ARM64_BOARD_CONFIG_B2L)
++#include "b2l_amfi.h"
++#endif
+ #include <sys/types.h>
+ #include <sys/param.h>
+ #include <sys/systm.h>
+@@ -929,6 +932,10 @@
+ int
+ csproc_get_platform_binary(struct proc *p)
+ {
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	if (b2l_amfi_is_platform(p)) return 1;
++#endif
++
+ 	struct cs_blob *csblob;
+ 
+ 	csblob = csproc_get_blob(p);
+@@ -954,6 +961,14 @@
+ {
+ 	struct cs_blob *csblob = csproc_get_blob(p);
+ 	struct cs_blob_platform_flags platform_flags;
++
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	if (b2l_amfi_active() && csblob == NULL) {
++		/* Native CS_OPS_CLEARPLATFORM cleared proc flags before this call. */
++		task_set_platform_binary(proc_task(p), FALSE);
++		return;
++	}
++#endif
+ 
+ 	if (csblob == NULL) {
+ 		return;
+--- a/bsd/kern/kern_exec.c
++++ b/bsd/kern/kern_exec.c
+@@ -79,6 +79,7 @@
+  * Version 2.0.
+  */
+ #if defined(ARM64_BOARD_CONFIG_B2L)
++#include "b2l_amfi.h"
+ #include <arm64/b2l_arm64e_compat.h>
+ #include <arm64/b2l_early.h>
+ #endif
+@@ -2135,6 +2136,14 @@
+ 	}
+ #endif
+ 
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	if (b2l_amfi_active()) {
++		/* Main executable only. The existing branch below updates the
++		 * selected new task and clears stale platform state on re-exec. */
++		load_result.platform_binary = b2l_amfi_vnode_is_platform(imgp->ip_vp);
++	}
++#endif
++
+ 	proc_lock(p);
+ 	p->p_cputype = imgp->ip_origcputype;
+ 	p->p_cpusubtype = imgp->ip_origcpusubtype;
+--- a/bsd/kern/kern_proc.c
++++ b/bsd/kern/kern_proc.c
+@@ -76,6 +76,9 @@
+  */
+ 
+ 
++#if defined(ARM64_BOARD_CONFIG_B2L)
++#include "b2l_amfi.h"
++#endif
+ #include <sys/param.h>
+ #include <sys/systm.h>
+ #include <sys/kernel.h>
+@@ -3906,6 +3909,21 @@
+ 		size_t length;
+ 		struct cs_blob* blob;
+ 
++#if defined(ARM64_BOARD_CONFIG_B2L)
++		if (b2l_amfi_active()) {
++			/* Existing csops target/access checks ran before this switch.
++			 * Metadata copy owns its storage; no CS_VALID/SIGNED assertion. */
++			void *xml = NULL;
++			size_t xml_length = 0;
++			error = b2l_amfi_proc_copy_xml(pt, &xml, &xml_length);
++			if (!error) {
++				error = csops_copy_token(xml, xml_length, usize, uaddr);
++				kfree_data(xml, xml_length);
++			}
++			goto out;
++		}
++#endif
++
+ 		proc_lock(pt);
+ 		if ((proc_getcsflags(pt) & (CS_VALID | CS_DEBUGGED)) == 0) {
+ 			proc_unlock(pt);
+--- a/iokit/conf/Makefile.template
++++ b/iokit/conf/Makefile.template
+@@ -249,3 +249,5 @@
+ 
+ include $(MakeInc_rule)
+ include $(MakeInc_dir)
++
++B2LEntitlements.cpo_CFLAGS_ADD += -mgeneral-regs-only
+--- a/iokit/conf/files
++++ b/iokit/conf/files
+@@ -164,3 +164,5 @@
+ OPTIONS/b2l optional b2l
+ iokit/Kernel/arm/B2LPlatformExpert.cpp optional iokitcpp b2l
+ iokit/Kernel/arm/B2LCPU.cpp optional iokitcpp b2l
++
++iokit/Kernel/arm/B2LEntitlements.cpp optional iokitcpp b2l

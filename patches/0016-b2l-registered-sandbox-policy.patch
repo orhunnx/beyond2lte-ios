@@ -1,0 +1,20 @@
+--- a/bsd/conf/files
++++ b/bsd/conf/files
+@@ -671,3 +671,4 @@
+ bsd/b2l_hfs/upstream/core/rangelist.c	optional b2l
+ bsd/b2l_hfs/b2l_hfs_iokit.c	optional b2l
+ bsd/kern/b2l_root_policy.c	optional b2l
++bsd/kern/b2l_sandbox.c	optional b2l
+--- a/bsd/kern/bsd_init.c
++++ b/bsd/kern/bsd_init.c
+@@ -579,6 +579,10 @@
+ 	 * Initialize the MAC Framework
+ 	 */
+ 	mac_policy_initbsd();
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	extern void b2l_sandbox_register(void);
++	b2l_sandbox_register();
++#endif
+ 
+ #if defined (__i386__) || defined (__x86_64__)
+ 	/*
