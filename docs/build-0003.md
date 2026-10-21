@@ -41,3 +41,11 @@ Image: ignored `out/0003/boot.img`; component hashes are in its local manifest.
 Device behavior is pending. The first visible XNU text and the last initialization
 line are required before claiming C initialization, VM setup or interrupt proof.
 Only the authorized BOOT partition may be updated; the original backup remains.
+
+## Installation
+
+The authorized BOOT-only update completed after a full backup of the preceding
+image. The original pre-0001 backup remains intact. The exact image prefix
+matched on device readback, then a reboot was requested. No other partition
+was written. The installation receipt is local and ignored. Actual kernel text
+from this build still requires a user screen report.
