@@ -38,3 +38,11 @@ raw logs, photographs or device-unique identifiers are committed.
 
 Confirm progress past stage 7 and inspect the next early console line or panic.
 VM initialization and actual timer interrupt delivery remain unverified.
+
+## Installation
+
+The BOOT-only update completed with a full backup of the preceding image.
+The original pre-0001 backup was preserved. The 22,518,800-byte prefix matched
+on readback, then the device was rebooted. The local receipt and identifiers
+remain ignored. Progress beyond the previously observed seed panic is pending
+a new screen report.
