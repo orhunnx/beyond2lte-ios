@@ -61,7 +61,10 @@ original Android BOOT and SYSTEM backups remain intact. Exact image-prefix
 readback matched, then the device was rebooted. SYSTEM was not written; raw
 receipts and identifiers remain local and ignored.
 
-The device test must report successful native capacity,
-primary/backup GPT CRC verification and bounded SYSTEM signature reads. Existing
-HFS root waiting is expected because HFS/root integration is outside this update.
-No SYSTEM write is performed and no new BOOT backup is required.
+The device photograph confirms successful native READ CAPACITY, publication of
+the read-only BSD whole-LU devices, primary/backup GPT CRC verification, and a
+bounded SYSTEM probe recognizing Android LP geometry. Native UFS takeover and
+reads after ExitBootServices are therefore physically verified. Existing
+Apple_HFS root waiting remains expected: HFS/root integration is outside this
+kernel update. The later authorized SYSTEM HFS+ preparation is recorded
+separately in [SYSTEM HFS+ preparation](system-hfs.md).

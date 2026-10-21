@@ -392,7 +392,7 @@ verified seal. An empty HFS volume also contains no init/launchd userspace. No
 filesystem integration, kernel build or device/storage writes were performed
 as part of this audit.
 
-## Native read-only UFS BSD adapter (build 0012 candidate)
+## Native read-only UFS BSD adapter (build 0012)
 
 The native disk adapter is initialized after BSD pseudo devices and before
 `IOKitBSDInit`. It consumes the transport's actual READ CAPACITY geometry;
@@ -440,5 +440,7 @@ EOF, canaries and partial errors. Strategy tests verify residuals, completion,
 mapping failures, sector-size controls and rejection of writes before I/O.
 The SYSTEM-named Android LP container case is exercised explicitly. Both new
 disk translation units also compile with the current B2L BSD kernel flags.
-Device UFS read success remains a separate test; the prior 0011 photo proves
-only the kernel milestone and root-device wait described above.
+The 0012 device photograph confirms native read-only capacity, BSD device
+publication, validated primary/backup GPT and a bounded SYSTEM signature read.
+The driver successfully operates after ExitBootServices. This is native storage
+read proof; it does not establish an HFS mount or userspace boot.

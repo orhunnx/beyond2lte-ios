@@ -10,8 +10,9 @@ UFS before ExitBootServices, but XNU cannot call those expired boot services.
 ## Native UFS path
 
 Build 0012 implements the read-only native transport, BSD devices and strict GPT
-validation described below. It builds and passes host tests; physical DMA and
-GPT-read proof remain pending. No HFS integration or SYSTEM write is included.
+validation described below. Its device photograph confirms native capacity, BSD devices, main/backup GPT
+CRC verification and the Android LP SYSTEM signature. Physical native UFS reads
+are verified. HFS integration is not included in this kernel.
 
 The existing open-source Samsung UfsDxe implementation provides a hardware
 reference. A native read-only driver can attempt takeover of the inherited live
@@ -54,7 +55,8 @@ raw layout and identifiers stay local and ignored. No SYSTEM formatting is
 needed to establish the already verified kernel-boot milestone.
 
 The original Android SYSTEM container has now been backed up once, with its
-full length and SHA-256 compared against the device. The device was read only;
-no HFS image has been flashed. Future trials reuse that original backup.
+full length and SHA-256 compared against the device. This original backup is retained for future trials. The subsequent authorized
+empty HFS+ SYSTEM image is documented in [SYSTEM preparation](system-hfs.md);
+filesystem preparation does not establish a mounted XNU root.
 The original Android BOOT backup is also retained; per-build BOOT backups are
 no longer part of the authorized update procedure.

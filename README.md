@@ -39,7 +39,8 @@ its framebuffer console, completes VM startup and reaches BSD root discovery,
 registers its boot
 CPU, and receives real timer/self-SGI interrupts with timed scheduler wakeups.
 Build 0011 reaches a root-device wait for Apple_HFS without a panic. Native
-storage access, an HFS root and iOS userspace remain separate next milestones.**
+read-only UFS access is also verified on the device in build 0012. An HFS root
+and iOS userspace remain separate next milestones.**
 [Build 0004](docs/build-0004.md) supplies the required 256-byte seed; its
 device result identified the next DT contract gap. [Build 0005](docs/build-0005.md)
 adds the required /chosen/memory-map and /defaults containers.
@@ -62,7 +63,9 @@ in the Apple device tree. Its device photograph confirms the root-device wait
 without the previous panic.
 [Build 0012](docs/build-0012.md) adds native read-only UFS transport and bounded
 BSD disk/GPT access, adapted from the working UEFI driver. Its BOOT-only
-installation is verified; physical UFS proof is pending.
+installation and physical native UFS capacity/GPT/signature reads are verified.
+The subsequent authorized [empty SYSTEM HFS+ image](docs/system-hfs.md) is a
+separate storage preparation step.
 BOOT writes were backed up and readback-verified.
 [Build 0002](docs/build-0002.md) uses a dynamic 1–2 GiB RAM arena within the
 unchanged firmware memory guards. [Build 0003](docs/build-0003.md) adds XNU-owned
