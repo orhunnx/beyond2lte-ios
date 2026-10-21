@@ -167,8 +167,9 @@ external provider exists. Full `size_t` requests are split into unsigned-sized
 chunks. SHA-256 and SHA-512 wrappers similarly select existing built-in digests;
 the latter is required by the live entropy conditioner and user reseeding.
 These narrow adapters do not register a partial global corecrypto table.
-AES, RSA, SHA-384 and other external-provider services are not implemented by
-this first-boot target; it does not load a later external crypto provider.
+At build 0006, AES, RSA, SHA-384 and other external-provider services were not
+implemented. Build 0010 adds real AES CBC/ECB as described below; the target
+still does not load a later external global crypto provider.
 
 `tests/test_random_services.py /path/to/patched/xnu` compiles the actual adapter
 bodies and locally supplied upstream crypto implementation under ASan/UBSan.
@@ -275,4 +276,47 @@ tests execute the actual registration table/start/current-thread helper and
 registration ordering, retained duplicate/missing-provider panics, callback
 completeness and refusal to rebuild from edited staged input. The actual kernel
 build and linked symbols confirm the complete provider is present. Device
-execution of 0009 remains pending. Physical guards are unchanged.
+The 0009 device photo confirms progress beyond pthread initialization into
+DLIL work threads, then a separate AES-provider fault during TCP initialization.
+Physical guards are unchanged.
+
+## Real portable AES CBC/ECB (build 0010)
+
+Build 0009 passed pthread initialization. Its next photographed data abort was
+matched to the exact kernel's `aes_encrypt_key`/`aes_encrypt_key128`, reached
+from TCP Fast Open initialization. The external global crypto table remained
+NULL; returning a fake key-setup success would not implement the TCP cookie
+operation. B2L now uses real portable bitsliced AES from MIT-licensed BearSSL
+for the legacy CBC and single-block ECB interfaces, following the A5 port's
+`0020` and `0098` precedents. No TCP/network initialization is disabled.
+
+The cipher is pinned to `7bea48e5e850ab4cafbe68d3765cdaba13a86d6f`. Only its
+five AES implementation files and required headers/license are staged locally;
+none of that fetched tree is vendored into this repository. All six adapter/
+cipher translation units and the legacy wrappers compile with general registers
+only. They allocate no heap state and require no SIMD or CPU AES extensions.
+Key contexts fit the existing XNU ABI and can be copied as network code expects.
+
+AES-128/192/256 key lengths are accepted in bytes or the documented bit units.
+Legacy CBC copies the caller's const IV, so it remains unchanged. A NULL IV
+means zero IV, preserving the single-block ECB behavior used by TCP cookies.
+Generic mode calls update their mutable IV normally. In-place encryption and
+decryption and overlapping input/output use the real BearSSL implementation
+after a safe `memmove`. Invalid keys invalidate the context; NULL required pointers, invalid contexts
+and block-length overflow return an error.
+
+There is no partial global crypto table. GCM is not implemented by this adapter:
+all 18 legacy GCM APIs decline a NULL/incomplete provider or mode, returning an
+error (or context size zero) without touching caller output. Optional IV helper
+callbacks are checked separately. No authentication result or tag is invented.
+RSA, AES-XTS, MD5 and other unrelated provider services remain separate work;
+for example, later TCP connection paths still have an MD5 dependency.
+
+`tests/test_aes_provider.py` compiles the actual adapter and legacy wrapper
+bodies, real pinned BearSSL AES and upstream CBC dispatch under ASan/UBSan.
+NIST SP 800-38A Appendix F vectors pass for 128/192/256-bit CBC and ECB encryption
+and decryption, including bit/byte lengths, copied contexts, in-place and overlap
+buffers, const and chained IV semantics, zero blocks, invalid keys, overflow and
+all unavailable GCM APIs. These are implementation tests, not FIPS validation.
+See [AES dependency details](aes-provider.md). The standalone build passed;
+physical execution of 0010 remains pending. Physical guards are unchanged.

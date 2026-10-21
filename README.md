@@ -52,6 +52,8 @@ the device photograph confirms progress into BSD startup and real IRQ proof.
 [Build 0009](docs/build-0009.md) links and registers the matching open-source
 libpthread kernel provider. Its device test passes into network initialization;
 the next failure identifies the absent AES mode provider.
+[Build 0010](docs/build-0010.md) adds real portable AES CBC/ECB and rejects
+unavailable GCM operations safely. Its device test is pending.
 BOOT writes were backed up and readback-verified.
 [Build 0002](docs/build-0002.md) uses a dynamic 1–2 GiB RAM arena within the
 unchanged firmware memory guards. [Build 0003](docs/build-0003.md) adds XNU-owned

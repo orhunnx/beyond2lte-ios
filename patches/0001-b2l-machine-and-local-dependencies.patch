@@ -324,6 +324,315 @@ index c72c690..c50d136 100644
 +OPTIONS/b2l optional b2l
 +iokit/Kernel/arm/B2LPlatformExpert.cpp optional iokitcpp b2l
 +iokit/Kernel/arm/B2LCPU.cpp optional iokitcpp b2l
+diff --git a/libkern/conf/Makefile.template b/libkern/conf/Makefile.template
+index 6ef0911..888986d 100644
+--- a/libkern/conf/Makefile.template
++++ b/libkern/conf/Makefile.template
+@@ -19,6 +19,14 @@ include $(MakeInc_def)
+ CFLAGS+= -include meta_features.h -DLIBKERN_KERNEL_PRIVATE -DOSALLOCDEBUG=1
+ SFLAGS+= -include meta_features.h
+ 
++ifeq ($(CURRENT_MACHINE_CONFIG),B2L)
++B2L_AES_ROOT = $(SRCROOT)/libkern/crypto/b2l_bearssl
++B2L_AES_OBJECTS = b2l_aes.o b2l_aes_ct.o b2l_aes_ct_enc.o b2l_aes_ct_dec.o b2l_aes_ct_cbcenc.o b2l_aes_ct_cbcdec.o
++$(foreach object,$(B2L_AES_OBJECTS),$(eval $(object)_INCFLAGS = -I$(B2L_AES_ROOT)/inc -I$(B2L_AES_ROOT)/src))
++$(foreach object,$(B2L_AES_OBJECTS) corecrypto_aes.o,$(eval $(object)_CFLAGS_ADD += -mgeneral-regs-only))
++endif
++
++
+ # Runtime support functions don't interact well with LTO (9294679)
+ stack_protector.o_CFLAGS_ADD += $(CFLAGS_NOLTO_FLAG)
+ 
+diff --git a/libkern/conf/files b/libkern/conf/files
+index c4684c2..c71bfdc 100644
+--- a/libkern/conf/files
++++ b/libkern/conf/files
+@@ -97,6 +97,12 @@ libkern/crypto/corecrypto_sha1.c		optional crypto
+ libkern/crypto/corecrypto_md5.c			optional crypto
+ libkern/crypto/corecrypto_des.c			optional crypto
+ libkern/crypto/corecrypto_aes.c			optional crypto
++libkern/crypto/b2l_aes.c	optional b2l
++libkern/crypto/b2l_aes_ct.c	optional b2l
++libkern/crypto/b2l_aes_ct_enc.c	optional b2l
++libkern/crypto/b2l_aes_ct_dec.c	optional b2l
++libkern/crypto/b2l_aes_ct_cbcenc.c	optional b2l
++libkern/crypto/b2l_aes_ct_cbcdec.c	optional b2l
+ libkern/crypto/corecrypto_aesxts.c		optional crypto
+ libkern/crypto/corecrypto_rand.c		optional crypto
+ libkern/crypto/corecrypto_rsa.c		    optional crypto
+diff --git a/libkern/crypto/corecrypto_aes.c b/libkern/crypto/corecrypto_aes.c
+index 20ff4f1..6417338 100644
+--- a/libkern/crypto/corecrypto_aes.c
++++ b/libkern/crypto/corecrypto_aes.c
+@@ -32,10 +32,40 @@
+ #include <corecrypto/ccaes.h>
+ #include <kern/debug.h>
+ 
++#if defined(ARM64_BOARD_CONFIG_B2L)
++/* Real portable legacy CBC/ECB modes; no partial global crypto table. */
++extern const struct ccmode_cbc b2l_aes_cbc_encrypt;
++extern const struct ccmode_cbc b2l_aes_cbc_decrypt;
++#define AES_CBC_ENCRYPT_MODE (&b2l_aes_cbc_encrypt)
++#define AES_CBC_DECRYPT_MODE (&b2l_aes_cbc_decrypt)
++/* GCM remains unsupported without a complete real mode. Every legacy API
++ * must decline before reading a missing table or mode callback. */
++static const struct ccmode_gcm *
++b2l_aes_gcm_mode(const struct ccmode_gcm *mode)
++{
++	return mode != NULL && mode->size != 0 && mode->block_size != 0 &&
++	       mode->init != NULL && mode->set_iv != NULL && mode->gmac != NULL &&
++	       mode->gcm != NULL && mode->finalize != NULL && mode->reset != NULL ? mode : NULL;
++}
++#define AES_GCM_ENCRYPT_MODE b2l_aes_gcm_mode(g_crypto_funcs == NULL ? NULL : g_crypto_funcs->ccaes_gcm_encrypt)
++#define AES_GCM_DECRYPT_MODE b2l_aes_gcm_mode(g_crypto_funcs == NULL ? NULL : g_crypto_funcs->ccaes_gcm_decrypt)
++#else
++#define AES_CBC_ENCRYPT_MODE (g_crypto_funcs->ccaes_cbc_encrypt)
++#define AES_CBC_DECRYPT_MODE (g_crypto_funcs->ccaes_cbc_decrypt)
++#define AES_GCM_ENCRYPT_MODE (g_crypto_funcs->ccaes_gcm_encrypt)
++#define AES_GCM_DECRYPT_MODE (g_crypto_funcs->ccaes_gcm_decrypt)
++#endif
++
+ aes_rval
+ aes_encrypt_key(const unsigned char *key, int key_len, aes_encrypt_ctx cx[1])
+ {
+-	const struct ccmode_cbc *cbc = g_crypto_funcs->ccaes_cbc_encrypt;
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	if (cx == NULL) return aes_error;
++	/* The legacy API accepts exactly 128/192/256 bits or 16/24/32 bytes. */
++	if (key_len == 128 || key_len == 192 || key_len == 256) key_len /= 8;
++#endif
++
++	const struct ccmode_cbc *cbc = AES_CBC_ENCRYPT_MODE;
+ 
+ 	/* Make sure the context size for the mode fits in the one we have */
+ 	if (cbc->size > sizeof(aes_encrypt_ctx)) {
+@@ -49,7 +79,11 @@ aes_rval
+ aes_encrypt_cbc(const unsigned char *in_blk, const unsigned char *in_iv, unsigned int num_blk,
+     unsigned char *out_blk, aes_encrypt_ctx cx[1])
+ {
+-	const struct ccmode_cbc *cbc = g_crypto_funcs->ccaes_cbc_encrypt;
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	if (cx == NULL) return aes_error;
++#endif
++
++	const struct ccmode_cbc *cbc = AES_CBC_ENCRYPT_MODE;
+ 	cccbc_iv_decl(cbc->block_size, ctx_iv);
+ 
+ 	int rc = cccbc_set_iv(cbc, ctx_iv, in_iv);
+@@ -72,7 +106,13 @@ aes_encrypt(const unsigned char *in_blk, unsigned char *out_blk, aes_encrypt_ctx
+ aes_rval
+ aes_decrypt_key(const unsigned char *key, int key_len, aes_decrypt_ctx cx[1])
+ {
+-	const struct ccmode_cbc *cbc = g_crypto_funcs->ccaes_cbc_decrypt;
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	if (cx == NULL) return aes_error;
++	/* The legacy API accepts exactly 128/192/256 bits or 16/24/32 bytes. */
++	if (key_len == 128 || key_len == 192 || key_len == 256) key_len /= 8;
++#endif
++
++	const struct ccmode_cbc *cbc = AES_CBC_DECRYPT_MODE;
+ 
+ 	/* Make sure the context size for the mode fits in the one we have */
+ 	if (cbc->size > sizeof(aes_decrypt_ctx)) {
+@@ -86,7 +126,11 @@ aes_rval
+ aes_decrypt_cbc(const unsigned char *in_blk, const unsigned char *in_iv, unsigned int num_blk,
+     unsigned char *out_blk, aes_decrypt_ctx cx[1])
+ {
+-	const struct ccmode_cbc *cbc = g_crypto_funcs->ccaes_cbc_decrypt;
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	if (cx == NULL) return aes_error;
++#endif
++
++	const struct ccmode_cbc *cbc = AES_CBC_DECRYPT_MODE;
+ 	cccbc_iv_decl(cbc->block_size, ctx_iv);
+ 
+ 	int rc = cccbc_set_iv(cbc, ctx_iv, in_iv);
+@@ -134,7 +178,7 @@ aes_decrypt_key256(const unsigned char *key, aes_decrypt_ctx cx[1])
+ aes_rval
+ aes_encrypt_key_gcm(const unsigned char *key, int key_len, ccgcm_ctx *ctx)
+ {
+-	const struct ccmode_gcm *gcm = g_crypto_funcs->ccaes_gcm_encrypt;
++	const struct ccmode_gcm *gcm = AES_GCM_ENCRYPT_MODE;
+ 	if (!gcm) {
+ 		return aes_error;
+ 	}
+@@ -145,18 +189,21 @@ aes_encrypt_key_gcm(const unsigned char *key, int key_len, ccgcm_ctx *ctx)
+ aes_rval
+ aes_encrypt_key_with_iv_gcm(const unsigned char *key, int key_len, const unsigned char *in_iv, ccgcm_ctx *ctx)
+ {
+-	const struct ccmode_gcm *gcm = g_crypto_funcs->ccaes_gcm_encrypt;
++	const struct ccmode_gcm *gcm = AES_GCM_ENCRYPT_MODE;
+ 	if (!gcm) {
+ 		return aes_error;
+ 	}
+ 
++	#if defined(ARM64_BOARD_CONFIG_B2L)
++	if (g_crypto_funcs->ccgcm_init_with_iv_fn == NULL) return aes_error;
++#endif
+ 	return g_crypto_funcs->ccgcm_init_with_iv_fn(gcm, ctx, key_len, key, in_iv);
+ }
+ 
+ aes_rval
+ aes_encrypt_set_iv_gcm(const unsigned char *in_iv, unsigned int len, ccgcm_ctx *ctx)
+ {
+-	const struct ccmode_gcm *gcm = g_crypto_funcs->ccaes_gcm_encrypt;
++	const struct ccmode_gcm *gcm = AES_GCM_ENCRYPT_MODE;
+ 	if (!gcm) {
+ 		return aes_error;
+ 	}
+@@ -167,7 +214,7 @@ aes_encrypt_set_iv_gcm(const unsigned char *in_iv, unsigned int len, ccgcm_ctx *
+ aes_rval
+ aes_encrypt_reset_gcm(ccgcm_ctx *ctx)
+ {
+-	const struct ccmode_gcm *gcm = g_crypto_funcs->ccaes_gcm_encrypt;
++	const struct ccmode_gcm *gcm = AES_GCM_ENCRYPT_MODE;
+ 	if (!gcm) {
+ 		return aes_error;
+ 	}
+@@ -178,18 +225,21 @@ aes_encrypt_reset_gcm(ccgcm_ctx *ctx)
+ aes_rval
+ aes_encrypt_inc_iv_gcm(unsigned char *out_iv, ccgcm_ctx *ctx)
+ {
+-	const struct ccmode_gcm *gcm = g_crypto_funcs->ccaes_gcm_encrypt;
++	const struct ccmode_gcm *gcm = AES_GCM_ENCRYPT_MODE;
+ 	if (!gcm) {
+ 		return aes_error;
+ 	}
+ 
++	#if defined(ARM64_BOARD_CONFIG_B2L)
++	if (g_crypto_funcs->ccgcm_inc_iv_fn == NULL) return aes_error;
++#endif
+ 	return g_crypto_funcs->ccgcm_inc_iv_fn(gcm, ctx, out_iv);
+ }
+ 
+ aes_rval
+ aes_encrypt_aad_gcm(const unsigned char *aad, unsigned int aad_bytes, ccgcm_ctx *ctx)
+ {
+-	const struct ccmode_gcm *gcm = g_crypto_funcs->ccaes_gcm_encrypt;
++	const struct ccmode_gcm *gcm = AES_GCM_ENCRYPT_MODE;
+ 	if (!gcm) {
+ 		return aes_error;
+ 	}
+@@ -201,7 +251,7 @@ aes_rval
+ aes_encrypt_gcm(const unsigned char *in_blk, unsigned int num_bytes,
+     unsigned char *out_blk, ccgcm_ctx *ctx)
+ {
+-	const struct ccmode_gcm *gcm = g_crypto_funcs->ccaes_gcm_encrypt;
++	const struct ccmode_gcm *gcm = AES_GCM_ENCRYPT_MODE;
+ 	if (!gcm) {
+ 		return aes_error;
+ 	}
+@@ -212,7 +262,7 @@ aes_encrypt_gcm(const unsigned char *in_blk, unsigned int num_bytes,
+ aes_rval
+ aes_encrypt_finalize_gcm(unsigned char *tag, size_t tag_bytes, ccgcm_ctx *ctx)
+ {
+-	const struct ccmode_gcm *gcm = g_crypto_funcs->ccaes_gcm_encrypt;
++	const struct ccmode_gcm *gcm = AES_GCM_ENCRYPT_MODE;
+ 	if (!gcm) {
+ 		return aes_error;
+ 	}
+@@ -228,7 +278,7 @@ aes_encrypt_finalize_gcm(unsigned char *tag, size_t tag_bytes, ccgcm_ctx *ctx)
+ aes_rval
+ aes_decrypt_key_gcm(const unsigned char *key, int key_len, ccgcm_ctx *ctx)
+ {
+-	const struct ccmode_gcm *gcm = g_crypto_funcs->ccaes_gcm_decrypt;
++	const struct ccmode_gcm *gcm = AES_GCM_DECRYPT_MODE;
+ 	if (!gcm) {
+ 		return aes_error;
+ 	}
+@@ -239,18 +289,21 @@ aes_decrypt_key_gcm(const unsigned char *key, int key_len, ccgcm_ctx *ctx)
+ aes_rval
+ aes_decrypt_key_with_iv_gcm(const unsigned char *key, int key_len, const unsigned char *in_iv, ccgcm_ctx *ctx)
+ {
+-	const struct ccmode_gcm *gcm = g_crypto_funcs->ccaes_gcm_decrypt;
++	const struct ccmode_gcm *gcm = AES_GCM_DECRYPT_MODE;
+ 	if (!gcm) {
+ 		return aes_error;
+ 	}
+ 
++	#if defined(ARM64_BOARD_CONFIG_B2L)
++	if (g_crypto_funcs->ccgcm_init_with_iv_fn == NULL) return aes_error;
++#endif
+ 	return g_crypto_funcs->ccgcm_init_with_iv_fn(gcm, ctx, key_len, key, in_iv);
+ }
+ 
+ aes_rval
+ aes_decrypt_set_iv_gcm(const unsigned char *in_iv, size_t len, ccgcm_ctx *ctx)
+ {
+-	const struct ccmode_gcm *gcm = g_crypto_funcs->ccaes_gcm_decrypt;
++	const struct ccmode_gcm *gcm = AES_GCM_DECRYPT_MODE;
+ 	if (!gcm) {
+ 		return aes_error;
+ 	}
+@@ -266,7 +319,7 @@ aes_decrypt_set_iv_gcm(const unsigned char *in_iv, size_t len, ccgcm_ctx *ctx)
+ aes_rval
+ aes_decrypt_reset_gcm(ccgcm_ctx *ctx)
+ {
+-	const struct ccmode_gcm *gcm = g_crypto_funcs->ccaes_gcm_decrypt;
++	const struct ccmode_gcm *gcm = AES_GCM_DECRYPT_MODE;
+ 	if (!gcm) {
+ 		return aes_error;
+ 	}
+@@ -277,18 +330,21 @@ aes_decrypt_reset_gcm(ccgcm_ctx *ctx)
+ aes_rval
+ aes_decrypt_inc_iv_gcm(unsigned char *out_iv, ccgcm_ctx *ctx)
+ {
+-	const struct ccmode_gcm *gcm = g_crypto_funcs->ccaes_gcm_decrypt;
++	const struct ccmode_gcm *gcm = AES_GCM_DECRYPT_MODE;
+ 	if (!gcm) {
+ 		return aes_error;
+ 	}
+ 
++	#if defined(ARM64_BOARD_CONFIG_B2L)
++	if (g_crypto_funcs->ccgcm_inc_iv_fn == NULL) return aes_error;
++#endif
+ 	return g_crypto_funcs->ccgcm_inc_iv_fn(gcm, ctx, out_iv);
+ }
+ 
+ aes_rval
+ aes_decrypt_aad_gcm(const unsigned char *aad, unsigned int aad_bytes, ccgcm_ctx *ctx)
+ {
+-	const struct ccmode_gcm *gcm = g_crypto_funcs->ccaes_gcm_decrypt;
++	const struct ccmode_gcm *gcm = AES_GCM_DECRYPT_MODE;
+ 	if (!gcm) {
+ 		return aes_error;
+ 	}
+@@ -300,7 +356,7 @@ aes_rval
+ aes_decrypt_gcm(const unsigned char *in_blk, unsigned int num_bytes,
+     unsigned char *out_blk, ccgcm_ctx *ctx)
+ {
+-	const struct ccmode_gcm *gcm = g_crypto_funcs->ccaes_gcm_decrypt;
++	const struct ccmode_gcm *gcm = AES_GCM_DECRYPT_MODE;
+ 	if (!gcm) {
+ 		return aes_error;
+ 	}
+@@ -311,7 +367,7 @@ aes_decrypt_gcm(const unsigned char *in_blk, unsigned int num_bytes,
+ aes_rval
+ aes_decrypt_finalize_gcm(unsigned char *tag, size_t tag_bytes, ccgcm_ctx *ctx)
+ {
+-	const struct ccmode_gcm *gcm = g_crypto_funcs->ccaes_gcm_decrypt;
++	const struct ccmode_gcm *gcm = AES_GCM_DECRYPT_MODE;
+ 	if (!gcm) {
+ 		return aes_error;
+ 	}
+@@ -327,7 +383,7 @@ aes_decrypt_finalize_gcm(unsigned char *tag, size_t tag_bytes, ccgcm_ctx *ctx)
+ size_t
+ aes_encrypt_get_ctx_size_gcm(void)
+ {
+-	const struct ccmode_gcm *gcm = g_crypto_funcs->ccaes_gcm_encrypt;
++	const struct ccmode_gcm *gcm = AES_GCM_ENCRYPT_MODE;
+ 	if (!gcm) {
+ 		return 0;
+ 	}
+@@ -337,7 +393,7 @@ aes_encrypt_get_ctx_size_gcm(void)
+ size_t
+ aes_decrypt_get_ctx_size_gcm(void)
+ {
+-	const struct ccmode_gcm *gcm = g_crypto_funcs->ccaes_gcm_decrypt;
++	const struct ccmode_gcm *gcm = AES_GCM_DECRYPT_MODE;
+ 	if (!gcm) {
+ 		return 0;
+ 	}
 diff --git a/libkern/crypto/corecrypto_rand.c b/libkern/crypto/corecrypto_rand.c
 index d46815b..4f0bb6e 100644
 --- a/libkern/crypto/corecrypto_rand.c
