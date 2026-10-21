@@ -11,7 +11,7 @@ Samsung S-Boot
   -> BootShim: relocate exactly 4 MiB of firmware to 0xC9000000
   -> Mu UEFI: initialize existing board, display and UFS services
   -> XnuLoader embedded in the firmware volume
-  -> read GPT partition named `BOOT` or `boot` or `boot` through EFI DiskIo/BlockIo
+  -> read GPT partition named `BOOT` or `boot` through EFI DiskIo/BlockIo
   -> parse XNU, build Apple DeviceTree and boot_args, ExitBootServices
   -> enter XNU's first CPU entry
 ```

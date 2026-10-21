@@ -42,7 +42,7 @@ Android ramdisk is empty. XNU is stored in a BOOT trailer read through firmware
 UFS, so this package does not introduce a Samsung ramdisk load address or need
 an ESP, SYSTEM or USERDATA write.
 
-## Pending device work
+## Device installation and pending boot evidence
 
 The device was subsequently connected and verified as beyond2lte / SM-G975F
 in recovery with a root ADB shell. Its GPT partition name is lowercase `boot`,
@@ -55,7 +55,13 @@ its SHA-256 matched the device's unchanged BOOT before any flash. The final
 package records the confirmed capacity. The firmware launches the embedded
 loader directly before cached BootNext/BootOrder can select an older OS.
 
-After an approved write, observe the entry marker, XNU console, CPU registration
+The approved write has now completed. The 22,499,872-byte image was written
+only to `/dev/block/sda14`, and a readback of that exact prefix matched the
+packaged image. The device was then rebooted. No SYSTEM, USERDATA, recovery
+or partition-table write was performed. The local installation receipt is
+`out/0001/flash-receipt.json`.
+
+Observe the entry marker, XNU console, CPU registration
 and `B2L IRQ proof` lines described in [runtime milestones](runtime-bringup.md).
 A later root-device wait is expected without a kernel storage driver and root
 filesystem. Screen or runtime evidence must be captured before claiming a
