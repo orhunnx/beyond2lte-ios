@@ -30,7 +30,9 @@ def function(text, name):
 
 def main():
     xnu = Path(sys.argv[1]).resolve()
-    source = (xnu / "bsd/dev/b2l_ufs_disk.c").read_text()
+    dev_root = (Path(__file__).resolve().parent.parent / "xnu-overlay/bsd/dev"
+                if "--overlay" in sys.argv[2:] else xnu / "bsd/dev")
+    source = (dev_root / "b2l_ufs_disk.c").read_text()
     pre = r'''
 #include <assert.h>
 #include <errno.h>
@@ -81,8 +83,17 @@ static unsigned char image[256*4096], scratch[4096];
 static uint32_t bs=4096;
 static struct b2l_ufs_reader b2l_reader;
 static struct b2l_gpt b2l_partitions;
-static unsigned b2l_system_index;
-static int b2l_block_major = 42;
+static unsigned b2l_root_index;
+static int b2l_block_major = 42, b2l_char_major = 43;
+static const char *boot_rd;
+static int PE_parse_boot_argn(const char*name,void*out,size_t n){assert(!strcmp(name,"rd"));if(!boot_rd)return 0;assert(n);size_t len=strlen(boot_rd);if(len>=n)len=n-1;memcpy(out,boot_rd,len);((char*)out)[len]=0;return 1;}
+#define DEVFS_BLOCK 1
+#define DEVFS_CHAR 2
+#define UID_ROOT 0
+#define GID_OPERATOR 5
+static unsigned published_mode[2][B2L_GPT_MAX_ENTRIES+1];
+static void*devfs_make_node(dev_t dev,int type,int uid,int gid,unsigned mode,const char*fmt,...){(void)fmt;assert(uid==UID_ROOT&&gid==GID_OPERATOR);assert(type==DEVFS_BLOCK||type==DEVFS_CHAR);published_mode[type-1][minor(dev)]=mode;return (void*)(uintptr_t)(minor(dev)+1);}
+static void devfs_remove(void*node){assert(node);}
 static char last_log[512];
 static int host_printf(const char *fmt,...){va_list ap;va_start(ap,fmt);int n=vsnprintf(last_log,sizeof(last_log),fmt,ap);va_end(ap);return n;}
 #define printf host_printf
@@ -139,7 +150,7 @@ static int media_write(uint64_t lba,uint32_t count,const void*in){
 int b2l_ufs_transport_sync(void){assert(held);sync_calls++;return sync_error;}
 '''
     bodies = "\n".join(function(source, name) for name in
-                         ("b2l_view", "b2l_open", "b2l_strategy", "b2l_write", "b2l_ioctl_common", "b2l_probe_selected", "b2l_ufs_root_device"))
+                         ("b2l_view", "b2l_open", "b2l_strategy", "b2l_write", "b2l_ioctl_common", "b2l_probe_selected", "b2l_ufs_root_device", "b2l_publish"))
     post = r'''
 static void w32(unsigned char*p,uint32_t n){for(unsigned i=0;i<4;i++)p[i]=(unsigned char)(n>>(8*i));}
 static void w64(unsigned char*p,uint64_t n){w32(p,(uint32_t)n);w32(p+4,(uint32_t)(n>>32));}
@@ -155,7 +166,7 @@ static void retable(void){
 static void fixture(uint32_t block_size){
  bs=block_size;read_calls=write_calls=sync_calls=fault_call=fault_write_call=map_calls=map_error=sync_error=move_error=move_calls=fault_move_call=held=0;memset(image,0,sizeof(image));
  b2l_reader=(struct b2l_ufs_reader){.block_count=256,.block_size=bs,.read=media_read,.scratch=scratch,.write=media_write};
- b2l_system_index=0;
+ b2l_root_index=0;boot_rd=NULL;
  for(unsigned k=0;k<2;k++){
   unsigned char*h=image+(k?255:1)*bs;memcpy(h,"EFI PART",8);w32(h+8,0x10000);w32(h+12,92);
   w64(h+24,k?255:1);w64(h+32,k?1:255);w64(h+40,8);w64(h+48,252);
@@ -323,24 +334,51 @@ static void signature_tests(void){
  b2l_probe_selected();assert(strstr(last_log,"signature=ext4-family"));
  strcpy(b2l_partitions.partitions[1].name,"system");unsigned before=read_calls;
  b2l_probe_selected();assert(strstr(last_log,"matches=2")&&read_calls==before);
- assert(!b2l_system_index&&!b2l_reader.writable_size);
+ assert(!b2l_root_index&&!b2l_reader.writable_size);
  fixture(4096);assert(!b2l_gpt_read(&b2l_reader,&b2l_partitions));hfs_header(16,4);
- b2l_probe_selected();assert(b2l_system_index==1&&b2l_reader.writable_base==16*bs&&b2l_reader.writable_size==8*bs);
+ b2l_probe_selected();assert(b2l_root_index==1&&b2l_reader.writable_base==16*bs&&b2l_reader.writable_size==8*bs);
  /* SYSTEM is selected, not a separate super or the containing whole-LU alias. */
  assert(strstr(last_log,"SYSTEM read-write authorized"));
  memset(b2l_views,0,sizeof(b2l_views));b2l_views[1]=(struct b2l_ufs_view){.ready=1,.writable=1};
  dev_t dev=0;assert(!b2l_ufs_root_device(&dev)&&dev==makedev(42,1));
  b2l_views[1].writable=0;assert(b2l_ufs_root_device(&dev)==ENXIO);assert(b2l_ufs_root_device(NULL)==EINVAL);
  /* Invalid geometry and wrong HFS version do not grant any writes. */
- be32(image+16*bs+1024+44,UINT32_MAX);b2l_probe_selected();assert(!b2l_system_index&&!b2l_reader.writable_size);
- hfs_header(16,4);image[16*bs+1024+3]=5;b2l_probe_selected();assert(!b2l_system_index);
+ be32(image+16*bs+1024+44,UINT32_MAX);b2l_probe_selected();assert(!b2l_root_index&&!b2l_reader.writable_size);
+ hfs_header(16,4);image[16*bs+1024+3]=5;b2l_probe_selected();assert(!b2l_root_index);
  /* A uniquely named super is allowed only as the absence-of-SYSTEM fallback. */
  fixture(4096);assert(!b2l_gpt_read(&b2l_reader,&b2l_partitions));strcpy(b2l_partitions.partitions[0].name,"VENDOR");hfs_header(32,5);
- b2l_probe_selected();assert(b2l_system_index==2&&b2l_reader.writable_base==32*bs);
+ b2l_probe_selected();assert(b2l_root_index==2&&b2l_reader.writable_base==32*bs);
  strcpy(b2l_partitions.partitions[0].name,"super");before=read_calls;b2l_probe_selected();
- assert(!b2l_system_index&&!b2l_reader.writable_size&&read_calls==before);
+ assert(!b2l_root_index&&!b2l_reader.writable_size&&read_calls==before);
 }
-int main(void){gpt_tests();read_tests();write_view_tests();strategy_tests();write_adapter_tests();signature_tests();puts("UFS GPT/SYSTEM write/RMW/BSD strategy/flush/root tests passed");return 0;}
+static void userdata_selector_tests(void){
+ fixture(4096);assert(!b2l_gpt_read(&b2l_reader,&b2l_partitions));
+ strcpy(b2l_partitions.partitions[1].name,"UsErDaTa");hfs_header(16,4);hfs_header(32,5);
+ /* Without an explicit USERDATA alias, the existing SYSTEM choice remains. */
+ b2l_probe_selected();assert(b2l_root_index==1&&b2l_reader.writable_base==16*bs);
+ boot_rd="b2l-system";b2l_probe_selected();assert(b2l_root_index==1);
+ /* Both volumes are valid HFS. Only the explicitly selected USERDATA is writable. */
+ boot_rd="b2l-userdata";b2l_probe_selected();assert(b2l_root_index==2&&b2l_reader.writable_base==32*bs&&b2l_reader.writable_size==16*bs);
+ assert(strstr(last_log,"USERDATA read-write authorized"));
+ memset(b2l_views,0,sizeof(b2l_views));assert(!b2l_publish(0,0,sizeof(image)));
+ assert(!b2l_publish(1,16*bs,8*bs)&&!b2l_publish(2,32*bs,16*bs));
+ assert(!b2l_views[0].writable&&!b2l_views[1].writable&&b2l_views[2].writable);
+ assert(published_mode[0][0]==0400&&published_mode[1][0]==0400&&published_mode[0][1]==0400&&published_mode[1][1]==0400&&published_mode[0][2]==0600&&published_mode[1][2]==0600);
+ dev_t root=0;assert(!b2l_ufs_root_device(&root)&&root==makedev(42,2));
+ assert(b2l_open(0,FWRITE,0,NULL)==EROFS&&b2l_open(1,FWRITE,0,NULL)==EROFS&&!b2l_open(2,FWRITE,0,NULL));
+ unsigned char data[512];memset(data,0x73,sizeof(data));unsigned before=write_calls,reads=read_calls;
+ struct buf b={.dev=0,.count=512,.blkno=32*bs/512,.data=data};b2l_strategy(&b);assert(b.error==EROFS&&write_calls==before&&read_calls==reads);
+ b=(struct buf){.dev=1,.count=512,.blkno=0,.data=data};b2l_strategy(&b);assert(b.error==EROFS&&write_calls==before&&read_calls==reads);
+ b=(struct buf){.dev=2,.count=512,.blkno=1,.data=data};b2l_strategy(&b);assert(!b.error&&!b.resid&&!memcmp(image+32*bs+512,data,512));
+ before=write_calls;reads=read_calls;b=(struct buf){.dev=2,.count=512,.blkno=16*bs/512,.data=data};b2l_strategy(&b);assert(b.error==EINVAL&&b.resid==512&&write_calls==before&&read_calls==reads);
+ size_t done=99;assert(b2l_ufs_write_view(&b2l_reader,16*bs,8*bs,0,sizeof(data),data,&done)==EROFS&&done==0&&write_calls==before&&read_calls==reads);
+ /* USERDATA absence or ambiguity never falls back to the valid SYSTEM volume. */
+ strcpy(b2l_partitions.partitions[1].name,"VENDOR");before=read_calls;b2l_probe_selected();assert(!b2l_root_index&&!b2l_reader.writable_size&&read_calls==before);
+ strcpy(b2l_partitions.partitions[1].name,"userdata");strcpy(b2l_partitions.partitions[0].name,"USERDATA");before=read_calls;b2l_probe_selected();assert(!b2l_root_index&&!b2l_reader.writable_size&&read_calls==before);
+ strcpy(b2l_partitions.partitions[0].name,"SYSTEM");image[32*bs+1024]='x';b2l_probe_selected();assert(!b2l_root_index&&!b2l_reader.writable_size);
+ hfs_header(32,5);be32(image+32*bs+1024+44,UINT32_MAX);b2l_probe_selected();assert(!b2l_root_index&&!b2l_reader.writable_size);
+}
+int main(void){gpt_tests();read_tests();write_view_tests();strategy_tests();write_adapter_tests();signature_tests();userdata_selector_tests();puts("UFS GPT/SYSTEM/USERDATA selection, write boundaries, RMW, strategy and flush tests passed");return 0;}
 '''
     with tempfile.TemporaryDirectory(prefix="b2l-ufs-test-") as td:
         path = Path(td)
@@ -351,8 +389,8 @@ int main(void){gpt_tests();read_tests();write_view_tests();strategy_tests();writ
         subprocess.run(compiler + ["-std=c11", "-D_DARWIN_C_SOURCE", "-DB2L_UFS_HOST_TEST",
                        "-Wall", "-Wextra", "-Werror", "-Wno-unused-function", "-g", "-O1",
                        "-fsanitize=address,undefined", "-fno-omit-frame-pointer",
-                       "-I" + str(xnu / "bsd/dev"), str(cfile),
-                       str(xnu / "bsd/dev/b2l_ufs_core.c"), "-o", str(binary)], check=True)
+                       "-I" + str(dev_root), str(cfile),
+                       str(dev_root / "b2l_ufs_core.c"), "-o", str(binary)], check=True)
         subprocess.run([str(binary)], check=True)
 
 

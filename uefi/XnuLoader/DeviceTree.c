@@ -64,6 +64,13 @@ int b2l_build_device_tree(void *buffer, b2l_size capacity,
     prop(&w, &chosen, "dram-base", &c->memory_base, 8);
     prop(&w, &chosen, "dram-size", &c->memory_size, 8);
     prop(&w, &chosen, "debug-enabled", &one, 4);
+    /* Development-board tuple consumed by mobileactivationd's native local
+     * Hactivation path. No activation record or device identity is supplied.
+     * Verified against the iOS 26.6.2 DeviceType initializer. */
+    prop(&w, &chosen, "certificate-production-status", &zero, 4);
+    prop(&w, &chosen, "effective-production-status-ap", &zero, 4);
+    prop(&w, &chosen, "certificate-security-mode", &one, 4);
+    prop(&w, &chosen, "effective-security-mode-sep", &one, 4);
     /* Exynos does not provide Apple's CTRR. XNU requires an explicit native
      * int policy value, including zero, to initialize ml_unsafe_kernel_text. */
     prop(&w, &chosen, "kernel-ctrr-to-be-enabled", &zero, sizeof(zero));

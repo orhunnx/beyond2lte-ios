@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: MIT
  * Minimal native BSD view over the inherited Samsung UFS transport.
- * Only the validated HFS SYSTEM view is writable; whole-LU and other views
+ * Only the selected, validated HFS root view is writable; whole-LU and other views
  * remain read-only even when they overlap the authorized physical range.
  */
 #include <sys/param.h>
@@ -14,6 +14,7 @@
 #include <sys/uio.h>
 #include <kern/locks.h>
 #include <libkern/libkern.h>
+#include <pexpert/pexpert.h>
 #include <miscfs/devfs/devfs.h>
 #include "b2l_ufs_disk.h"
 #include "b2l_ufs_core.h"
@@ -33,7 +34,7 @@ static unsigned char b2l_read_scratch[B2L_UFS_MAX_BLOCK_SIZE];
 static struct b2l_gpt b2l_partitions;
 static struct b2l_ufs_view b2l_views[B2L_GPT_MAX_ENTRIES + 1];
 static int b2l_block_major = -1, b2l_char_major = -1;
-static unsigned b2l_system_index;
+static unsigned b2l_root_index;
 
 static struct b2l_ufs_view *
 b2l_view(dev_t dev)
@@ -249,7 +250,7 @@ b2l_publish(unsigned index, uint64_t base, uint64_t size)
 {
 	struct b2l_ufs_view *v = &b2l_views[index];
 	v->base = base; v->size = size; v->sector_size = 512;
-	v->writable = index && index == b2l_system_index;
+	v->writable = index && index == b2l_root_index;
 	if (!index) {
 		v->block_node = devfs_make_node(makedev(b2l_block_major, index), DEVFS_BLOCK,
 		    UID_ROOT, GID_OPERATOR, 0400, "b2lufs0");
@@ -277,18 +278,25 @@ b2l_probe_selected(void)
 	const struct b2l_gpt_partition *selected = NULL;
 	unsigned matches = 0;
 	int container = 0;
-	b2l_system_index = 0;
+	b2l_root_index = 0;
 	b2l_reader.writable_base = b2l_reader.writable_size = 0;
-	for (unsigned pass = 0; pass < 2 && !matches; pass++) {
+	char root_arg[64] = { 0 };
+	(void)PE_parse_boot_argn("rd", root_arg, sizeof(root_arg));
+	root_arg[sizeof(root_arg) - 1] = '\0';
+	const int userdata = !strcmp(root_arg, "b2l-userdata");
+	const char *root_label = userdata ? "USERDATA" : "SYSTEM";
+	/* USERDATA is explicit and never falls back to SYSTEM or super. */
+	for (unsigned pass = 0; pass < (userdata ? 1U : 2U) && !matches; pass++) {
 		for (unsigned i = 0; i < b2l_partitions.partition_count; i++) {
 			const struct b2l_gpt_partition *p = &b2l_partitions.partitions[i];
-			if (b2l_gpt_label_equal(p->name, pass ? "super" : "SYSTEM")) {
+			if (b2l_gpt_label_equal(p->name, userdata ? "userdata" : (pass ? "super" : "SYSTEM"))) {
 				selected = p; matches++;
 			}
 		}
 	}
 	if (matches != 1) {
-		printf("B2L UFS: SYSTEM/super probe unavailable (matches=%u)\n", matches);
+		printf("B2L UFS: %s%s probe unavailable (matches=%u)\n",
+		    root_label, userdata ? "" : "/super", matches);
 		return;
 	}
 	unsigned char signature[4096];
@@ -315,11 +323,11 @@ b2l_probe_selected(void)
 		if (((vh[1] == '+' && version == 4) || (vh[1] == 'X' && version == 5)) &&
 		    block_size >= 512 && !(block_size & (block_size - 1)) && blocks >= 2 &&
 		    blocks <= size / block_size && free_blocks <= blocks && b2l_reader.write) {
-			b2l_system_index = selected->index;
+			b2l_root_index = selected->index;
 			b2l_reader.writable_base = base;
 			b2l_reader.writable_size = size;
 		} else {
-			printf("B2L UFS: HFS SYSTEM write authorization denied: invalid volume geometry\n");
+			printf("B2L UFS: HFS %s write authorization denied: invalid volume geometry\n", root_label);
 		}
 	} else if (signature[1080] == 0x53 && signature[1081] == 0xef) kind = "ext4-family";
 	else {
@@ -334,7 +342,7 @@ b2l_probe_selected(void)
 	printf("B2L UFS: GPT %s p%u first=%llu blocks=%llu %s signature=%s %s\n",
 	    selected->name, selected->index, selected->first_lba, selected->block_count,
 	    container ? "container" : "partition", kind,
-	    b2l_system_index ? "SYSTEM read-write authorized" : "read-only");
+	    b2l_root_index ? (userdata ? "USERDATA read-write authorized" : "SYSTEM read-write authorized") : "read-only");
 }
 
 int
@@ -343,9 +351,9 @@ b2l_ufs_root_device(dev_t *dev)
 	if (!dev) return EINVAL;
 	int error = ENXIO;
 	lck_mtx_lock(&b2l_ufs_disk_lock);
-	if (b2l_block_major >= 0 && b2l_system_index &&
-	    b2l_views[b2l_system_index].ready && b2l_views[b2l_system_index].writable) {
-		*dev = makedev(b2l_block_major, b2l_system_index);
+	if (b2l_block_major >= 0 && b2l_root_index &&
+	    b2l_views[b2l_root_index].ready && b2l_views[b2l_root_index].writable) {
+		*dev = makedev(b2l_block_major, b2l_root_index);
 		error = 0;
 	}
 	lck_mtx_unlock(&b2l_ufs_disk_lock);
@@ -405,5 +413,5 @@ b2l_ufs_disk_init(void)
 		    p->block_count * geometry.block_size);
 		if (error) printf("B2L UFS: partition node p%u failed error=%d\n", p->index, error);
 	}
-	printf("B2L UFS: native BSD devices ready; only validated HFS SYSTEM can be a writable root\n");
+	printf("B2L UFS: native BSD devices ready; only the selected validated HFS partition can be a writable root\n");
 }

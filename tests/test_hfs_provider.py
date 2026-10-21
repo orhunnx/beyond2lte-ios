@@ -119,6 +119,14 @@ int main(void){
         if len(sys.argv) > 1:
             xnu = Path(sys.argv[1]).resolve()
             source = (xnu / 'iokit/bsddev/IOKitBSDInit.cpp').read_text()
+            if '--pending' in sys.argv[2:]:
+                target = path / 'iokit/bsddev/IOKitBSDInit.cpp'
+                target.parent.mkdir(parents=True)
+                target.write_text(source)
+                patch = stage / 'patches/0005-b2l-userdata-root.patch'
+                subprocess.run(['git', 'apply', '--check', str(patch)], cwd=path, check=True)
+                subprocess.run(['git', 'apply', str(patch)], cwd=path, check=True)
+                source = target.read_text()
             begin = source.index('\tif (!strcmp(rdBootVar, "b2l-system")')
             end = source.index('\n#endif', begin)
             native = source[begin:end]
@@ -148,9 +156,12 @@ int main(){
  assert(select("b2l-system",name,sizeof(name),&root,&flags)==1&&root==chosen&&flags==0&&!std::strcmp(name,"b2lufs0p25")&&releases==1);
  assert(select("b2lufs0p25",name,sizeof(name),&root,&flags)==1&&releases==2);
  assert(select("md0",name,sizeof(name),&root,&flags)==0&&releases==2);
+ chosen=(9<<24)|7;assert(select("b2l-userdata",name,sizeof(name),&root,&flags)==1&&root==chosen&&flags==0&&!std::strcmp(name,"b2lufs0p7")&&releases==3);
+ chosen=(9<<24)|25;
  bool failed=false;try{select("b2lufs0p24",name,sizeof(name),&root,&flags);}catch(int){failed=true;}assert(failed);
  failed=false;helper_error=ENXIO;try{select("b2l-system",name,sizeof(name),&root,&flags);}catch(int){failed=true;}assert(failed);
- std::puts("Actual native SYSTEM alias selection passed");
+ failed=false;try{select("b2l-userdata",name,sizeof(name),&root,&flags);}catch(int){failed=true;}assert(failed);
+ std::puts("Actual native SYSTEM/USERDATA alias selection passed");
 }
 '''
             (path / 'native.cpp').write_text(cpp)

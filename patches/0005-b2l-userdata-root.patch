@@ -1,0 +1,30 @@
+--- a/iokit/bsddev/IOKitBSDInit.cpp
++++ b/iokit/bsddev/IOKitBSDInit.cpp
+@@ -803,21 +803,22 @@
+ //
+ 
+ #if defined(ARM64_BOARD_CONFIG_B2L)
+-	if (!strcmp(rdBootVar, "b2l-system") ||
++	if (!strcmp(rdBootVar, "b2l-system") || !strcmp(rdBootVar, "b2l-userdata") ||
+ 	    !strncmp(rdBootVar, "b2lufs0p", sizeof("b2lufs0p") - 1)) {
+ 		dev_t nativeRoot;
+ 		int error = b2l_ufs_root_device(&nativeRoot);
+-		if (error) panic("B2L UFS: requested HFS SYSTEM root unavailable: %d", error);
++		if (error) panic("B2L UFS: requested HFS root unavailable: %d", error);
+ 		char nativeName[32];
+ 		snprintf(nativeName, sizeof(nativeName), "b2lufs0p%u", minor(nativeRoot));
+-		if (strcmp(rdBootVar, "b2l-system") && strcmp(rdBootVar, nativeName)) {
+-			panic("B2L UFS: rd names a device other than validated SYSTEM");
++		if (strcmp(rdBootVar, "b2l-system") && strcmp(rdBootVar, "b2l-userdata") &&
++		    strcmp(rdBootVar, nativeName)) {
++			panic("B2L UFS: rd names a device other than the selected validated root");
+ 		}
+ 		OSSafeReleaseNULL(matching);
+ 		strlcpy(rootName, nativeName, rootNameSize);
+ 		*root = nativeRoot;
+ 		*oflags = 0;
+-		IOLog("BSD root: %s, major %d, minor %d (native HFS SYSTEM)\n",
++		IOLog("BSD root: %s, major %d, minor %d (native HFS root)\n",
+ 		    rootName, major(*root), minor(*root));
+ 		goto iofrootx;
+ 	}

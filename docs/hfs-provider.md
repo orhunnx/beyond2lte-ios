@@ -53,6 +53,8 @@ operations and journal code remain the pinned OSS implementation.
 
 `rd=b2l-system` selects the unique validated HFS SYSTEM device returned by the
 native UFS BSD adapter. The log reports its actual canonical `b2lufs0pN` name.
+The explicit [`rd=b2l-userdata` option](userdata-root.md) instead selects one
+validated HFS USERDATA partition and keeps SYSTEM read-only.
 An explicit `rd=b2lufs0pN` is accepted only when it equals that same validated
 SYSTEM device. A missing device or a different partition request fails; a
 hardcoded device major, GPT index or recovery alias is not substituted.
@@ -63,7 +65,7 @@ storage service owns the native BSD root and has no media instances to unhide.
 Existing behavior remains for configurations where the classes are present.
 
 `b2l_root_rw=1` permits the HFS mount wrapper to clear `MNT_RDONLY` only for a
-root mount whose device equals the adapter's validated SYSTEM device. The disk
+root mount whose device equals the adapter's selected validated HFS device. The disk
 adapter independently limits writes to that selected partition; whole-LU and
 other partition nodes remain read-only. Omitting this flag retains an initial
 read-only root. The mount log reports the actual resulting mount flag only
@@ -71,7 +73,7 @@ after the real HFS mount call succeeds.
 
 `b2l_unsealed_root=1` is a separate development opt-in. When the authenticated
 root ioctl fails, continuation requires this exact value, the same validated
-SYSTEM device and an actual HFS root mount. The log states that the root is
+HFS device and an actual HFS root mount. The log states that the root is
 unsealed and reports the authentication error. No authenticated-root ioctl,
 signature verifier, key service or sealed-volume capability returns fake
 success. Without this opt-in, the existing authentication failure remains

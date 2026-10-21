@@ -6,6 +6,7 @@
 #include "../uefi/XnuLoader/DeviceTree.h"
 static unsigned seed_properties, memory_map_nodes, defaults_nodes, ctrr_properties;
 static unsigned boot_lun_properties;
+static unsigned development_security_properties;
 static uint32_t read32(const unsigned char *p) { uint32_t n; memcpy(&n,p,4); return n; }
 static size_t decode(const unsigned char *buf, size_t size, size_t off,
                      unsigned depth, unsigned *nodes, unsigned *properties, const char *parent_path)
@@ -38,6 +39,16 @@ static size_t decode(const unsigned char *buf, size_t size, size_t off,
             ++boot_lun_properties;
             assert(depth==1 && node_name && !strcmp(node_name,"chosen"));
             assert(len==4 && read32(buf+off)==3);
+        }
+        if (!strcmp(name,"certificate-production-status") ||
+            !strcmp(name,"effective-production-status-ap") ||
+            !strcmp(name,"certificate-security-mode") ||
+            !strcmp(name,"effective-security-mode-sep")) {
+            assert(depth==1 && node_name && !strcmp(node_name,"chosen"));
+            assert(len==4);
+            unsigned security_mode = strstr(name,"security-mode") != NULL;
+            assert(read32(buf+off)==security_mode);
+            ++development_security_properties;
         }
         if (!strcmp(name,"timebase-frequency")) assert(len==4 && read32(buf+off)==26000000);
         if (!strcmp(name,"state")) assert(len==8 && !memcmp(buf+off,"running",8));
@@ -74,6 +85,7 @@ int main(void)
     assert(nodes==11 && props>42 && seed_properties==1);
     assert(memory_map_nodes==1 && defaults_nodes==1 && ctrr_properties==1);
     assert(boot_lun_properties==1);
+    assert(development_security_properties==4);
     for(size_t capacity=0;capacity<used;++capacity) {
         size_t ignored=0; memset(small,0x5a,sizeof(small));
         assert(b2l_build_device_tree(small,capacity,&c,&ignored)<0);

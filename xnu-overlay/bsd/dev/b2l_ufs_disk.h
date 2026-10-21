@@ -7,7 +7,7 @@ extern "C" {
 #endif
 /* Called once after BSD pseudo devices and before root discovery. */
 void b2l_ufs_disk_init(void);
-/* Only the unique, validated HFS SYSTEM node can become a native root. */
+/* Only the selected unique HFS SYSTEM/USERDATA node can become a native root. */
 int b2l_ufs_root_device(dev_t *dev);
 #ifdef __cplusplus
 }

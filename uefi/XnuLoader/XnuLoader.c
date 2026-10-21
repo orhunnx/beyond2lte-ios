@@ -279,7 +279,7 @@ EFI_STATUS EFIAPI UefiMain(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
     Args->video.base |= 1;
     AsciiStrCpyS(Args->command_line, sizeof(Args->command_line),
                 "-v debug=0x14e serial=3 cpus=1 keepsyms=1 -enable_kprintf_spam "
-                "rd=b2l-system b2l_root_rw=1 b2l_unsealed_root=1");
+                "rd=b2l-userdata b2l_root_rw=1 b2l_unsealed_root=1");
     Entry = Base + Mach.entry - Mach.virtual_base;
     FreePool(Kernel); Kernel = NULL;
     if (Root) { Root->Close(Root); Root = NULL; }
