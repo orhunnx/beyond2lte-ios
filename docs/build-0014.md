@@ -39,3 +39,10 @@ continuation past the earlier entitlement fault remains a device test.
 
 The kernel is 18,479,408 bytes and the validated BOOT image is
 23,052,912 bytes. Exact symbols remain local under ignored `out/0014/symbols`.
+
+## Authorized installation
+
+The BOOT-only update completed with target checks and exact image-prefix
+readback verification, then reboot was requested. SYSTEM was not rewritten.
+Original Android backups remain intact; no additional backups were taken.
+Physical continuation past the photographed AMFI fault is pending device evidence.
