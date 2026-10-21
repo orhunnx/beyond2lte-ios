@@ -116,3 +116,13 @@ metadata bridge in this build. Credential/process queries and csops XML are
 the implemented paths; this is not complete API parity with A5. Native
 entitlement-derived exec flags beyond the explicit platform classification
 are not inferred from the development dictionary.
+
+## Registration phase correction (0028b)
+
+The interface initializes at EARLY_BOOT. Patch 0018 registers both MAC policies
+in mac_policy_initmach, after security extensions and before mac_late and
+machine lockdown. The iOS policy registry is SECURITY_READ_ONLY_LATE; registering
+a policy in bsd_init is too late even though the API accepts late registration
+on other targets. Build 0028 physically exposed that ordering error. No memory
+protections are relaxed by the fix. `tests/test_policy_startup.py` checks this
+ordering against the actual pinned startup graph.

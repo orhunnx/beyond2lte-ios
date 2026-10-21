@@ -4,7 +4,7 @@
 
 ## Activation and startup
 
-Patch 0016 adds the source to the B2L build and calls `b2l_sandbox_register()` immediately after `mac_policy_initbsd()` inside the CONFIG_MACF/B2L guards, before userspace bootstrap or exec. Registration occurs only when both conditions hold:
+Patch 0016 adds the source to the B2L build. Patch 0018 places `b2l_sandbox_register()` and AMFI policy registration in `mac_policy_initmach()`, before `mac_late` and machine lockdown. The original 0028 BSD-time placement faulted on the iOS read-only policy list and is superseded. Registration occurs only when both conditions hold:
 
 - `b2l_arm64e_compat_enabled()` is true.
 - Global code-signature enforcement is disabled.

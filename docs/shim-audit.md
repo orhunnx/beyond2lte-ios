@@ -126,3 +126,13 @@ A5's ENOENT behavior for operation 0x43 must not replace the verified iOS 26
 zero-output success contract. XML-only entitlement support remains narrower
 than full DER/CoreEntitlements. A successful local build must still be followed
 by a new physical launchd result before claiming the assertion is fixed.
+
+## Device-discovered registration correction
+
+The first 0028 run exposed a P1 lifecycle bug absent from the host MAC mocks:
+mac_policy_register attempted to write mac_policy_list.freehint after the iOS
+SECURITY_READ_ONLY_LATE registry was sealed. Patch 0018 / build 0028b moves both
+registrations into mac_policy_initmach, before mac_late and machine lockdown.
+Actual startup-order and eighteen-patch upgrade/idempotence checks pass; the
+full rebuilt BOOT was installed with matching readback. Runtime completion of
+registration still requires the subsequent screen.

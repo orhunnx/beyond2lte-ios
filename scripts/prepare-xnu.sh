@@ -24,7 +24,8 @@ python3 "$repo_root/scripts/apply-board-patches.py" "$xnu_path" \
   "$repo_root/patches/0014-b2l-arm64e-dyld-page-fixups.patch" \
   "$repo_root/patches/0015-b2l-sandbox-container-query.patch" \
   "$repo_root/patches/0016-b2l-registered-sandbox-policy.patch" \
-  "$repo_root/patches/0017-b2l-development-amfi-metadata.patch"
+  "$repo_root/patches/0017-b2l-development-amfi-metadata.patch" \
+  "$repo_root/patches/0018-b2l-prelockdown-policy-registration.patch"
 # New files have separate provenance and are kept as an overlay.
 while IFS= read -r -d '' source_file; do
   relative="${source_file#"$repo_root/xnu-overlay/"}"

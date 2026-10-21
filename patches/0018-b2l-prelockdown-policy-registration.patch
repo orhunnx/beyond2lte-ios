@@ -1,0 +1,32 @@
+--- a/bsd/kern/bsd_init.c
++++ b/bsd/kern/bsd_init.c
+@@ -579,12 +579,6 @@
+ 	 * Initialize the MAC Framework
+ 	 */
+ 	mac_policy_initbsd();
+-#if defined(ARM64_BOARD_CONFIG_B2L)
+-	extern void b2l_sandbox_register(void);
+-	b2l_sandbox_register();
+-	extern void b2l_amfi_policy_register(void);
+-	b2l_amfi_policy_register();
+-#endif
+ 
+ #if defined (__i386__) || defined (__x86_64__)
+ 	/*
+--- a/security/mac_base.c
++++ b/security/mac_base.c
+@@ -378,6 +378,14 @@
+ 	if (load_security_extensions_function) {
+ 		load_security_extensions_function();
+ 	}
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	/* iOS seals mac_policy_list at machine_lockdown(), before bsd_init.
++	 * Install built-in policies in the normal pre-lockdown MAC phase. */
++	extern void b2l_sandbox_register(void);
++	extern void b2l_amfi_policy_register(void);
++	b2l_sandbox_register();
++	b2l_amfi_policy_register();
++#endif
+ 	mac_late = 1;
+ }
+ 
