@@ -44,4 +44,7 @@ execution. The BOOT package layout and exact embedded loader were also verified.
 
 ## Installation
 
-The package is ready; device installation and runtime proof are pending.
+The authorized BOOT-only update completed after a full verified backup of the
+previous BOOT. The original backup remains intact. Exact image-prefix readback
+matched, then the device was rebooted. Identifiers and raw installation receipts
+remain local and ignored. Runtime proof beyond the Image4 gate is pending.
