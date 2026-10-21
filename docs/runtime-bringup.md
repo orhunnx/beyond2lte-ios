@@ -11,6 +11,8 @@ Build 0002 reached XNU assembly on the device: the user confirmed its separate
 green entry marker. Build 0003 visibly reached C initialization and MMU
 transition milestones. Build 0005 completed VM bootstrap and printed through
 the framebuffer serial sink, then faulted at the missing allocator RNG provider.
+Build 0006 registered the HMAC-SHA256 kernel PRNG and continued into later
+startup, where a skipped stock console attachment left a zero ticket lock.
 Working timer/SGI interrupt delivery remains unverified.
 
 The kernel owns the text renderer. It follows the A5 port's early-console and
@@ -171,3 +173,31 @@ output, reseeding, entropy refresh and streaming digests. Tests also check
 concurrent nonduplicate output, allocator vectors, independent seeds, unaligned
 output canaries, bounded rejection and startup rank ordering. Tests passed for
 0006; physical progress beyond the 0005 failure remains pending.
+
+## Console control lifecycle (build 0007)
+
+Build 0006's photographed invalid ticket lock was symbolized as `vcputc_lock`.
+The early serial renderer had intentionally skipped stock `PE_create_console`
+and `vcattach`, but later screen-control calls still used the stock ticket lock.
+The progress lock and graphical backend callbacks had the same missing lifetime.
+
+B2L now declares both console locks in XNU's standard `LOCKS` startup subsystem,
+after the lock group and before KPRINTF or IOKit. The later legacy initializers
+are excluded for B2L, preventing duplicate initialization. Ticket validation is
+unchanged. Every existing ticket/progress lock consumer uses these same locks.
+
+`PE_init_printf(TRUE)` again calls `vcattach`. B2L attachment initializes real
+stock console geometry and all backend callbacks with the already bounded,
+remapped GOP address from the early renderer. It does not create another physical
+mapping or cache alias. It skips initial screen clearing, message-buffer replay
+and progress acquisition. The existing serial scanout is recorded as acquired,
+so the bootstrap thread's initial acquire preserves history. Explicit later
+release, disable, pause, resume and acquire requests retain normal control paths.
+
+`tests/test_console_lifecycle.py` executes the actual B2L attach and stock
+init/enable/pause bodies under ASan/UBSan, with host lock validation, allocation
+and backend dispatch hooks. It verifies preserved pixels on attach/disable,
+usable callbacks, both lock lifetimes, no double initialization, pause/resume,
+and a real subsequent enable/clear/free cycle. The early renderer's separate
+regression test also verifies the mapping accessor before and after relocation.
+Both tests passed. Device execution of 0007 remains pending.

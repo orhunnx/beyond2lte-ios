@@ -1032,10 +1032,46 @@ index 878b515..cb4bebf 100644
 +
 +osfmk/arm64/b2l_early.c optional b2l
 diff --git a/osfmk/console/video_console.c b/osfmk/console/video_console.c
-index 648cb70..fc50940 100644
+index 648cb70..1fed4fc 100644
 --- a/osfmk/console/video_console.c
 +++ b/osfmk/console/video_console.c
-@@ -1293,6 +1293,19 @@ static int vc_rendered_char_size = 0;
+@@ -102,6 +102,9 @@
+ 
+ #include <pexpert/pexpert.h>
+ #include <sys/kdebug.h>
++#if defined(ARM64_BOARD_CONFIG_B2L)
++#include <arm64/b2l_early.h>
++#endif
+ 
+ #include "iso_font.c"
+ #if defined(XNU_TARGET_OS_OSX)
+@@ -150,7 +153,13 @@ static uint32_t gc_buffer_size;
+ 
+ 
+ LCK_GRP_DECLARE(vconsole_lck_grp, "vconsole");
++#if defined(ARM64_BOARD_CONFIG_B2L)
++/* Early serial output does not attach the graphical console. Control paths
++ * still need real locks before IOKit can release or pause the display. */
++static LCK_TICKET_DECLARE(vcputc_lock, &vconsole_lck_grp);
++#else
+ static lck_ticket_t vcputc_lock;
++#endif
+ 
+ 
+ #define VCPUTC_LOCK_INIT()                              \
+@@ -472,8 +481,10 @@ static void
+ gc_initialize(struct vc_info * info)
+ {
+ 	if (gc_initialized == FALSE) {
+-		/* Init our lock */
++		/* B2L initializes this lock once at the standard LOCKS startup. */
++#if !defined(ARM64_BOARD_CONFIG_B2L)
+ 		VCPUTC_LOCK_INIT();
++#endif
+ 
+ 		gc_initialized = TRUE;
+ 	}
+@@ -1293,6 +1304,19 @@ static int vc_rendered_char_size = 0;
  #define REN_MAX_DEPTH   32
  static unsigned char vc_rendered_char[ISO_CHAR_HEIGHT * ((REN_MAX_DEPTH / 8) * ISO_CHAR_WIDTH)];
  
@@ -1055,7 +1091,7 @@ index 648cb70..fc50940 100644
  #if defined(XNU_TARGET_OS_OSX)
  #define CONFIG_VC_PROGRESS_METER_SUPPORT        1
  #endif /* XNU_TARGET_OS_OSX */
-@@ -1336,7 +1349,7 @@ vc_clear_screen(unsigned int xx, unsigned int yy, unsigned int scrreg_top,
+@@ -1336,7 +1360,7 @@ vc_clear_screen(unsigned int xx, unsigned int yy, unsigned int scrreg_top,
  		return;
  	}
  
@@ -1064,7 +1100,7 @@ index 648cb70..fc50940 100644
  	rowline = vinfo.v_rowscanbytes >> 2;
  	rowlongs = vinfo.v_rowbytes >> 2;
  
-@@ -1611,6 +1624,39 @@ vc_paint_char_32(unsigned int xx, unsigned int yy, unsigned char ch, int attrs,
+@@ -1611,6 +1635,39 @@ vc_paint_char_32(unsigned int xx, unsigned int yy, unsigned char ch, int attrs,
  	}
  }
  
@@ -1104,7 +1140,7 @@ index 648cb70..fc50940 100644
  static void
  vc_paint_char(unsigned int xx, unsigned int yy, unsigned char ch, int attrs,
      unsigned char ch_previous, int attrs_previous)
-@@ -1618,6 +1664,12 @@ vc_paint_char(unsigned int xx, unsigned int yy, unsigned char ch, int attrs,
+@@ -1618,6 +1675,12 @@ vc_paint_char(unsigned int xx, unsigned int yy, unsigned char ch, int attrs,
  	if (!vinfo.v_depth) {
  		return;
  	}
@@ -1117,7 +1153,7 @@ index 648cb70..fc50940 100644
  
  	switch (vinfo.v_depth) {
  	case 8:
-@@ -1701,16 +1753,16 @@ static void
+@@ -1701,16 +1764,16 @@ static void
  vc_reverse_cursor(unsigned int xx, unsigned int yy)
  {
  	uint32_t *where;
@@ -1138,7 +1174,7 @@ index 648cb70..fc50940 100644
  		switch (vinfo.v_depth) {
  		case 8:
  			where[0] = ~where[0];
-@@ -1722,7 +1774,7 @@ vc_reverse_cursor(unsigned int xx, unsigned int yy)
+@@ -1722,7 +1785,7 @@ vc_reverse_cursor(unsigned int xx, unsigned int yy)
  			}
  			break;
  		case 32:
@@ -1147,7 +1183,7 @@ index 648cb70..fc50940 100644
  				where[col] = ~where[col];
  			}
  			break;
-@@ -1740,7 +1792,29 @@ vc_scroll_down(int num, unsigned int scrreg_top, unsigned int scrreg_bottom)
+@@ -1740,7 +1803,29 @@ vc_scroll_down(int num, unsigned int scrreg_top, unsigned int scrreg_bottom)
  		return;
  	}
  
@@ -1178,7 +1214,7 @@ index 648cb70..fc50940 100644
  	rowline = vinfo.v_rowbytes >> 2;
  	rowscanline = vinfo.v_rowscanbytes >> 2;
  
-@@ -1751,7 +1825,7 @@ vc_scroll_down(int num, unsigned int scrreg_top, unsigned int scrreg_bottom)
+@@ -1751,7 +1836,7 @@ vc_scroll_down(int num, unsigned int scrreg_top, unsigned int scrreg_bottom)
  	i = (scrreg_bottom - scrreg_top) - num;
  
  	while (i-- > 0) {
@@ -1187,7 +1223,7 @@ index 648cb70..fc50940 100644
  			/*
  			 * Only copy what is displayed
  			 */
-@@ -1774,7 +1848,29 @@ vc_scroll_up(int num, unsigned int scrreg_top, unsigned int scrreg_bottom)
+@@ -1774,7 +1859,29 @@ vc_scroll_up(int num, unsigned int scrreg_top, unsigned int scrreg_bottom)
  		return;
  	}
  
@@ -1218,7 +1254,7 @@ index 648cb70..fc50940 100644
  	rowline = vinfo.v_rowbytes >> 2;
  	rowscanline = vinfo.v_rowscanbytes >> 2;
  
-@@ -1784,7 +1880,7 @@ vc_scroll_up(int num, unsigned int scrreg_top, unsigned int scrreg_bottom)
+@@ -1784,7 +1891,7 @@ vc_scroll_up(int num, unsigned int scrreg_top, unsigned int scrreg_bottom)
  	i = (scrreg_bottom - scrreg_top) - num;
  
  	while (i-- > 0) {
@@ -1227,7 +1263,19 @@ index 648cb70..fc50940 100644
  			/*
  			 * Only copy what is displayed
  			 */
-@@ -2782,8 +2878,14 @@ gc_pause( boolean_t pause, boolean_t graphics_now )
+@@ -1836,7 +1943,11 @@ static int8_t                   vc_uiscale = 1;
+ vc_progress_user_options        vc_progress_options;
+ vc_progress_user_options        vc_user_options;
+ 
++#if defined(ARM64_BOARD_CONFIG_B2L)
++static SIMPLE_LOCK_DECLARE(vc_progress_lock, 0);
++#else
+ decl_simple_lock_data(, vc_progress_lock);
++#endif
+ 
+ #if defined(XNU_TARGET_OS_OSX)
+ static int                      vc_progress_withmeter = 3;
+@@ -2782,8 +2893,14 @@ gc_pause( boolean_t pause, boolean_t graphics_now )
  static void
  vc_initialize(__unused struct vc_info * vinfo_p)
  {
@@ -1244,6 +1292,43 @@ index 648cb70..fc50940 100644
  	vinfo.v_rowscanbytes = ((vinfo.v_depth + 7) / 8) * vinfo.v_width;
  	vc_uiscale = vinfo.v_scale;
  	if (vc_uiscale > kMaxProgressData) {
+@@ -3057,6 +3174,25 @@ vcattach(void)
+ {
+ 	vm_initialized = TRUE;
+ 
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	/* Attach the real control/backend state without acquiring, clearing or
++	 * replaying the screen. The serial sink retains its early text history.
++	 * Reuse the bounded final mapping rather than map the GOP a second time. */
++	PE_Video early_video = PE_state.video;
++	early_video.v_baseAddr = b2l_early_virtual();
++	if (early_video.v_baseAddr == 0) {
++		panic("B2L console attach: early framebuffer unavailable");
++	}
++	early_video.v_offset = 0;
++	initialize_screen(&early_video, kPETextMode);
++	/* The early serial renderer already owns this scanout. Preserve it when
++	 * kernel_bootstrap_thread performs the initial acquire. A later explicit
++	 * release/acquire still follows the ordinary display-control lifecycle. */
++	gc_acquired = TRUE;
++	kprintf("B2L console: display controls attached; early history preserved\n");
++	return;
++#endif
++
+ #if defined(CONFIG_VC_PROGRESS_METER_SUPPORT)
+ 	const boot_args * bootargs  = (typeof(bootargs))PE_state.bootArgs;
+ 
+@@ -3077,7 +3213,10 @@ vcattach(void)
+ 	vc_progress_meter_end   = kProgressMeterEnd;
+ #endif /* defined(__x86_64__ */
+ #endif /* defined(CONFIG_VC_PROGRESS_METER_SUPPORT) */
++	/* B2L progress lock also belongs to standard LOCKS startup. */
++#if !defined(ARM64_BOARD_CONFIG_B2L)
+ 	simple_lock_init(&vc_progress_lock, 0);
++#endif
+ 
+ 	if (gc_graphics_boot == FALSE) {
+ 		long index;
 diff --git a/osfmk/kern/ast.c b/osfmk/kern/ast.c
 index 4bfc59a..29948f2 100644
 --- a/osfmk/kern/ast.c
@@ -1673,20 +1758,6 @@ index 032d9e0..62f5ace 100644
  
  	/**
  	 * Even if the serial devices have already been initialized on cold boot,
-diff --git a/pexpert/gen/pe_gen.c b/pexpert/gen/pe_gen.c
-index 6740cb0..fce411e 100644
---- a/pexpert/gen/pe_gen.c
-+++ b/pexpert/gen/pe_gen.c
-@@ -137,7 +137,9 @@ PE_init_printf(boolean_t vm_initialized)
- 	if (!vm_initialized) {
- 		PE_putc = console_write_char;
- 	} else {
-+#if !defined(ARM64_BOARD_CONFIG_B2L)
- 		vcattach();
-+#endif
- 	}
- }
- 
 diff --git a/pexpert/pexpert/arm/protos.h b/pexpert/pexpert/arm/protos.h
 index f8fcbc2..d427625 100644
 --- a/pexpert/pexpert/arm/protos.h

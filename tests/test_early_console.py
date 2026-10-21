@@ -56,6 +56,7 @@ int main(void) {
  boot_args args={.Video={.v_baseAddr=B2L_FB_RESERVED_BASE|1,.v_width=width,
   .v_height=height,.v_rowBytes=stride,.v_depth=32}};
  b2l_early_init(&args);assert(b2l_early_available());assert(b2l_scale==3);
+ assert(b2l_early_virtual()==(uintptr_t)(raw+64));
  uint64_t pa,bytes;assert(b2l_early_range(&pa,&bytes));assert(pa==B2L_FB_RESERVED_BASE&&bytes==size);
  b2l_col=0;b2l_row=b2l_rows-1;
  b2l_early_putc((char)0xff);assert(b2l_col==1);
@@ -67,6 +68,7 @@ int main(void) {
  for(unsigned i=0;i<1500;++i)b2l_early_putc(i%43==0?'\n':(char)(i&255));
  canaries(raw,size,width,height,stride);
  b2l_early_relocate((uintptr_t)(second+64));
+ assert(b2l_early_virtual()==(uintptr_t)(second+64));
  b2l_early_mark(19,"relocated");panic_format("test %u",17U);
  canaries(second,size,width,height,stride);
  const uint64_t bad_bases[]={B2L_FB_RESERVED_BASE-4096,B2L_FB_RESERVED_BASE+B2L_FB_RESERVED_SIZE-4096,UINT64_MAX-8};

@@ -118,5 +118,11 @@ int b2l_early_range(uint64_t *physical, uint64_t *length)
 	if (!b2l_active) return 0;
 	*physical = b2l_fb_physical; *length = b2l_fb_length; return 1;
 }
+/* Used after VM bootstrap to attach controls to the existing mapping. */
+uint64_t b2l_early_virtual(void)
+{
+	return b2l_active ? (uint64_t)(uintptr_t)b2l_fb : 0;
+}
+
 int b2l_early_available(void) { return b2l_active != 0; }
 #endif

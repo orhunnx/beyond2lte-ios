@@ -13,5 +13,6 @@ void b2l_early_panic(const char *fmt, va_list *args);
 void b2l_early_relocate(uint64_t base);
 int b2l_early_range(uint64_t *physical, uint64_t *length);
 int b2l_early_available(void);
+uint64_t b2l_early_virtual(void);
 #endif
 #endif

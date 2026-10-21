@@ -30,9 +30,9 @@ The physical guard map, 1–2 GiB arena and single-CPU configuration are unchang
 
 ## Device boundary
 
-The next device test must confirm progress beyond the allocator initialization
-fault, followed by boot CPU registration and the dedicated IRQ proof line.
-Physical execution of this build is pending.
+The device test passed the allocator initialization fault and PRNG registration.
+Boot CPU registration and the dedicated IRQ proof line remain unverified; the
+next blocker is described under Device result.
 
 ## Build and host verification
 
@@ -53,5 +53,14 @@ XNU index, and the prepared overlays match the built source.
 The authorized BOOT-only update completed after a full backup of the previous
 image. The original backup remains intact. Readback of the exact image prefix
 matched and the device was rebooted. Raw installation receipts and identifiers
-remain local and ignored. Progress past the prior data abort awaits a screen
-report.
+remain local and ignored. The following screen report establishes progress
+past the prior data abort.
+
+## Device result
+
+The user photograph confirms the HMAC-SHA256 PRNG registration line and later
+swap-thread creation, passing the previous allocator-provider fault. The next
+panic reports an all-zero invalid ticket lock. Exact-symbol matching identifies
+it as vcputc_lock. The B2L early-console path had skipped the stock lifecycle
+that initializes its display-control backend and locks. This is a distinct
+console lifecycle issue; it is not evidence of random-output failure.

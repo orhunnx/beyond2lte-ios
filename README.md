@@ -37,12 +37,15 @@ partition `BOOT`; no separate ESP or SYSTEM/USERDATA transfer is required.
 **Build 0003 reached XNU C initialization on the device, with its own readable
 framebuffer output. MMU enable and platform initialization are verified by the
 user photograph. Build 0005 completes VM bootstrap and reaches later kernel startup. The
-current blocker is an unregistered crypto RNG function table. Interrupt delivery remains unverified.**
+current blocker is stock console control reaching an uninitialized lock. Interrupt delivery remains unverified.**
 [Build 0004](docs/build-0004.md) supplies the required 256-byte seed; its
 device result identified the next DT contract gap. [Build 0005](docs/build-0005.md)
 adds the required /chosen/memory-map and /defaults containers.
 [Build 0006](docs/build-0006.md) adds allocator RNG and real kernel PRNG startup;
-its physical test is pending. BOOT writes were backed up and readback-verified.
+its device test passes PRNG registration and exposes the console lifecycle gap.
+[Build 0007](docs/build-0007.md) restores initialized console locks and the real
+display-control backend while preserving early text. Its device test is pending.
+BOOT writes were backed up and readback-verified.
 [Build 0002](docs/build-0002.md) uses a dynamic 1–2 GiB RAM arena within the
 unchanged firmware memory guards. [Build 0003](docs/build-0003.md) adds XNU-owned
 text from assembly entry through C and the normal printf/kprintf console.
