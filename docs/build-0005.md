@@ -34,3 +34,18 @@ The firmware and loader rebuilt successfully. The validated image is ignored
 `out/0005/boot.img`, 22,518,800 bytes, within the confirmed
 57,671,680-byte BOOT capacity. The packager verified the exact loader in the
 compressed firmware volume. Physical execution of this build is pending.
+
+## Installation and device result
+
+The BOOT-only write completed after preserving a full backup of the preceding
+image. The original backup remains intact; the image prefix matched on readback
+and the device was rebooted. The local receipt is ignored.
+
+The user photograph confirms VM bootstrap completion, scheduler setup and later
+kernel startup output through serial KDP and ulock initialization. A subsequent
+data abort was symbolicated against this build's symbols to
+crypto_random_kmem_ctx_size, called by vm_map_store_crypto_init. Its crypto
+function table has not been registered. This is separate from the fixed DT
+container assertions. The next change must provide the required allocator RNG
+contract and PRNG startup without pretending unrelated crypto services exist.
+Interrupt delivery has not yet been confirmed by the dedicated proof line.
