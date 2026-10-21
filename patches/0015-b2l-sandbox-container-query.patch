@@ -1,0 +1,93 @@
+--- a/security/mac_base.c
++++ b/security/mac_base.c
+@@ -88,6 +88,10 @@
+ #include <sys/proc_internal.h>
+ #include <sys/kauth.h>
+ #include <sys/sysproto.h>
++#if defined(ARM64_BOARD_CONFIG_B2L)
++#include <arm64/b2l_arm64e_compat.h>
++#include <sys/codesign.h>
++#endif
+ 
+ #include <mach/exception_types.h>
+ #include <mach/vm_types.h>
+@@ -1560,6 +1564,35 @@
+  *                !0                      Not success
+  *
+  */
++#if defined(ARM64_BOARD_CONFIG_B2L)
++/* iOS 26 operation 0x43: two user pointers to 64-bit output values.
++ * The unconfined development port has no expected sandbox container.
++ * Do not fabricate paths, extension tokens or profile state. */
++static int
++b2l_sandbox_container_expected(user_addr_t arg)
++{
++	struct {
++		user64_addr_t expected;
++		user64_addr_t restricted;
++	} output;
++	uint64_t none = 0;
++	int error = copyin(arg, &output, sizeof(output));
++	if (error) {
++		return error;
++	}
++	if (output.expected) {
++		error = copyout(&none, output.expected, sizeof(none));
++		if (error) {
++			return error;
++		}
++	}
++	if (output.restricted) {
++		error = copyout(&none, output.restricted, sizeof(none));
++	}
++	return error;
++}
++#endif
++
+ int
+ __mac_syscall(proc_t p, struct __mac_syscall_args *uap, int *retv __unused)
+ {
+@@ -1568,6 +1601,9 @@
+ 	int error;
+ 	u_int i;
+ 	size_t ulen;
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	bool policy_found = false;
++#endif
+ 
+ 	error = copyinstr(uap->policy, target, sizeof(target), &ulen);
+ 	if (error) {
+@@ -1591,6 +1627,9 @@
+ 
+ 		if (strcmp(mpc->mpc_name, target) == 0 &&
+ 		    mpc->mpc_ops->mpo_policy_syscall != NULL) {
++#if defined(ARM64_BOARD_CONFIG_B2L)
++			policy_found = true;
++#endif
+ 			error = mpc->mpc_ops->mpo_policy_syscall(p,
+ 			    uap->call, uap->arg);
+ 			goto done;
+@@ -1605,6 +1644,9 @@
+ 
+ 			if (strcmp(mpc->mpc_name, target) == 0 &&
+ 			    mpc->mpc_ops->mpo_policy_syscall != NULL) {
++#if defined(ARM64_BOARD_CONFIG_B2L)
++				policy_found = true;
++#endif
+ 				error = mpc->mpc_ops->mpo_policy_syscall(p,
+ 				    uap->call, uap->arg);
+ 				break;
+@@ -1614,6 +1656,13 @@
+ 	}
+ 
+ done:
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	if (!policy_found && error == ENOPOLICY && uap->call == 0x43 &&
++	    strcmp(target, "Sandbox") == 0 && b2l_arm64e_compat_enabled() &&
++	    !cs_process_global_enforcement() && proc_is64bit(p)) {
++		return b2l_sandbox_container_expected(uap->arg);
++	}
++#endif
+ 	return error;
+ }
+ 
