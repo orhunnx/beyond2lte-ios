@@ -60,6 +60,13 @@ firmware application directly. This hook executes before BDS consumes cached
 `BootNext` or an existing `BootOrder`. If the loader returns, the firmware stops
 with an error rather than falling through to an old Windows boot entry.
 The launch path does not create, delete or reorder persistent boot options.
+The profile also bounds the GICv2 ExitBootServices interrupt drain and separates
+the 10-bit interrupt ID from the complete SGI acknowledge token. It selects
+combined non-secure EOI mode before draining, matching the XNU board setup.
+This avoids accessing `GICC_DIR`, which is outside this board's existing 4 KiB
+CPU-interface mapping; the MMIO map and reserved-memory guards stay unchanged.
+This removes a shutdown hang risk; it is not a claim that a measured stall was
+caused by that callback.
 Rebuild that external firmware with the existing 4 MiB FD parameters. The XNU
 repository contains no copied ACPI or Windows implementation.
 

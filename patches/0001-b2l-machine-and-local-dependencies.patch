@@ -127,10 +127,10 @@ index e37762b..4fa871c 100644
  ifneq ($(KDKROOT),)
  INCFLAGS_SDK   += -I$(KDKROOT)/$(KPINCDIR) -I$(KDKROOT)/System/Library/KernelSupport
 diff --git a/osfmk/arm/arm_init.c b/osfmk/arm/arm_init.c
-index 6690846..4b07008 100644
+index 6690846..f13a4dd 100644
 --- a/osfmk/arm/arm_init.c
 +++ b/osfmk/arm/arm_init.c
-@@ -571,6 +571,14 @@ arm_init(
+@@ -571,6 +571,20 @@ arm_init(
  
  	arm_vm_init(xmaxmem, args);
  
@@ -140,12 +140,18 @@ index 6690846..4b07008 100644
 +	 * KPRINTF startup and all IOKit matching. */
 +	PE_create_console();
 +	PE_init_printf(FALSE);
++	/* Direct output also proves the mapped framebuffer and C bootstrap
++	 * before the KPRINTF function pointer has been installed. */
++	const char *b2l_vm_banner = "\r\nB2L XNU: VM initialized, framebuffer console active\r\n";
++	for (const char *p = b2l_vm_banner; *p != '\0'; ++p) {
++		console_write_unbuffered(*p);
++	}
 +#endif
 +
  	if (debug_boot_arg) {
  		patch_low_glo();
  	}
-@@ -624,10 +632,12 @@ arm_init(
+@@ -624,10 +638,12 @@ arm_init(
  		(void)switch_to_serial_console(); /* Switch into serial mode from video console */
  		disableConsoleOutput = FALSE;     /* Allow printfs to happen */
  	}
@@ -355,7 +361,7 @@ index 0554aa8..5ecd71b 100644
  #else
  	/* Run the registered interrupt handler. */
 diff --git a/osfmk/arm64/start.s b/osfmk/arm64/start.s
-index 6aa6fe4..b3f76ae 100644
+index 6aa6fe4..7807eb0 100644
 --- a/osfmk/arm64/start.s
 +++ b/osfmk/arm64/start.s
 @@ -33,7 +33,13 @@
@@ -372,36 +378,51 @@ index 6aa6fe4..b3f76ae 100644
  #include <arm64/exception_asm.h>
  
  #if __ARM_KERNEL_PROTECT__
-@@ -474,6 +480,33 @@ LEXT(start_first_cpu)
+@@ -467,13 +473,44 @@ start_cpu:
+ 	.globl EXT(start_first_cpu)
+ LEXT(start_first_cpu)
+ 
+-	// Unlock the core for debugging
+-	msr		OSLAR_EL1, xzr
+-	msr		DAIFSet, #(DAIFSC_ALL)				// Disable all interrupts
+-
  	mov		x20, x0
  	mov		x21, #0
  
 +#if defined(B2L)
-+	// Physical-entry proof before page tables or C runtime.  x9..x13 are
-+	// scratch registers.  boot_args.Video starts at byte 40 in ABI v2.
-+	// The loader validates a 32-bit GOP and dimensions before handoff.
++	// First proof is before ANY system-register access.  Exynos security
++	// firmware may trap optional debug-register writes (including OSLAR).
++	// A large green rectangle appears near the bottom, outside the EFI log.
++	// x9..x14 are scratch; boot_args.Video starts at byte 40 in ABI v2.
 +	ldr		x9, [x20, #40]
 +	and		x9, x9, #~3
 +	cbz		x9, Lb2l_entry_marker_done
 +	ldr		x10, [x20, #56]
-+	lsl		x11, x10, #7              // y=128
++	ldr		x11, [x20, #72]           // framebuffer height
++	sub		x11, x11, #96
++	mul		x11, x11, x10
 +	add		x9, x9, x11
-+	add		x9, x9, #512              // x=128, 32bpp
-+	mov		w11, #0xff00              // green 16x16 entry marker
-+	mov		x12, #16
++	add		x9, x9, #32               // x=8, 32bpp
++	mov		w11, #0xff00              // green 128x64 entry marker
++	mov		x12, #64
 +Lb2l_entry_marker_row:
-+	mov		x13, #16
++	mov		x13, #128
 +Lb2l_entry_marker_pixel:
 +	str		w11, [x9], #4
 +	subs	x13, x13, #1
 +	b.ne	Lb2l_entry_marker_pixel
-+	sub		x9, x9, #64
++	sub		x9, x9, #512
 +	add		x9, x9, x10
 +	subs	x12, x12, #1
 +	b.ne	Lb2l_entry_marker_row
 +	dsb		sy
 +Lb2l_entry_marker_done:
++#else
++	// Optional debug unlock on Apple platforms only.  There is no debug
++	// hardware dependency in the B2L first-boot path.
++	msr		OSLAR_EL1, xzr
 +#endif
++	msr		DAIFSet, #(DAIFSC_ALL)     // Disable all interrupts
 +
  	// Set low reset vector before attempting any loads
  	adrp	x0, EXT(LowExceptionVectorBase)@page
@@ -439,6 +460,219 @@ index 878b515..ac3e485 100644
  osfmk/arm64/bcopy.s standard
  osfmk/arm64/bzero.s standard
  osfmk/arm/caches.c		standard
+diff --git a/osfmk/console/video_console.c b/osfmk/console/video_console.c
+index 648cb70..fc50940 100644
+--- a/osfmk/console/video_console.c
++++ b/osfmk/console/video_console.c
+@@ -1293,6 +1293,19 @@ static int vc_rendered_char_size = 0;
+ #define REN_MAX_DEPTH   32
+ static unsigned char vc_rendered_char[ISO_CHAR_HEIGHT * ((REN_MAX_DEPTH / 8) * ISO_CHAR_WIDTH)];
+ 
++/* XNU's built-in font is 8x16 regardless of the boot video UI scale.
++ * Expand actual glyph pixels and ALL cell geometry for B2L high-DPI panels.
++ * Non-B2L platforms retain their original dimensions and rendering paths. */
++#if defined(ARM64_BOARD_CONFIG_B2L)
++static unsigned int vc_b2l_text_scale = 1;
++#define VC_CHAR_WIDTH (ISO_CHAR_WIDTH * vc_b2l_text_scale)
++#define VC_CHAR_HEIGHT (ISO_CHAR_HEIGHT * vc_b2l_text_scale)
++#else
++#define VC_CHAR_WIDTH ISO_CHAR_WIDTH
++#define VC_CHAR_HEIGHT ISO_CHAR_HEIGHT
++#endif
++
++
+ #if defined(XNU_TARGET_OS_OSX)
+ #define CONFIG_VC_PROGRESS_METER_SUPPORT        1
+ #endif /* XNU_TARGET_OS_OSX */
+@@ -1336,7 +1349,7 @@ vc_clear_screen(unsigned int xx, unsigned int yy, unsigned int scrreg_top,
+ 		return;
+ 	}
+ 
+-	linelongs = vinfo.v_rowbytes * (ISO_CHAR_HEIGHT >> 2);
++	linelongs = vinfo.v_rowbytes * (VC_CHAR_HEIGHT >> 2);
+ 	rowline = vinfo.v_rowscanbytes >> 2;
+ 	rowlongs = vinfo.v_rowbytes >> 2;
+ 
+@@ -1611,6 +1624,39 @@ vc_paint_char_32(unsigned int xx, unsigned int yy, unsigned char ch, int attrs,
+ 	}
+ }
+ 
++#if defined(ARM64_BOARD_CONFIG_B2L)
++static void
++vc_b2l_paint_char_scaled(unsigned int xx, unsigned int yy, unsigned char ch, int attrs)
++{
++	/* Render from the original bitmap so early boot works before the
++	 * optional rendered-font allocation. Replicate every pixel in X/Y. */
++	const unsigned char *glyph = iso_font + ch * ISO_CHAR_HEIGHT;
++	for (unsigned int y = 0; y < ISO_CHAR_HEIGHT; ++y) {
++		unsigned int bits = glyph[y];
++		if (attrs & ATTR_BOLD) {
++			bits |= bits << 1;
++		}
++		if ((attrs & ATTR_UNDER) && y == ISO_CHAR_HEIGHT - 1) {
++			bits = 0xff;
++		}
++		if (attrs & ATTR_REVERSE) {
++			bits ^= 0xff;
++		}
++		for (unsigned int dy = 0; dy < vc_b2l_text_scale; ++dy) {
++			uint32_t *row = (uint32_t *)(vinfo.v_baseaddr +
++			    (yy * VC_CHAR_HEIGHT + y * vc_b2l_text_scale + dy) * vinfo.v_rowbytes +
++			    xx * VC_CHAR_WIDTH * sizeof(uint32_t));
++			for (unsigned int x = 0; x < ISO_CHAR_WIDTH; ++x) {
++				uint32_t color = (bits & (1U << x)) ? vc_color_fore : vc_color_back;
++				for (unsigned int dx = 0; dx < vc_b2l_text_scale; ++dx) {
++					*row++ = color;
++				}
++			}
++		}
++	}
++}
++#endif
++
+ static void
+ vc_paint_char(unsigned int xx, unsigned int yy, unsigned char ch, int attrs,
+     unsigned char ch_previous, int attrs_previous)
+@@ -1618,6 +1664,12 @@ vc_paint_char(unsigned int xx, unsigned int yy, unsigned char ch, int attrs,
+ 	if (!vinfo.v_depth) {
+ 		return;
+ 	}
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	if (vinfo.v_depth == 32 && vc_b2l_text_scale > 1) {
++		vc_b2l_paint_char_scaled(xx, yy, ch, attrs);
++		return;
++	}
++#endif
+ 
+ 	switch (vinfo.v_depth) {
+ 	case 8:
+@@ -1701,16 +1753,16 @@ static void
+ vc_reverse_cursor(unsigned int xx, unsigned int yy)
+ {
+ 	uint32_t *where;
+-	int line, col;
++	unsigned int line, col;
+ 
+ 	if (!vinfo.v_depth) {
+ 		return;
+ 	}
+ 
+ 	where = (uint32_t*)(vinfo.v_baseaddr +
+-	    (yy * ISO_CHAR_HEIGHT * vinfo.v_rowbytes) +
+-	    (xx /** ISO_CHAR_WIDTH*/ * vinfo.v_depth));
+-	for (line = 0; line < ISO_CHAR_HEIGHT; line++) {
++	    (yy * VC_CHAR_HEIGHT * vinfo.v_rowbytes) +
++	    (xx * VC_CHAR_WIDTH * ((vinfo.v_depth + 7) / 8)));
++	for (line = 0; line < VC_CHAR_HEIGHT; line++) {
+ 		switch (vinfo.v_depth) {
+ 		case 8:
+ 			where[0] = ~where[0];
+@@ -1722,7 +1774,7 @@ vc_reverse_cursor(unsigned int xx, unsigned int yy)
+ 			}
+ 			break;
+ 		case 32:
+-			for (col = 0; col < 8; col++) {
++			for (col = 0; col < VC_CHAR_WIDTH; col++) {
+ 				where[col] = ~where[col];
+ 			}
+ 			break;
+@@ -1740,7 +1792,29 @@ vc_scroll_down(int num, unsigned int scrreg_top, unsigned int scrreg_bottom)
+ 		return;
+ 	}
+ 
+-	linelongs = vinfo.v_rowbytes * (ISO_CHAR_HEIGHT >> 2);
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	/* The generic video_scroll helpers multiply a byte pointer difference
++	 * by four again. Use explicit physical-row byte counts on B2L; copying
++	 * bottom-to-top for downward scrolling preserves overlapping rows. */
++	if (vinfo.v_depth == 32) {
++		if (num <= 0 || scrreg_bottom <= scrreg_top ||
++		    scrreg_bottom > vinfo.v_rows || (unsigned int)num >= scrreg_bottom - scrreg_top) {
++			return;
++		}
++		unsigned int rows = (scrreg_bottom - scrreg_top - num) * VC_CHAR_HEIGHT;
++		unsigned int first = scrreg_top * VC_CHAR_HEIGHT;
++		unsigned int delta = num * VC_CHAR_HEIGHT;
++		for (unsigned int row = 0; row < rows; ++row) {
++			unsigned int y = first + rows - 1 - row;
++			void *src = (void *)(vinfo.v_baseaddr + y * vinfo.v_rowbytes);
++			void *dst = (void *)(vinfo.v_baseaddr + (y + delta) * vinfo.v_rowbytes);
++			memmove(dst, src, vinfo.v_rowscanbytes);
++		}
++		return;
++	}
++#endif
++
++	linelongs = vinfo.v_rowbytes * (VC_CHAR_HEIGHT >> 2);
+ 	rowline = vinfo.v_rowbytes >> 2;
+ 	rowscanline = vinfo.v_rowscanbytes >> 2;
+ 
+@@ -1751,7 +1825,7 @@ vc_scroll_down(int num, unsigned int scrreg_top, unsigned int scrreg_bottom)
+ 	i = (scrreg_bottom - scrreg_top) - num;
+ 
+ 	while (i-- > 0) {
+-		for (line = 0; line < ISO_CHAR_HEIGHT; line++) {
++		for (line = 0; line < VC_CHAR_HEIGHT; line++) {
+ 			/*
+ 			 * Only copy what is displayed
+ 			 */
+@@ -1774,7 +1848,29 @@ vc_scroll_up(int num, unsigned int scrreg_top, unsigned int scrreg_bottom)
+ 		return;
+ 	}
+ 
+-	linelongs = vinfo.v_rowbytes * (ISO_CHAR_HEIGHT >> 2);
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	/* The generic video_scroll helpers multiply a byte pointer difference
++	 * by four again. Use explicit physical-row byte counts on B2L; copying
++	 * bottom-to-top for downward scrolling preserves overlapping rows. */
++	if (vinfo.v_depth == 32) {
++		if (num <= 0 || scrreg_bottom <= scrreg_top ||
++		    scrreg_bottom > vinfo.v_rows || (unsigned int)num >= scrreg_bottom - scrreg_top) {
++			return;
++		}
++		unsigned int rows = (scrreg_bottom - scrreg_top - num) * VC_CHAR_HEIGHT;
++		unsigned int first = scrreg_top * VC_CHAR_HEIGHT;
++		unsigned int delta = num * VC_CHAR_HEIGHT;
++		for (unsigned int row = 0; row < rows; ++row) {
++			unsigned int y = first + row;
++			void *src = (void *)(vinfo.v_baseaddr + (y + delta) * vinfo.v_rowbytes);
++			void *dst = (void *)(vinfo.v_baseaddr + y * vinfo.v_rowbytes);
++			memmove(dst, src, vinfo.v_rowscanbytes);
++		}
++		return;
++	}
++#endif
++
++	linelongs = vinfo.v_rowbytes * (VC_CHAR_HEIGHT >> 2);
+ 	rowline = vinfo.v_rowbytes >> 2;
+ 	rowscanline = vinfo.v_rowscanbytes >> 2;
+ 
+@@ -1784,7 +1880,7 @@ vc_scroll_up(int num, unsigned int scrreg_top, unsigned int scrreg_bottom)
+ 	i = (scrreg_bottom - scrreg_top) - num;
+ 
+ 	while (i-- > 0) {
+-		for (line = 0; line < ISO_CHAR_HEIGHT; line++) {
++		for (line = 0; line < VC_CHAR_HEIGHT; line++) {
+ 			/*
+ 			 * Only copy what is displayed
+ 			 */
+@@ -2782,8 +2878,14 @@ gc_pause( boolean_t pause, boolean_t graphics_now )
+ static void
+ vc_initialize(__unused struct vc_info * vinfo_p)
+ {
+-	vinfo.v_rows = vinfo.v_height / ISO_CHAR_HEIGHT;
+-	vinfo.v_columns = vinfo.v_width / ISO_CHAR_WIDTH;
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	/* 1440-pixel beyond2lte GOP: 24x48 cells (60 columns).  A 1080/800
++	 * wide firmware mode uses 16x32 cells; tiny fallback modes stay 8x16. */
++	vc_b2l_text_scale = vinfo.v_depth != 32 ? 1 :
++	    (vinfo.v_width >= 1200 ? 3 : (vinfo.v_width >= 800 ? 2 : 1));
++#endif
++	vinfo.v_rows = vinfo.v_height / VC_CHAR_HEIGHT;
++	vinfo.v_columns = vinfo.v_width / VC_CHAR_WIDTH;
+ 	vinfo.v_rowscanbytes = ((vinfo.v_depth + 7) / 8) * vinfo.v_width;
+ 	vc_uiscale = vinfo.v_scale;
+ 	if (vc_uiscale > kMaxProgressData) {
 diff --git a/osfmk/kern/ast.c b/osfmk/kern/ast.c
 index 4bfc59a..29948f2 100644
 --- a/osfmk/kern/ast.c

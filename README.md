@@ -36,6 +36,9 @@ partition `BOOT`; no separate ESP or SYSTEM/USERDATA transfer is required.
 
 **The image builds, passes host checks, and has been written to BOOT with a
 verified readback after a full backup. Physical XNU boot remains unverified.**
+The first device photo confirms EFI loader execution only.
+[Build 0002](docs/build-0002.md) adds a dynamic 1–2 GiB RAM arena within the
+unchanged firmware memory guards, a large handoff panel and a scaled console.
 It does not contain an iOS root filesystem. Progress after the scheduler may
 stop while looking for a root device; that is separate from initial kernel
 entry and interrupt bring-up.

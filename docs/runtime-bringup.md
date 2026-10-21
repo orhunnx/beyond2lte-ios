@@ -10,12 +10,20 @@ not assume that this CPU has MPIDR 0; the loader records the actual MPIDR.
 The loader supplies the existing UEFI GOP framebuffer. XNU does not reprogram
 the panel, display controller, GPU, clocks or display power domains.
 
-1. `_start_first_cpu` writes a 16 by 16 green square at pixel (128, 128), using
-   the physical framebuffer before enabling the MMU. This establishes entry
+1. `_start_first_cpu` writes a 128 by 64 green rectangle at x=8,
+   y=framebuffer-height-96. This occurs before any system-register write,
+   using the physical framebuffer before enabling the MMU. B2L does not write
+   the optional `OSLAR_EL1` debug register. The rectangle establishes entry
    into XNU assembly, not completion of kernel initialization.
 2. Immediately after `arm_vm_init`, XNU maps the physical framebuffer, acquires
    its built-in text console and initializes printing before KPRINTF startup.
-   The initial square is cleared when the console acquires the screen.
+   The rectangle is cleared when the console acquires the screen, and a direct
+   `B2L XNU: VM initialized, framebuffer console active` banner establishes
+   mapped framebuffer access and execution of the C bootstrap.
+   Text uses genuine 3x bitmap expansion on the 1440-pixel-wide panel (24 by 48
+   pixel cells), or 2x at widths from 800 through 1199. Glyphs, cursor, clearing
+   and scrolling use matching cell geometry. UI progress-meter scaling alone
+   does not enlarge the text.
 3. `B2L GIC: GICv2 IRQ ready` establishes register programming only.
 4. `B2L CPU: 1/1 CPU initialized` establishes CPU registration with the scheduler.
 5. `B2L IRQ proof: timer=... SGI1=... scheduler awake` is printed after a timed
@@ -81,3 +89,15 @@ GPU acceleration, iOS user space and writable root filesystems are outside this
 first-boot runtime. Missing drivers are not represented by success-returning
 stubs. An expected later inability to locate a root filesystem must be reported
 as such rather than as a completed operating-system boot.
+
+## Software text console checks
+
+The B2L scroll path copies exactly the visible byte width per physical row,
+using overlap-safe order. It avoids the generic open-source ARM scroll helpers,
+which multiply an already byte-based pointer difference by four.
+
+`python3 tests/test_console_raster.py /path/to/patched/xnu` extracts the actual
+B2L glyph, cursor and scrolling functions, compiles a host harness with
+AddressSanitizer/UndefinedBehaviorSanitizer, and checks 2x/3x raster expansion,
+last-cell bounds, stride padding and both overlapping scroll directions.
+This checks software geometry; it does not establish that a device booted.

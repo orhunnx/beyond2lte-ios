@@ -40,7 +40,8 @@ def main():
     bindings_path = library_root / "SiliciumPkg.dsc.inc"
     manager_path = library_root / "Library/BootManagerLib/BootManager.c"
     manager_inf_path = library_root / "Library/BootManagerLib/BootManagerLib.inf"
-    for path in (dsc_path, fdf_path, bindings_path, manager_path, manager_inf_path, a.loader):
+    gic_path = root / "Mu_Basecore/ArmPkg/Drivers/ArmGicDxe/GicV2/ArmGicV2Dxe.c"
+    for path in (dsc_path, fdf_path, bindings_path, manager_path, manager_inf_path, gic_path, a.loader):
         if not path.is_file():
             p.error(f"missing input: {path}")
     bindings = bindings_path.read_text()
@@ -90,6 +91,50 @@ def main():
             manager_inf = manager_inf.replace("[LibraryClasses]", f"[LibraryClasses]\n  {library}", 1)
     if "[LibraryClasses]" not in manager_inf:
         p.error("external BootManagerLib INF has no library class section")
+    try:
+        gic = replace_function(gic_path.read_text(), "ArmGicV2DisableInterruptInterface", """  // B2L XNU profile: preserve unrelated CPU-interface control bits.
+  MmioAnd32 (GicInterruptInterfaceBase + ARM_GIC_ICCICR, ~1U);
+  MmioWrite32 (GicInterruptInterfaceBase + ARM_GIC_ICCPMR, 0);""")
+        gic = replace_function(gic, "GicV2ExitBootServicesEvent", """  // B2L XNU profile: bound shutdown even if a source cannot be quiesced.
+  // CoreExitBootServices already stopped the firmware timer. Mask both
+  // non-secure architected timer PPIs before draining the CPU interface.
+  UINTN Index;
+  UINT32 RawIar;
+  UINT32 IntId;
+  UINT32 CpuControl;
+  (VOID)Event;
+  (VOID)Context;
+
+  CpuControl = MmioRead32 (mGicInterruptInterfaceBase + ARM_GIC_ICCICR);
+  // B2L maps only the first 4 KiB CPU-interface window. GICC_DIR at +0x1000
+  // is outside that mapping. Select combined non-secure EOI before draining,
+  // matching the board's XNU GIC setup, and preserve every unrelated bit.
+  CpuControl &= ~(1U << 9); // Clear EOImodeNS in the non-secure GICC_CTLR view.
+  MmioWrite32 (mGicInterruptInterfaceBase + ARM_GIC_ICCICR, CpuControl);
+  ArmDataSynchronizationBarrier ();
+  MmioWrite32 (mGicDistributorBase + ARM_GIC_ICDICER, (1U << 27) | (1U << 30));
+  for (Index = 0; Index < mGicNumInterrupts; Index++) {
+    GicV2DisableInterruptSource (&gHardwareInterruptV2Protocol, Index);
+  }
+  ArmDataSynchronizationBarrier ();
+
+  for (Index = 0; Index < 4096; Index++) {
+    RawIar = (UINT32)ArmGicV2AcknowledgeInterrupt (mGicInterruptInterfaceBase);
+    IntId = RawIar & 0x3FFU;
+    if (IntId >= 1020 || IntId >= mGicNumInterrupts) {
+      break;
+    }
+    // The protocol wrapper checks a bare INTID and rejects SGI CPU source
+    // bits. Hardware EOIR must instead receive the complete original token.
+    MmioWrite32 (mGicInterruptInterfaceBase + ARM_GIC_ICCEIOR, RawIar);
+  }
+  ArmDataSynchronizationBarrier ();
+  // The board-profile helper clears Enable without changing other bits.
+  ArmGicV2DisableInterruptInterface (mGicInterruptInterfaceBase);
+  MmioAnd32 (mGicDistributorBase + ARM_GIC_ICDDCR, ~1U);
+  ArmDataSynchronizationBarrier ();""")
+    except (ValueError, IndexError):
+        p.error("expected GicV2ExitBootServicesEvent implementation is missing or malformed")
     binary_inf = f"""# Generated external binary module; do not commit the binary.
 [Defines]
   INF_VERSION = 0x0001001B
@@ -127,6 +172,7 @@ def main():
     fdf_path.write_text(fdf)
     manager_path.write_text(manager)
     manager_inf_path.write_text(manager_inf)
+    gic_path.write_text(gic)
     print(f"Prepared external 4 MiB firmware profile at {root}")
     print(f"Embedded loader {guid}; post-console launch precedes BootNext/BootOrder and stops if the loader returns")
 

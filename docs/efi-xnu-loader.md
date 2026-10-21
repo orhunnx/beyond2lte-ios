@@ -35,9 +35,14 @@ entropy design. Do not publish a device package's seed as a reusable template.
 
 ## RAM and ABI
 
-EFI allocates a contiguous 514 MiB `EfiLoaderData` range. Inside it, a 2 MiB
-aligned 512 MiB arena contains the kernel segments, Apple flattened device tree
-and `boot_args`. Only this allocation is advertised as available RAM to XNU.
+EFI selects the largest 2 MiB aligned range within one current
+`EfiConventionalMemory` descriptor and allocates it exactly as `EfiLoaderData`.
+The arena is at least 1 GiB, capped at 2 GiB for this bring-up, and leaves
+32 MiB of that descriptor available for firmware headroom. The actual size in
+MiB is printed before handoff and supplied to XNU. If no contiguous 1 GiB range
+is available, loading stops with an explicit error. Kernel segments, Apple
+flattened device tree and `boot_args` occupy the start of that arena. Only this
+allocation is advertised as available RAM to XNU.
 Reserved firmware, framebuffer, MMIO and unrelated RAM are excluded. This first
 boot configuration deliberately uses one CPU and a limited memory arena.
 
@@ -49,7 +54,8 @@ CPU's MPIDR affinity, actual `CNTFRQ_EL0`, a single running CPU, Exynos 9820 SoC
 range, GICv2 distributor/CPU-interface ranges, and the GOP framebuffer.
 Unmeasured CPU and bus clocks are not advertised as counter frequencies.
 
-GOP must expose direct 32-bit B,G,R,X pixels and at least 144 by 144 pixels. The
+GOP must expose direct 32-bit B,G,R,X pixels and at least 1,184 by 864 pixels
+for the enlarged handoff progress panel. The
 physical framebuffer address is marked with the XNU `v_baseAddr` physical flag;
 text mode is selected for kernel bring-up. The framebuffer is a root-level
 Apple DT node with an absolute physical register range.
@@ -62,19 +68,32 @@ final memory map, and retries `ExitBootServices` on stale keys. After the first
 exit attempt it invokes only `GetMemoryMap` and `ExitBootServices`; failures halt
 without calling console, allocation or cleanup boot services.
 
-The stackless assembly trampoline masks exceptions, cleans and invalidates data
-caches by architected set/way geometry, invalidates instruction caches, clears
+The stackless assembly trampoline masks exceptions and cleans the populated
+kernel/DT/boot arguments, loader image and current stack ranges to PoC using
+`DC CVAC`. It invalidates their instruction cache lines using `IC IVAU`, clears
 EL1 MMU/data/instruction-cache enables, invalidates TLBs and branches to the
-kernel's physical entry with `x0 = boot_args physical address`. Both legacy and
-FEAT_CCIDX cache-geometry formats are supported. It does not use the firmware
-library's whole-cache function, which asserts rather than performing that
-operation in the pinned firmware revision.
+kernel's physical entry with `x0 = boot_args physical address`. Cache-line sizes
+come from `CTR_EL0`; no global set/way operations, `CSSELR_EL1`, `CCSIDR_EL1` or
+`ID_AA64MMFR2_EL1` accesses are needed. This removes operations that an EL2
+monitor may trap without changing kernel data coherency. It does not establish
+that an EL2 trap caused the first build's stall.
+
+Six large, directly rendered rows remain independent of EFI console services:
+`MAP READY`, `EBS RETURN`, `HANDOFF`, `CACHE CLEAN`, `MMU OFF`, `KERNEL JUMP`.
+Gray means not reached, yellow/cyan means the relevant operation is in progress,
+green means it returned/completed, and red denotes an EFI map/exit error. The
+final four rows are updated by the stackless assembly itself. The kernel adds
+its own separate entry marker before its first system-register access. These
+make an EFI exit callback stall distinguishable from cache maintenance, MMU
+transition or early kernel code. Drawing after the first exit attempt uses only
+CPU stores and barriers, never EFI boot services.
 
 ## Verification status
 
 Host sanitizer tests cover Mach-O bounds/entry validation, Apple DT decoding and
 all insufficient buffer capacities, topology/seed contents, and `boot_args`
-layout. The EFI application has been compiled and inspected as an ARM64 EFI
+layout. Direct framebuffer panel bounds and stage updates also pass host
+sanitizer tests. The EFI application has been compiled and inspected as an ARM64 EFI
 application. These checks do not establish successful device execution. Actual
 entry, GIC/timer behavior and subsequent kernel progress require the device
 screen or runtime logs.

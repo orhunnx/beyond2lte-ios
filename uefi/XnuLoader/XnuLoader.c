@@ -17,14 +17,15 @@
 #include "MachO.h"
 #include "DeviceTree.h"
 #include "BootPayload.h"
+#include "Progress.h"
+#include "Arena.h"
 
-#define B2L_ARENA_SIZE (512ULL * 1024 * 1024)
-#define B2L_ALIGNMENT (2ULL * 1024 * 1024)
 #define B2L_DT_SPACE (64 * 1024)
 #define B2L_MAP_SPACE (1024 * 1024)
 #define B2L_MAX_KERNEL (128 * 1024 * 1024)
 
-VOID EFIAPI B2LXnuHandoff(UINT64 EntryPhysical, UINT64 BootArgsPhysical);
+VOID EFIAPI B2LXnuHandoff(UINT64 EntryPhysical, UINT64 BootArgsPhysical,
+                          const struct b2l_handoff_info *Info);
 
 static EFI_STATUS ReadFile(EFI_FILE_PROTOCOL *Root, CHAR16 *Path,
                            UINTN Maximum, VOID **Data, UINTN *Length)
@@ -155,10 +156,38 @@ static EFI_STATUS GetVideo(struct b2l_boot_video *Video)
         return EFI_BAD_BUFFER_SIZE;
     Required = Video->row_bytes * Video->height;
     if (Video->base > MAX_UINT64 - Required) return EFI_BAD_BUFFER_SIZE;
-    if (!Video->base || (Video->base & 3) || Video->width < 144 || Video->height < 144 ||
+    if (!Video->base || (Video->base & 3) || Video->width < 1184 || Video->height < 864 ||
         Gop->Mode->Info->PixelsPerScanLine < Video->width ||
         Required > Gop->Mode->FrameBufferSize) return EFI_BAD_BUFFER_SIZE;
     return EFI_SUCCESS;
+}
+
+/* Select only EFI conventional memory; never widen the firmware memory map.
+ * Exact-address allocation avoids an arbitrary fixed-size request and keeps
+ * descriptor boundaries, framebuffer, firmware and DMA reservations intact. */
+static EFI_STATUS AllocateArena(VOID *Map, EFI_PHYSICAL_ADDRESS *Base,
+                                UINT64 *Size, UINTN *Pages)
+{
+    EFI_STATUS Status = EFI_OUT_OF_RESOURCES;
+    UINTN MapSize, Key, DescSize;
+    UINT32 Version;
+    for (UINTN Retry=0; Retry<4; ++Retry) {
+        UINT64 BestStart=0, BestSize=0;
+        MapSize=B2L_MAP_SPACE;
+        Status=gBS->GetMemoryMap(&MapSize, Map, &Key, &DescSize, &Version);
+        if (EFI_ERROR(Status)) return Status;
+        STATIC_ASSERT(OFFSET_OF(EFI_MEMORY_DESCRIPTOR,PhysicalStart)==8,"EFI descriptor ABI");
+        STATIC_ASSERT(OFFSET_OF(EFI_MEMORY_DESCRIPTOR,NumberOfPages)==24,"EFI descriptor ABI");
+        STATIC_ASSERT(EfiConventionalMemory==7,"EFI descriptor type ABI");
+        int Choice=b2l_choose_arena(Map,MapSize,DescSize,&BestStart,&BestSize);
+        if(Choice==-1) return EFI_COMPROMISED_DATA;
+        if(Choice) return EFI_OUT_OF_RESOURCES;
+        EFI_PHYSICAL_ADDRESS Candidate=BestStart;
+        UINTN CandidatePages=EFI_SIZE_TO_PAGES(BestSize);
+        Status=gBS->AllocatePages(AllocateAddress,EfiLoaderData,CandidatePages,&Candidate);
+        if(!EFI_ERROR(Status)){*Base=Candidate; *Pages=CandidatePages; *Size=BestSize; return EFI_SUCCESS;}
+    }
+    return Status;
 }
 
 EFI_STATUS EFIAPI UefiMain(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
@@ -170,7 +199,8 @@ EFI_STATUS EFIAPI UefiMain(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
     UINTN KernelSize = 0, Pages = 0, DtSize, MapSize, MapKey, DescSize, Attempt;
     UINT32 DescVersion;
     EFI_PHYSICAL_ADDRESS Allocation = 0;
-    UINT64 Base, DtPhysical, ArgsPhysical, Used, Entry, Stack;
+    UINT64 Base, ArenaSize=0, DtPhysical, ArgsPhysical, Used, Entry, Stack;
+    struct b2l_handoff_info Handoff;
     BOOLEAN PayloadSeed = FALSE;
     struct b2l_macho Mach;
     struct b2l_dt_config Dt;
@@ -197,7 +227,7 @@ EFI_STATUS EFIAPI UefiMain(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
         Status = EFI_LOAD_ERROR; goto Fail;
     }
     Used = Mach.virtual_end - Mach.virtual_base;
-    if (Used > B2L_ARENA_SIZE - B2L_DT_SPACE - sizeof(*Args) - 8192) {
+    if (Used > B2L_MIN_ARENA - B2L_DT_SPACE - sizeof(*Args) - 8192) {
         Status = EFI_BAD_BUFFER_SIZE; goto Fail;
     }
     Status = GetSeed(Root, PayloadSeed, Dt.random_seed);
@@ -211,13 +241,14 @@ EFI_STATUS EFIAPI UefiMain(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
     }
     Dt.counter_frequency = ReadCounterFrequency(); Dt.mpidr = ReadMpidr();
     if (!Dt.counter_frequency) { Status = EFI_UNSUPPORTED; goto Fail; }
-    Pages = EFI_SIZE_TO_PAGES(B2L_ARENA_SIZE + B2L_ALIGNMENT);
-    Status = gBS->AllocatePages(AllocateAnyPages, EfiLoaderData, Pages, &Allocation);
-    if (EFI_ERROR(Status)) { Print(L"No contiguous 514 MiB EFI conventional-memory allocation.\r\n"); goto Fail; }
-    Base = ALIGN_VALUE(Allocation, B2L_ALIGNMENT);
+    MemoryMap = AllocatePool(B2L_MAP_SPACE);
+    if (!MemoryMap) { Status=EFI_OUT_OF_RESOURCES; goto Fail; }
+    Status = AllocateArena(MemoryMap, &Allocation, &ArenaSize, &Pages);
+    if (EFI_ERROR(Status)) { Print(L"No contiguous EFI conventional-memory arena of at least 1 GiB: %r\r\n",Status); goto Fail; }
+    Base = Allocation;
     /* Only this reserved EFI allocation is advertised as normal RAM to XNU.
      * Firmware, framebuffer and UFS/MMIO ranges are never added as free RAM. */
-    Dt.memory_base = Base; Dt.memory_size = B2L_ARENA_SIZE;
+    Dt.memory_base = Base; Dt.memory_size = ArenaSize;
     for (UINTN I = 0; I < Mach.segment_count; ++I) {
         struct b2l_segment *S = &Mach.segments[I];
         VOID *Dest = (VOID *)(UINTN)(Base + S->va - Mach.virtual_base);
@@ -234,7 +265,7 @@ EFI_STATUS EFIAPI UefiMain(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
     ZeroMem(Args, sizeof(*Args));
     Args->revision = 2; Args->version = 2;
     Args->virtual_base = Mach.virtual_base; Args->physical_base = Base;
-    Args->memory_size = B2L_ARENA_SIZE; Args->actual_memory_size = B2L_ARENA_SIZE;
+    Args->memory_size = ArenaSize; Args->actual_memory_size = ArenaSize;
     Args->top_of_kernel_data = ALIGN_VALUE(ArgsPhysical + sizeof(*Args), 4096);
     Args->device_tree = Mach.virtual_base + DtPhysical - Base;
     Args->device_tree_length = (UINT32)DtSize;
@@ -255,24 +286,34 @@ EFI_STATUS EFIAPI UefiMain(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
         Print(L"Refusing non-identity firmware mapping before MMU-off handoff.\r\n");
         Status = EFI_UNSUPPORTED; goto Fail;
     }
-    MemoryMap = AllocatePool(B2L_MAP_SPACE);
-    if (!MemoryMap) { Status = EFI_OUT_OF_RESOURCES; goto Fail; }
     Status = gBS->SetWatchdogTimer(0, 0, 0, NULL);
     if (EFI_ERROR(Status)) goto Fail;
-    Print(L"XNU entry PA 0x%lx, boot_args PA 0x%lx, RAM 0x%lx+512 MiB\r\n", Entry, ArgsPhysical, Base);
+    Print(L"XNU entry PA 0x%lx, boot_args PA 0x%lx, RAM 0x%lx + %lu MiB\r\n", Entry, ArgsPhysical, Base, ArenaSize/(1024*1024));
     Print(L"GOP %lux%lu, CNTFRQ %u Hz; exiting EFI Boot Services.\r\n",
           Dt.video.width, Dt.video.height, Dt.counter_frequency);
+    ZeroMem(&Handoff,sizeof(Handoff));
+    Handoff.kernel_start=Base; Handoff.kernel_end=Args->top_of_kernel_data;
+    Handoff.image_start=(UINTN)Image->ImageBase; Handoff.image_end=Handoff.image_start+Image->ImageSize;
+    Handoff.stack_start=Stack-16384; Handoff.stack_end=Stack+4096;
+    if(!IdentityRange(Handoff.stack_start,Handoff.stack_end-Handoff.stack_start)) {
+        Status=EFI_UNSUPPORTED; goto Fail;
+    }
+    B2lProgressPrepare(Dt.video.base,Dt.video.row_bytes,Dt.video.width,Dt.video.height,&Handoff);
     /* No console, allocation, protocol or other boot-service calls after the
      * first ExitBootServices attempt. Firmware may invalidate the map key. */
     for (Attempt = 0; Attempt < 8; ++Attempt) {
         MapSize = B2L_MAP_SPACE;
         Status = gBS->GetMemoryMap(&MapSize, MemoryMap, &MapKey, &DescSize, &DescVersion);
-        if (EFI_ERROR(Status)) CpuDeadLoop();
+        if (EFI_ERROR(Status)) { B2lProgressSet(&Handoff,0,0x00ff0000); CpuDeadLoop(); }
+        B2lProgressSet(&Handoff,0,0x0000ff00);
+        B2lProgressSet(&Handoff,1,0x00ffff00);
         Status = gBS->ExitBootServices(ImageHandle, MapKey);
         if (!EFI_ERROR(Status)) {
-            B2LXnuHandoff(Entry, ArgsPhysical);
+            B2lProgressSet(&Handoff,1,0x0000ff00);
+            B2LXnuHandoff(Entry, ArgsPhysical, &Handoff);
             CpuDeadLoop();
         }
+        B2lProgressSet(&Handoff,1,0x00ff0000);
         if (Status != EFI_INVALID_PARAMETER) CpuDeadLoop();
     }
     CpuDeadLoop();
