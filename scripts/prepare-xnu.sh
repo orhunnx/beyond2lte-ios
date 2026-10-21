@@ -20,7 +20,8 @@ python3 "$repo_root/scripts/apply-board-patches.py" "$xnu_path" \
   "$repo_root/patches/0010-b2l-scalar-instruction-fetch.patch" \
   "$repo_root/patches/0011-b2l-native-pan-copyio.patch" \
   "$repo_root/patches/0012-b2l-unsigned-shared-cache.patch" \
-  "$repo_root/patches/0013-b2l-unsigned-executable-boothash.patch"
+  "$repo_root/patches/0013-b2l-unsigned-executable-boothash.patch" \
+  "$repo_root/patches/0014-b2l-arm64e-dyld-page-fixups.patch"
 # New files have separate provenance and are kept as an overlay.
 while IFS= read -r -d '' source_file; do
   relative="${source_file#"$repo_root/xnu-overlay/"}"

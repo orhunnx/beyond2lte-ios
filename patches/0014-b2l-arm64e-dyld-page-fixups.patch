@@ -1,0 +1,109 @@
+--- a/osfmk/vm/vm_dyld_pager.c
++++ b/osfmk/vm/vm_dyld_pager.c
+@@ -60,6 +60,9 @@
+ 
+ #include <sys/kdebug_triage.h>
+ #include <mach-o/fixup-chains.h>
++#if defined(ARM64_BOARD_CONFIG_B2L)
++#include <arm64/b2l_arm64e_compat.h>
++#endif
+ #if defined(HAS_APPLE_PAC)
+ #include <ptrauth.h>
+ #include <arm/misc_protos.h>
+@@ -603,6 +606,23 @@
+ 	return KERN_SUCCESS;
+ }
+ 
++#elif defined(ARM64_BOARD_CONFIG_B2L)
++/* The B2L development ABI stores raw targets, never hardware signatures. */
++static kern_return_t
++signPointer(uint64_t unsignedAddr, void *loc __unused, bool addrDiv __unused,
++    uint16_t diversity __unused, ptrauth_key key, dyld_pager_t pager __unused,
++    uint64_t *signedAddr)
++{
++	if (!b2l_arm64e_compat_enabled() ||
++	    (key != ptrauth_key_asia && key != ptrauth_key_asda)) {
++		return KERN_FAILURE;
++	}
++	*signedAddr = unsignedAddr;
++	return KERN_SUCCESS;
++}
++#endif
++
++#if defined(HAS_APPLE_PAC) || defined(ARM64_BOARD_CONFIG_B2L)
+ /*
+  * Apply fixups to a page used by a 64 bit process using pointer authentication.
+  */
+@@ -623,6 +643,15 @@
+ 	bool                 valid_chain = false;
+ 	uint64_t             step_multiplier = 8; // always 8-bytes stride for arm64e pages
+ 
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	/* map_with_linking_np admits native page size only. Do not interpret
++	 * a larger logical chain as contiguous physical memory on B2L. */
++	if (!b2l_arm64e_compat_enabled() || hdr->mwli_page_size != PAGE_SIZE ||
++	    segInfo->page_size != PAGE_SIZE || pageIndex >= segInfo->page_count) {
++		return KERN_FAILURE;
++	}
++#endif
++
+ 	/*
+ 	 * range check against link_info, note +1 to include data we'll dereference
+ 	 */
+@@ -635,6 +664,11 @@
+ 		return KERN_FAILURE;
+ 	}
+ 	uint16_t firstStartOffset = segInfo->page_start[pageIndex];
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	if (firstStartOffset != DYLD_CHAINED_PTR_START_NONE && (firstStartOffset & 7)) {
++		return KERN_FAILURE;
++	}
++#endif
+ 
+ 	/*
+ 	 * All done if no fixups on the page
+@@ -746,6 +780,15 @@
+ 	bool                 valid_chain = false;
+ 	uint64_t             step_multiplier = 8; // always 8-bytes stride for arm64e
+ 
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	/* map_with_linking_np admits native page size only. Do not interpret
++	 * a larger logical chain as contiguous physical memory on B2L. */
++	if (!b2l_arm64e_compat_enabled() || hdr->mwli_page_size != PAGE_SIZE ||
++	    segInfo->page_size != PAGE_SIZE || pageIndex >= segInfo->page_count) {
++		return KERN_FAILURE;
++	}
++#endif
++
+ 	/*
+ 	 * range check against link_info, note +1 to include data we'll dereference
+ 	 */
+@@ -758,6 +801,11 @@
+ 		return KERN_FAILURE;
+ 	}
+ 	uint16_t firstStartOffset = segInfo->page_start[pageIndex];
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	if (firstStartOffset != DYLD_CHAINED_PTR_START_NONE && (firstStartOffset & 7)) {
++		return KERN_FAILURE;
++	}
++#endif
+ 
+ 	/*
+ 	 * All done if no fixups on the page
+@@ -922,7 +970,15 @@
+ 	 * Route to the appropriate fixup routine
+ 	 */
+ 	switch (hdr->mwli_pointer_format) {
+-#if defined(HAS_APPLE_PAC)
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	case DYLD_CHAINED_PTR_ARM64E:
++		return fixupPageAuth64(userVA, contents, pager, segInfo, pageIndex, false);
++	case DYLD_CHAINED_PTR_ARM64E_USERLAND:
++	case DYLD_CHAINED_PTR_ARM64E_USERLAND24:
++		return fixupPageAuth64(userVA, contents, pager, segInfo, pageIndex, true);
++	case DYLD_CHAINED_PTR_ARM64E_SHARED_CACHE:
++		return fixupCachePageAuth64(userVA, contents, pager, segInfo, pageIndex);
++#elif defined(HAS_APPLE_PAC)
+ 	case DYLD_CHAINED_PTR_ARM64E:
+ 		fixupPageAuth64(userVA, contents, pager, segInfo, pageIndex, false);
+ 		break;
