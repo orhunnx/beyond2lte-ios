@@ -4,15 +4,16 @@
 #include <stdio.h>
 #include <string.h>
 #include "../uefi/XnuLoader/DeviceTree.h"
-static unsigned seed_properties;
+static unsigned seed_properties, memory_map_nodes, defaults_nodes;
 static uint32_t read32(const unsigned char *p) { uint32_t n; memcpy(&n,p,4); return n; }
 static size_t decode(const unsigned char *buf, size_t size, size_t off,
-                     unsigned depth, unsigned *nodes, unsigned *properties)
+                     unsigned depth, unsigned *nodes, unsigned *properties, const char *parent_path)
 {
     assert(depth < 8 && off + 8 <= size);
     uint32_t nprops = read32(buf+off), children = read32(buf+off+4);
     off += 8; ++*nodes;
     const char *node_name = 0;
+    char path[128];
     assert(nprops && nprops < 64 && children < 8);
     for (uint32_t i=0; i<nprops; ++i) {
         assert(off + 36 <= size && memchr(buf+off, 0, 32));
@@ -21,6 +22,8 @@ static size_t decode(const unsigned char *buf, size_t size, size_t off,
         off += 36; assert(len <= size-off);
         if (!strcmp(name,"name")) { assert(len && buf[off+len-1]==0); node_name=(const char *)buf+off; }
         assert(strcmp(name,"clock-frequency") && strcmp(name,"bus-frequency"));
+        assert(strcmp(name,"TrustCache") && strcmp(name,"AuxKC") && strcmp(name,"AuxKC-mach_header"));
+        assert(strcmp(name,"pmap-io-ranges") && strcmp(name,"pmap-io-filters"));
         if (!strcmp(name,"reg") && node_name && !strcmp(node_name,"framebuffer")) {
             uint64_t pa; memcpy(&pa,buf+off,8); assert(depth==1 && len==16 && pa==0xca000000);
         }
@@ -32,7 +35,16 @@ static size_t decode(const unsigned char *buf, size_t size, size_t off,
         if (!strcmp(name,"reg") && len==4) assert(read32(buf+off)==0x100);
         off += (len + 3) & ~3U; ++*properties;
     }
-    for (uint32_t i=0; i<children; ++i) off=decode(buf,size,off,depth+1,nodes,properties);
+    assert(node_name);
+    if(depth==0) path[0]=0;
+    else { int n=snprintf(path,sizeof(path),"%s/%s",parent_path,node_name); assert(n>0 && (size_t)n<sizeof(path)); }
+    if(!strcmp(path,"/chosen/memory-map")) {
+        ++memory_map_nodes; assert(nprops==1 && children==0);
+    }
+    if(!strcmp(path,"/defaults")) {
+        ++defaults_nodes; assert(nprops==1 && children==0);
+    }
+    for (uint32_t i=0; i<children; ++i) off=decode(buf,size,off,depth+1,nodes,properties,path);
     return off;
 }
 int main(void)
@@ -46,8 +58,9 @@ int main(void)
     for(unsigned i=0;i<B2L_SEED_BYTES;++i)c.random_seed[i]=(unsigned char)(i+1);
     assert(b2l_build_device_tree(buf,sizeof(buf),&c,&used)==0);
     unsigned nodes=0, props=0;
-    assert(decode(buf,used,0,0,&nodes,&props)==used);
-    assert(nodes==9 && props>40 && seed_properties==1);
+    assert(decode(buf,used,0,0,&nodes,&props,"")==used);
+    assert(nodes==11 && props>42 && seed_properties==1);
+    assert(memory_map_nodes==1 && defaults_nodes==1);
     for(size_t capacity=0;capacity<used;++capacity) {
         size_t ignored=0; memset(small,0x5a,sizeof(small));
         assert(b2l_build_device_tree(small,capacity,&c,&ignored)<0);

@@ -30,6 +30,27 @@ The loader must supply matching `virtBase`, `physBase`, `memSize`,
 is expressed in the kernel's virtual address space. The physical kernel
 entry must correspond to the loaded Mach-O entry point.
 
+## Mandatory Apple device-tree containers
+
+The loader supplies these nodes for the current non-SPTM ARM64 path:
+
+| Path | Required contents | Consumer |
+| --- | --- | --- |
+| `/chosen` | `random-seed` (256 bytes), `dram-base` and `dram-size` (64-bit arena bounds) | PRNG and `arm_init` |
+| `/chosen/memory-map` | Container with a `name`; no range properties for absent payloads | `arm_vm_prot_init` |
+| `/defaults` | Container with a `name`; omitted tuning properties preserve kernel defaults | pmap ASID/PV initialization |
+| `/cpus/cpu0` | `state=running`, 32-bit MPIDR affinity `reg`, actual counter frequency | CPU topology and clock setup |
+| `/arm-io` | SoC `device_type` and native 64-bit `ranges` | Platform expert |
+
+In `rel/xnu-12377`, `arm_vm_prot_init` asserts that `/chosen/memory-map` exists
+before optionally reading `TrustCache`, `AuxKC` and `AuxKC-mach_header`.
+Those properties remain absent when the loader has no corresponding payload;
+creating the container does not claim or authorize any protected memory range.
+
+Likewise, pmap requires `/defaults` even when it uses its built-in ASID and PV
+allocation policy. Optional `pmap-io-ranges` and `pmap-io-filters` remain absent.
+No artificial I/O ownership or filter entries are added to satisfy lookups.
+
 ## Platform configuration
 
 B2L is a separate machine configuration. `VMAPPLE` assumes an Apple virtual

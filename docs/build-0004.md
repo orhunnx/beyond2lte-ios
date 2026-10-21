@@ -46,3 +46,11 @@ The original pre-0001 backup was preserved. The 22,518,800-byte prefix matched
 on readback, then the device was rebooted. The local receipt and identifiers
 remain ignored. Progress beyond the previously observed seed panic is pending
 a new screen report.
+
+## Device result
+
+The user photograph confirms the seed-size panic is gone. Execution proceeds
+within arm_vm_init and stops at line 1321, asserting the required lookup of
+/chosen/memory-map succeeds. The emitted Apple DT omitted that node. The next
+image adds the required container without fabricating optional TrustCache or
+AuxKC ranges. VM completion and interrupt delivery remain pending.

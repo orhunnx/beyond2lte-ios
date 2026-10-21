@@ -36,10 +36,11 @@ partition `BOOT`; no separate ESP or SYSTEM/USERDATA transfer is required.
 
 **Build 0003 reached XNU C initialization on the device, with its own readable
 framebuffer output. MMU enable and platform initialization are verified by the
-user photograph. VM initialization currently stops at an insufficient boot seed
-(64 supplied; 256 required). Interrupt delivery remains unverified.**
-[Build 0004](docs/build-0004.md) supplies the required 256-byte seed and is ready
-for its device test. BOOT writes were backed up and readback-verified.
+user photograph. Build 0004 passes the boot-seed check; VM initialization now stops at the
+missing /chosen/memory-map DT container. Interrupt delivery remains unverified.**
+[Build 0004](docs/build-0004.md) supplies the required 256-byte seed; its
+device result identified the next DT contract gap. [Build 0005](docs/build-0005.md)
+adds the required /chosen/memory-map and /defaults containers. BOOT writes were backed up and readback-verified.
 [Build 0002](docs/build-0002.md) uses a dynamic 1–2 GiB RAM arena within the
 unchanged firmware memory guards. [Build 0003](docs/build-0003.md) adds XNU-owned
 text from assembly entry through C and the normal printf/kprintf console.

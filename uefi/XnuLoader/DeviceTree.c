@@ -45,7 +45,7 @@ int b2l_build_device_tree(void *buffer, b2l_size capacity,
                          const struct b2l_dt_config *c, b2l_size *used)
 {
     struct writer w = { buffer, capacity, 0, 0 };
-    struct node root, chosen, memory, cpus, cpu, arm_io, gic, aliases;
+    struct node root, chosen, memory_map, defaults, memory, cpus, cpu, arm_io, gic, aliases;
     b2l_u32 two = 2, one = 1, zero = 0, cpu_reg, cluster_type = 'S';
     b2l_u64 ranges[] = { 0, 0x10000000ULL, 0x20000000ULL };
     b2l_u64 gic_regs[] = { 0x101000, 0x1000, 0x102000, 0x1000 };
@@ -65,7 +65,15 @@ int b2l_build_device_tree(void *buffer, b2l_size capacity,
     prop(&w, &chosen, "debug-enabled", &one, 4);
     text_prop(&w, &chosen, "firmware-version", "beyond2lte-ios EFI loader");
     text_prop(&w, &chosen, "stdout-path", "/framebuffer");
+    /* XNU requires this container even without a TrustCache or AuxKC.
+     * Omit range properties unless an actual corresponding payload exists. */
+    memory_map = begin(&w, &chosen, "memory-map");
+    end(&w, &memory_map);
     end(&w, &chosen);
+    /* pmap requires /defaults; absent tuning/range properties retain its
+     * built-in defaults instead of claiming nonexistent protected regions. */
+    defaults = begin(&w, &root, "defaults");
+    end(&w, &defaults);
     memory = begin(&w, &root, "memory");
     text_prop(&w, &memory, "device_type", "memory");
     prop(&w, &memory, "reg", mem_regs, sizeof(mem_regs));

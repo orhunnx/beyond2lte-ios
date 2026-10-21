@@ -53,6 +53,9 @@ The Apple device tree is native little endian and includes the actual boot
 CPU's MPIDR affinity, actual `CNTFRQ_EL0`, a single running CPU, Exynos 9820 SoC
 range, GICv2 distributor/CPU-interface ranges, and the GOP framebuffer.
 Unmeasured CPU and bus clocks are not advertised as counter frequencies.
+The tree also includes the mandatory `/chosen/memory-map` and `/defaults`
+containers. They have no fabricated trust-cache, auxiliary-kernel, protected I/O
+range or filter properties; absent optional values retain the kernel defaults.
 
 GOP must expose direct 32-bit B,G,R,X pixels and at least 1,184 by 864 pixels
 for the enlarged handoff progress panel. The
