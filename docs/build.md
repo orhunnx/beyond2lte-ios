@@ -46,7 +46,8 @@ The upstream `all` target additionally creates Apple kext KPI bundles; its
 export lists reference Apple IOMMU/monitor symbols absent from B2L. Those
 bundles are not currently supported. The local first-boot build disables
 upstream compiler warnings with the shown overrides; it is not a claim of a
-warning-clean build against the newer SDK. Device execution remains unverified.
+warning-clean build against the newer SDK. Current device evidence and remaining milestones are recorded in
+[build 0002](build-0002.md).
 
 ## EFI applications
 

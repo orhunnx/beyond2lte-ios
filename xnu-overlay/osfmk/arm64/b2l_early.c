@@ -1,0 +1,122 @@
+/* SPDX-License-Identifier: BSD-2-Clause
+ * Allocation-free XNU-owned GOP text console, following the A5 port's early
+ * console lifecycle, with geometry from boot_args instead of board constants.
+ * The physical GOP alias is established in start.s. arm_vm_init supplies a
+ * reserved TTBR1 alias before removing TTBR0; the serial sink uses it thereafter.
+ */
+#include <arm64/b2l_early.h>
+#if defined(B2L)
+#include <kern/misc_protos.h>
+extern unsigned char iso_font[256 * 16];
+static volatile uint32_t *b2l_fb;
+static uint64_t b2l_fb_physical, b2l_fb_length;
+static unsigned b2l_width, b2l_height, b2l_stride, b2l_scale;
+static unsigned b2l_cols, b2l_rows, b2l_row, b2l_col;
+static unsigned b2l_active, b2l_panicking;
+
+static void
+b2l_clear_row(unsigned row)
+{
+	for (unsigned y = row * 16 * b2l_scale; y < (row + 1) * 16 * b2l_scale; ++y) {
+		volatile uint32_t *line = b2l_fb + (uint64_t)y * b2l_stride / 4;
+		for (unsigned x = 0; x < b2l_width; ++x) {
+			line[x] = 0xff000000;
+		}
+	}
+}
+
+static void
+b2l_newline(void)
+{
+	b2l_col = 0;
+	b2l_row = (b2l_row + 1) % b2l_rows;
+	b2l_clear_row(b2l_row);
+	b2l_clear_row((b2l_row + 1) % b2l_rows);
+}
+
+void
+b2l_early_putc(char c)
+{
+	if (!b2l_active) return;
+	if (c == '\r') { b2l_col = 0; return; }
+	if (c == '\n') { b2l_newline(); return; }
+	if (b2l_col >= b2l_cols) b2l_newline();
+	const unsigned char *glyph = iso_font + (unsigned char)c * 16;
+	for (unsigned gy = 0; gy < 16; ++gy) {
+		for (unsigned sy = 0; sy < b2l_scale; ++sy) {
+			volatile uint32_t *line = b2l_fb +
+			    (uint64_t)(b2l_row * 16 * b2l_scale + gy * b2l_scale + sy) * b2l_stride / 4 +
+			    b2l_col * 8 * b2l_scale;
+			for (unsigned gx = 0; gx < 8; ++gx) {
+				uint32_t pixel = (glyph[gy] & (1U << gx)) ? 0xffffffff : 0xff000000;
+				for (unsigned sx = 0; sx < b2l_scale; ++sx) line[gx * b2l_scale + sx] = pixel;
+			}
+		}
+	}
+	++b2l_col;
+}
+
+static void b2l_string(const char *s) { while (*s) b2l_early_putc(*s++); }
+
+void
+b2l_early_init(const boot_args *args)
+{
+	uint64_t physical = args->Video.v_baseAddr & ~3ULL;
+	uint64_t width = args->Video.v_width, height = args->Video.v_height;
+	uint64_t stride = args->Video.v_rowBytes;
+	if (!physical || width < 144 || height < 144 || width > 8192 || height > 8192 ||
+	    stride < width * 4 || (stride & 3) || stride > 65536 ||
+	    (args->Video.v_depth & 0xff) != 32 || stride * height > 32 * 1024 * 1024 ||
+	    physical > UINT64_MAX - stride * height ||
+	    (physical & 0x1fffff) + stride * height > 32 * 1024 * 1024 ||
+	    physical < B2L_FB_RESERVED_BASE ||
+	    physical + stride * height > B2L_FB_RESERVED_BASE + B2L_FB_RESERVED_SIZE ||
+	    ((physical + stride * height + 0x1fffff) & ~0x1fffffULL) >
+	    B2L_FB_RESERVED_BASE + B2L_FB_RESERVED_SIZE) return;
+	b2l_fb = (volatile uint32_t *)(uintptr_t)physical;
+	b2l_fb_physical = physical; b2l_fb_length = stride * height;
+	b2l_width = (unsigned)width; b2l_height = (unsigned)height; b2l_stride = (unsigned)stride;
+	b2l_scale = width >= 1200 ? 3 : (width >= 800 ? 2 : 1);
+	b2l_cols = b2l_width / (8 * b2l_scale); b2l_rows = b2l_height / (16 * b2l_scale);
+	/* Keep the first C line prominent in the upper half of the physical screen. */
+	b2l_row = b2l_rows > 12 ? 10 : 0; b2l_col = 0; b2l_active = 1;
+	b2l_clear_row(b2l_row);
+	b2l_string("B2L XNU C ENTRY\n");
+}
+
+void
+b2l_early_mark(unsigned stage, const char *label)
+{
+	if (!b2l_active) return;
+	b2l_string("B2L XNU ");
+	if (stage >= 10) b2l_early_putc((char)('0' + stage / 10));
+	b2l_early_putc((char)('0' + stage % 10)); b2l_string(": ");
+	b2l_string(label); b2l_early_putc('\n');
+	__asm__ volatile("dsb sy" ::: "memory");
+}
+
+void
+b2l_early_panic(const char *fmt, va_list *args)
+{
+	if (!b2l_active || b2l_panicking) return;
+	b2l_panicking = 1;
+	b2l_string("\nB2L EARLY PANIC: ");
+	va_list copy; va_copy(copy, *args);
+	_doprnt(fmt, &copy, b2l_early_putc, 16); va_end(copy);
+	b2l_early_putc('\n');
+	__asm__ volatile("dsb sy" ::: "memory");
+}
+
+void b2l_early_relocate(uint64_t base)
+{
+	if (!b2l_active) return;
+	b2l_fb = (volatile uint32_t *)(uintptr_t)base;
+	b2l_early_mark(11, "kernel framebuffer alias live");
+}
+int b2l_early_range(uint64_t *physical, uint64_t *length)
+{
+	if (!b2l_active) return 0;
+	*physical = b2l_fb_physical; *length = b2l_fb_length; return 1;
+}
+int b2l_early_available(void) { return b2l_active != 0; }
+#endif

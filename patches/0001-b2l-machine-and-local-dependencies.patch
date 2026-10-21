@@ -127,31 +127,102 @@ index e37762b..4fa871c 100644
  ifneq ($(KDKROOT),)
  INCFLAGS_SDK   += -I$(KDKROOT)/$(KPINCDIR) -I$(KDKROOT)/System/Library/KernelSupport
 diff --git a/osfmk/arm/arm_init.c b/osfmk/arm/arm_init.c
-index 6690846..f13a4dd 100644
+index 6690846..699e5c3 100644
 --- a/osfmk/arm/arm_init.c
 +++ b/osfmk/arm/arm_init.c
-@@ -571,6 +571,20 @@ arm_init(
+@@ -77,6 +77,7 @@
+ #include <pexpert/pexpert.h>
  
- 	arm_vm_init(xmaxmem, args);
+ #include <console/serial_protos.h>
++#include <arm64/b2l_early.h>
+ 
+ #if CONFIG_TELEMETRY
+ #include <kern/telemetry.h>
+@@ -356,8 +357,15 @@ arm_init(
+ 	DTEntry chosen = NULL;
+ 	unsigned int dt_entry_size = 0;
  
 +#if defined(B2L)
-+	/* The EFI GOP is already scanning out.  Enable the stock framebuffer
-+	 * console immediately after MMIO mappings become available, before
-+	 * KPRINTF startup and all IOKit matching. */
-+	PE_create_console();
-+	PE_init_printf(FALSE);
-+	/* Direct output also proves the mapped framebuffer and C bootstrap
-+	 * before the KPRINTF function pointer has been installed. */
-+	const char *b2l_vm_banner = "\r\nB2L XNU: VM initialized, framebuffer console active\r\n";
-+	for (const char *p = b2l_vm_banner; *p != '\0'; ++p) {
-+		console_write_unbuffered(*p);
-+	}
++	b2l_early_init(args);
++	b2l_early_mark(1, "rebasing kernel");
 +#endif
-+
+ 	arm_slide_rebase_and_sign_image();
+ 
++#if defined(B2L)
++	b2l_early_mark(2, "static branch initialization");
++#endif
+ 	arm_static_if_init(args);
+ 
+ 	/* If kernel integrity is supported, use a constant copy of the boot args. */
+@@ -375,7 +383,13 @@ arm_init(
+ 	BootCpuData.jop_key = ml_default_jop_pid();
+ #endif /* defined(HAS_APPLE_PAC) */
+ 
++#if defined(B2L)
++	b2l_early_mark(3, "platform initialization");
++#endif
+ 	PE_init_platform(FALSE, args); /* Get platform expert set up */
++#if defined(B2L)
++	b2l_early_mark(4, "platform initialized");
++#endif
+ 
+ #if __arm64__
+ 	configure_timer_apple_regs();
+@@ -458,6 +472,9 @@ arm_init(
+ 	}
+ #endif
+ 
++#if defined(B2L)
++	b2l_early_mark(5, "CPU topology");
++#endif
+ 	ml_parse_cpu_topology();
+ 
+ 
+@@ -494,6 +511,9 @@ arm_init(
+ 	rtclock_early_init();
+ 
+ 	kernel_debug_string_early("kernel_startup_bootstrap");
++#if defined(B2L)
++	b2l_early_mark(6, "kernel startup bootstrap");
++#endif
+ 	kernel_startup_bootstrap();
+ 
+ 	/*
+@@ -569,7 +589,14 @@ arm_init(
+ 	gDramSize = *dram_size;
+ 	pmap_first_pnum = (ppnum_t)atop(gDramBase);
+ 
++#if defined(B2L)
++	b2l_early_mark(7, "entering arm_vm_init");
++#endif
+ 	arm_vm_init(xmaxmem, args);
++#if defined(B2L)
++	b2l_early_mark(15, "arm_vm_init returned");
++	PE_init_printf(FALSE);
++#endif
+ 
  	if (debug_boot_arg) {
  		patch_low_glo();
- 	}
-@@ -624,10 +638,12 @@ arm_init(
+@@ -582,7 +609,18 @@ arm_init(
+ 	PE_consistent_debug_inherit();
+ 
+ 	/* Setup debugging output. */
++#if defined(B2L)
++	b2l_early_mark(16, "initializing framebuffer serial sink");
++#endif
+ 	const unsigned int serial_exists = serial_init();
++#if defined(B2L)
++	b2l_early_mark(17, "framebuffer serial initialized");
++	if (serial_exists) {
++		serial_console_enabled = true;
++		(void)switch_to_serial_console();
++		disableConsoleOutput = FALSE;
++	}
++#endif
+ 	kernel_startup_initialize_upto(STARTUP_SUB_KPRINTF);
+ 	kprintf("kprintf initialized\n");
+ 
+@@ -624,10 +662,12 @@ arm_init(
  		(void)switch_to_serial_console(); /* Switch into serial mode from video console */
  		disableConsoleOutput = FALSE;     /* Allow printfs to happen */
  	}
@@ -232,6 +303,23 @@ index 19e7e67..fe5f7c8 100644
  #else
  	pmap_ppl_unlockdown_pages(kva, size, 0, ppl_writable);
  #endif
+diff --git a/osfmk/arm/pmap/pmap.h b/osfmk/arm/pmap/pmap.h
+index f9e841f..4ad7f22 100644
+--- a/osfmk/arm/pmap/pmap.h
++++ b/osfmk/arm/pmap/pmap.h
+@@ -116,7 +116,12 @@
+  */
+ #define BOOTSTRAP_TABLE_SIZE (ARM_PGBYTES * 34)
+ #else /* defined(ARM_LARGE_MEMORY) */
++#if defined(B2L)
++/* Two extra L2 pages map only the already reserved GOP scanout buffer. */
++#define BOOTSTRAP_TABLE_SIZE (ARM_PGBYTES * B2L_BOOTSTRAP_TABLE_PAGES)
++#else
+ #define BOOTSTRAP_TABLE_SIZE (ARM_PGBYTES * 8)
++#endif
+ #endif /* defined(ARM_LARGE_MEMORY) */
+ 
+ typedef uint64_t tt_entry_t; /* translation table entry type */
 diff --git a/osfmk/arm/pmap/pmap_misc.c b/osfmk/arm/pmap/pmap_misc.c
 index dacf3b5..3b766c4 100644
 --- a/osfmk/arm/pmap/pmap_misc.c
@@ -248,19 +336,117 @@ index dacf3b5..3b766c4 100644
 +        return _pmap_pending_preemption_real();
 +}
 +#endif
+diff --git a/osfmk/arm64/Makefile b/osfmk/arm64/Makefile
+index 60f4224..53c6fcf 100644
+--- a/osfmk/arm64/Makefile
++++ b/osfmk/arm64/Makefile
+@@ -46,6 +46,7 @@ INSTALL_SF_MD_LCL_LIST = \
+ 
+ # Headers used to compile xnu
+ EXPORT_MD_LIST = \
++	b2l_early.h \
+ 	cpc_arm64.h \
+ 	hv_hvc.h \
+ 	lowglobals.h \
 diff --git a/osfmk/arm64/arm_vm_init.c b/osfmk/arm64/arm_vm_init.c
-index 756af52..c535423 100644
+index 756af52..20340b4 100644
 --- a/osfmk/arm64/arm_vm_init.c
 +++ b/osfmk/arm64/arm_vm_init.c
-@@ -2164,7 +2164,9 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
+@@ -26,6 +26,8 @@
+  * @APPLE_OSREFERENCE_LICENSE_HEADER_END@
+  */
+ 
++#include <arm64/b2l_early.h>
++
+ #include <mach_kdp.h>
+ #include <debug.h>
+ 
+@@ -1807,6 +1809,43 @@ init_ptpages(tt_entry_t *tt, vm_map_address_t start, vm_map_address_t end, bool
+ #define ARM64_PHYSMAP_SLIDE_RANGE (1ULL << 30) // 1 GB
+ #define ARM64_PHYSMAP_SLIDE_MASK  (ARM64_PHYSMAP_SLIDE_RANGE - 1)
+ 
++#if defined(B2L)
++/* This virtual window is already excluded from the VM allocator by
++ * pmap_virtual_region(3): VM_MIN_KERNEL_ADDRESS .. LOW_GLOBAL_BASE_ADDRESS.
++ * It maps only the existing firmware GOP. No physical RAM guard is changed. */
++#define B2L_EARLY_FB_VA (LOW_GLOBAL_BASE_ADDRESS - (32ULL * 1024 * 1024))
++static vm_offset_t
++b2l_map_early_framebuffer(void)
++{
++	uint64_t physical, length;
++	if (!b2l_early_range(&physical, &length)) return 0;
++	uint64_t page_base = physical & ~ARM_TT_L2_OFFMASK;
++	uint64_t offset = physical - page_base;
++	uint64_t span = (offset + length + ARM_TT_L2_OFFMASK) & ~ARM_TT_L2_OFFMASK;
++	if (page_base < B2L_FB_RESERVED_BASE ||
++	    page_base + span > B2L_FB_RESERVED_BASE + B2L_FB_RESERVED_SIZE ||
++	    span > 32ULL * 1024 * 1024 || B2L_EARLY_FB_VA < VM_MIN_KERNEL_ADDRESS ||
++	    B2L_EARLY_FB_VA + span > LOW_GLOBAL_BASE_ADDRESS) {
++		panic("B2L console: framebuffer does not fit reserved virtual window");
++	}
++	init_ptpages(cpu_tte, B2L_EARLY_FB_VA, B2L_EARLY_FB_VA + span, TRUE,
++	    ARM_TTE_TABLE_AP(ARM_TTE_TABLE_AP_USER_NA));
++	for (uint64_t done = 0; done < span; done += ARM_TT_L2_SIZE) {
++		vm_map_address_t va = B2L_EARLY_FB_VA + done;
++		tt_entry_t l1 = cpu_tte[L1_TABLE_T1_INDEX(va, TCR_EL1_BOOT)];
++		tt_entry_t *l2 = (tt_entry_t *)phystokv(l1 & ARM_TTE_TABLE_MASK);
++		tt_entry_t *entry = &l2[(va & ARM_TT_L2_INDEX_MASK) >> ARM_TT_L2_SHIFT];
++		if (*entry != ARM_TTE_EMPTY) panic("B2L console: framebuffer VA is already mapped");
++		*entry = (page_base + done) | ARM_TTE_VALID | ARM_TTE_TYPE_BLOCK |
++		    ARM_TTE_BLOCK_SH(SH_OUTER_MEMORY) |
++		    ARM_TTE_BLOCK_ATTRINDX(CACHE_ATTRINDX_DISABLE) |
++		    ARM_TTE_BLOCK_AF | ARM_TTE_BLOCK_PNX | ARM_TTE_BLOCK_NX;
++	}
++	__asm__ volatile("dsb ishst" ::: "memory");
++	return B2L_EARLY_FB_VA + offset;
++}
++#endif
++
+ void
+ arm_vm_init(uint64_t memory_size, boot_args * args)
+ {
+@@ -2161,14 +2200,27 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
+ 	kasan_init();
+ #endif /* KASAN */
+ 
++#if defined(B2L)
++	b2l_early_mark(8, "installing final framebuffer mapping");
++	vm_offset_t b2l_fb_alias = b2l_map_early_framebuffer();
++	b2l_early_mark(9, "switching kernel translation tables");
++#endif
  	arm_vm_physmap_init(args);
  	set_mmu_ttb_alternate(cpu_ttep & TTBR_BADDR_MASK);
++#if defined(B2L)
++	if (b2l_fb_alias != 0) b2l_early_relocate(b2l_fb_alias);
++#endif
  
 +#if !defined(B2L)
  	ml_enable_monitor();
 +#endif
  
  	set_mmu_ttb(invalid_ttep & TTBR_BADDR_MASK);
+ 
+ 	flush_mmu_tlb();
++#if defined(B2L)
++	b2l_early_mark(12, "bootstrap TTBR0 removed");
++#endif
+ 	kva_active = TRUE;
+ 	// global table pointers may need to be different due to physical aperture remapping
+ 	cpu_tte = (tt_entry_t*)(phystokv(cpu_ttep));
+@@ -2264,8 +2316,14 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
+         arm_vm_map(cpu_tte, cur, ARM_PTE_EMPTY);
+     }
+ #endif
++#endif
++#if defined(B2L)
++	b2l_early_mark(13, "calling pmap_bootstrap");
+ #endif
+ 	pmap_bootstrap(dynamic_memory_begin);
++#if defined(B2L)
++	b2l_early_mark(14, "pmap_bootstrap complete");
++#endif
+ 
+ 	disable_preemption();
  
 diff --git a/osfmk/arm64/caches_asm.s b/osfmk/arm64/caches_asm.s
 index 1588830..be2d3c7 100644
@@ -361,7 +547,7 @@ index 0554aa8..5ecd71b 100644
  #else
  	/* Run the registered interrupt handler. */
 diff --git a/osfmk/arm64/start.s b/osfmk/arm64/start.s
-index 6aa6fe4..7807eb0 100644
+index 6aa6fe4..8ffd9b6 100644
 --- a/osfmk/arm64/start.s
 +++ b/osfmk/arm64/start.s
 @@ -33,7 +33,13 @@
@@ -378,7 +564,81 @@ index 6aa6fe4..7807eb0 100644
  #include <arm64/exception_asm.h>
  
  #if __ARM_KERNEL_PROTECT__
-@@ -467,13 +473,44 @@ start_cpu:
+@@ -42,6 +48,73 @@
+ 
+ 
+ 
++
++#if defined(B2L)
++/* Stackless bitmap text. PC-relative iso_font addressing works while executing
++ * at physical addresses and again through the identity bootstrap map. */
++.macro B2L_BOOT_TEXT text, ypos
++	ldr x9, [x20, #40]
++	and x9, x9, #~3
++	cbz x9, .Lb2l_text_end\@
++	ldr x10, [x20, #56]
++	ldr x11, [x20, #64]
++	cmp x11, #800
++	b.lo .Lb2l_text_end\@
++	ldr x4, [x20, #72]
++	cmp x4, #(\ypos + 48)
++	b.lo .Lb2l_text_end\@
++	mov x15, #2
++	cmp x11, #1200
++	b.lo .Lb2l_scale_ready\@
++	mov x15, #3
++.Lb2l_scale_ready\@:
++	mov x4, #\ypos
++	madd x14, x4, x10, x9
++	add x14, x14, #96
++	adrp x12, EXT(iso_font)@page
++	add x12, x12, EXT(iso_font)@pageoff
++	adr x13, .Lb2l_text_string\@
++.Lb2l_text_char\@:
++	ldrb w11, [x13], #1
++	cbz w11, .Lb2l_text_finished\@
++	add x11, x12, x11, lsl #4
++	mov x16, #16
++	mov x4, x14
++.Lb2l_text_glyph_row\@:
++	ldrb w17, [x11], #1
++	mov x5, x15
++.Lb2l_text_scale_y\@:
++	mov x6, x4
++	mov x18, #0
++.Lb2l_text_glyph_col\@:
++	lsr x8, x17, x18
++	and w8, w8, #1
++	neg w8, w8
++	mov x7, x15
++.Lb2l_text_scale_x\@:
++	str w8, [x6], #4
++	subs x7, x7, #1
++	b.ne .Lb2l_text_scale_x\@
++	add x18, x18, #1
++	cmp x18, #8
++	b.lo .Lb2l_text_glyph_col\@
++	add x4, x4, x10
++	subs x5, x5, #1
++	b.ne .Lb2l_text_scale_y\@
++	subs x16, x16, #1
++	b.ne .Lb2l_text_glyph_row\@
++	add x14, x14, x15, lsl #5
++	b .Lb2l_text_char\@
++.Lb2l_text_finished\@:
++	dsb sy
++	b .Lb2l_text_end\@
++.Lb2l_text_string\@:
++	.asciz "\text"
++	.p2align 2
++.Lb2l_text_end\@:
++.endmacro
++#endif
++
+ .macro MSR_VBAR_EL1_X0
+ #if defined(KERNEL_INTEGRITY_KTRR)
+ 	mov	x1, lr
+@@ -467,13 +540,45 @@ start_cpu:
  	.globl EXT(start_first_cpu)
  LEXT(start_first_cpu)
  
@@ -417,6 +677,7 @@ index 6aa6fe4..7807eb0 100644
 +	b.ne	Lb2l_entry_marker_row
 +	dsb		sy
 +Lb2l_entry_marker_done:
++	B2L_BOOT_TEXT "XNU ENTRY", 336
 +#else
 +	// Optional debug unlock on Apple platforms only.  There is no debug
 +	// hardware dependency in the B2L first-boot path.
@@ -427,8 +688,109 @@ index 6aa6fe4..7807eb0 100644
  	// Set low reset vector before attempting any loads
  	adrp	x0, EXT(LowExceptionVectorBase)@page
  	add		x0, x0, EXT(LowExceptionVectorBase)@pageoff
+@@ -536,7 +641,11 @@ LEXT(start_first_cpu)
+ 	mov		x0, #(ARM_TTE_EMPTY)				// Load invalid entry template
+ 	mov		x1, x25								// Start at V=P pagetable root
+ 	mov		x2, #(TTE_PGENTRIES)				// Load number of entries per page
++#if defined(B2L)
++	mov x2, #(TTE_PGENTRIES * B2L_BOOTSTRAP_TABLE_PAGES)
++#else
+ 	lsl		x2, x2, #2							// Shift by 2 for num entries on 4 pages
++#endif
+ 
+ Linvalidate_bootstrap:							// do {
+ 	str		x0, [x1], #(1 << TTE_SHIFT)			//   Invalidate and advance
+@@ -620,6 +729,67 @@ Lkernelcache_base_found:
+ 	lsr		x5,  x24, #(ARM_TT_L2_SHIFT)
+ 	create_bootstrap_mapping x14, x15, x5, x3, x2, x9, x10, x11, x12, x13
+ 
++
++#if defined(B2L)
++	/* Map only the firmware-provided GOP scanout as device memory in TTBR0.
++	 * This does not expose its reserved pages as normal/allocatable RAM.
++	 * At most two additional L2 tables are needed for a <=32 MiB span. */
++	ldr x0, [x20, #40]
++	and x0, x0, #~3
++	cbz x0, Lb2l_fb_map_done
++	ldr x4, [x20, #56]
++	ldr x5, [x20, #72]
++	mul x4, x4, x5
++	cbz x4, Lb2l_fb_map_done
++	adds x4, x4, x0
++	b.cs Lb2l_fb_map_done
++	MOV64 x6, (ARM_TT_L2_SIZE - 1)
++	adds x4, x4, x6
++	b.cs Lb2l_fb_map_done
++	and x4, x4, #ARM_TTE_BLOCK_L2_MASK
++	and x0, x0, #ARM_TTE_BLOCK_L2_MASK
++	// Rounded blocks must remain inside the original DisplayReserved guard.
++	MOV64 x6, B2L_FB_RESERVED_BASE
++	cmp x0, x6
++	b.lo Lb2l_fb_map_done
++	MOV64 x6, (B2L_FB_RESERVED_BASE + B2L_FB_RESERVED_SIZE)
++	cmp x4, x6
++	b.hi Lb2l_fb_map_done
++	sub x5, x4, x0
++	MOV64 x6, (32 * 1024 * 1024)
++	cmp x5, x6
++	b.hi Lb2l_fb_map_done
++	lsr x6, x4, #39
++	cbnz x6, Lb2l_fb_map_done
++Lb2l_fb_map_block:
++	lsr x6, x0, #ARM_TT_L1_SHIFT
++	and x6, x6, #(TTE_PGENTRIES - 1)
++	add x6, x1, x6, lsl #TTE_SHIFT
++	ldr x7, [x6]
++	cbnz x7, Lb2l_fb_l2_exists
++	add x2, x2, PGBYTES
++	MOV64 x12, (PGBYTES * B2L_BOOTSTRAP_TABLE_PAGES)
++	add x12, x12, x25
++	cmp x2, x12
++	b.hs Lb2l_fb_map_done
++	orr x7, x2, #(ARM_TTE_TYPE_TABLE | ARM_TTE_VALID)
++	str x7, [x6]
++Lb2l_fb_l2_exists:
++	and x8, x7, #ARM_TTE_TABLE_MASK
++	and x9, x0, #ARM_TT_L2_INDEX_MASK
++	lsr x9, x9, #ARM_TT_L2_SHIFT
++	add x9, x8, x9, lsl #TTE_SHIFT
++	MOV64 x11, (ARM_TTE_TYPE_BLOCK | ARM_TTE_VALID | ARM_TTE_BLOCK_AF | ARM_TTE_BLOCK_SH(SH_OUTER_MEMORY) | ARM_TTE_BLOCK_ATTRINDX(CACHE_ATTRINDX_DISABLE) | ARM_TTE_BLOCK_PNX | ARM_TTE_BLOCK_NX)
++	orr x11, x11, x0
++	str x11, [x9]
++	MOV64 x11, ARM_TT_L2_SIZE
++	add x0, x0, x11
++	cmp x0, x4
++	b.lo Lb2l_fb_map_block
++Lb2l_fb_map_done:
++	B2L_BOOT_TEXT "MMU PREP", 384
++#endif
++
+ 	/* Ensure TTEs are visible */
+ 	dsb		ish
+ 
+@@ -752,6 +922,10 @@ common_start:
+ 	MSR_SCTLR_EL1_X0
+ 	isb		sy
+ 
++#if defined(B2L)
++	B2L_BOOT_TEXT "MMU ON", 432
++#endif
++
+ #if !VMAPPLE
+ 	MOV64	x1, SCTLR_EL1_DEFAULT
+ 	cmp		x0, x1
+@@ -813,6 +987,9 @@ common_start:
+ 	mov	lr, x21
+ #endif
+ 
++#if defined(B2L)
++	B2L_BOOT_TEXT "ENTER C", 480
++#endif
+ 	// Return to arm_init()
+ 	ret
+ 
 diff --git a/osfmk/conf/files.arm64 b/osfmk/conf/files.arm64
-index 878b515..ac3e485 100644
+index 878b515..cb4bebf 100644
 --- a/osfmk/conf/files.arm64
 +++ b/osfmk/conf/files.arm64
 @@ -1,3 +1,4 @@
@@ -460,6 +822,12 @@ index 878b515..ac3e485 100644
  osfmk/arm64/bcopy.s standard
  osfmk/arm64/bzero.s standard
  osfmk/arm/caches.c		standard
+@@ -129,3 +130,5 @@ osfmk/kern/ecc_init.c		standard
+ osfmk/kern/ecc_logging.c	optional config_ecc_logging
+ 
+ osfmk/kern/memory_error_logging.c	standard
++
++osfmk/arm64/b2l_early.c optional b2l
 diff --git a/osfmk/console/video_console.c b/osfmk/console/video_console.c
 index 648cb70..fc50940 100644
 --- a/osfmk/console/video_console.c
@@ -687,6 +1055,31 @@ index 4bfc59a..29948f2 100644
  	}
  
  	if (reasons & AST_RESET_PCS) {
+diff --git a/osfmk/kern/debug.c b/osfmk/kern/debug.c
+index 48f9405..2aaaf09 100644
+--- a/osfmk/kern/debug.c
++++ b/osfmk/kern/debug.c
+@@ -54,6 +54,10 @@
+  * the rights to redistribute these changes.
+  */
+ 
++#if defined(__arm64__)
++#include <arm64/b2l_early.h>
++#endif
++
+ #include <mach_assert.h>
+ #include <mach_kdp.h>
+ #include <kdp/kdp.h>
+@@ -1257,6 +1261,9 @@ panic_trap_to_debugger(const char *panic_format_str, va_list *panic_args, unsign
+ 	read_lbr();
+ #endif
+ 
++#if defined(B2L)
++	b2l_early_panic(panic_format_str, panic_args);
++#endif
+ 	/* For very early panics before XNU serial initialization. */
+ 	if (PE_kputc == NULL) {
+ 		char buf[EARLY_PANIC_BUFLEN];
 diff --git a/osfmk/kern/exclaves.c b/osfmk/kern/exclaves.c
 index 6247d29..5fafc02 100644
 --- a/osfmk/kern/exclaves.c
@@ -918,6 +1311,87 @@ index db1c4a0..1f6be57 100644
  }
  
  int
+diff --git a/pexpert/arm/pe_serial.c b/pexpert/arm/pe_serial.c
+index 032d9e0..62f5ace 100644
+--- a/pexpert/arm/pe_serial.c
++++ b/pexpert/arm/pe_serial.c
+@@ -26,6 +26,7 @@
+ #include <pexpert/arm/consistent_debug.h>
+ #include <pexpert/arm64/board_config.h>
+ #include <arm64/proc_reg.h>
++#include <arm64/b2l_early.h>
+ #include <pexpert/arm/protos.h>
+ #include <kern/sched_prim.h>
+ #ifdef PL011_UART
+@@ -872,12 +873,40 @@ get_serial_device_phandle(uint32_t * const phandle)
+ 	return serial_device_phandle_specified;
+ }
+ 
++#if defined(B2L)
++/* An output-only framebuffer sink; no fabricated UART or input interrupts. */
++static void b2l_fb_serial_init(void) { }
++static unsigned int b2l_fb_ready(void) { return 1; }
++static void b2l_fb_transmit(uint8_t c) { b2l_early_putc((char)c); }
++static unsigned int b2l_fb_receive_ready(void) { return 0; }
++static uint8_t b2l_fb_receive(void) { return 0; }
++static struct pe_serial_functions b2l_fb_serial_functions = {
++	.init = b2l_fb_serial_init,
++	.transmit_ready = b2l_fb_ready,
++	.transmit_data = b2l_fb_transmit,
++	.receive_ready = b2l_fb_receive_ready,
++	.receive_data = b2l_fb_receive,
++	.device = SERIAL_B2L_FBCON
++};
++#endif
++
+ int
+ serial_init(void)
+ {
+ 	vm_offset_t     soc_base;
+ 
+ 	struct pe_serial_functions *fns = gPESF;
++#if defined(B2L)
++	/* Register before SoC lookup and serial-device phandle early returns.
++	 * Firmware has a GOP, not an Apple-compatible UART node. */
++	if (b2l_early_available()) {
++		if (!uart_initted) {
++			register_serial_functions(&b2l_fb_serial_functions);
++			uart_initted = true;
++		}
++		return 1;
++	}
++#endif
+ 
+ 	/**
+ 	 * Even if the serial devices have already been initialized on cold boot,
+diff --git a/pexpert/gen/pe_gen.c b/pexpert/gen/pe_gen.c
+index 6740cb0..fce411e 100644
+--- a/pexpert/gen/pe_gen.c
++++ b/pexpert/gen/pe_gen.c
+@@ -137,7 +137,9 @@ PE_init_printf(boolean_t vm_initialized)
+ 	if (!vm_initialized) {
+ 		PE_putc = console_write_char;
+ 	} else {
++#if !defined(ARM64_BOARD_CONFIG_B2L)
+ 		vcattach();
++#endif
+ 	}
+ }
+ 
+diff --git a/pexpert/pexpert/arm/protos.h b/pexpert/pexpert/arm/protos.h
+index f8fcbc2..d427625 100644
+--- a/pexpert/pexpert/arm/protos.h
++++ b/pexpert/pexpert/arm/protos.h
+@@ -47,7 +47,8 @@ typedef enum serial_device {
+ 	SERIAL_APPLE_UART=0x1,
+ 	SERIAL_DOCKCHANNEL=0x2,
+ 	SERIAL_PL011_UART=0x4,
+-	SERIAL_DCC_UART=0x8
++	SERIAL_DCC_UART=0x8,
++	SERIAL_B2L_FBCON=0x10
+ } serial_device_t;
+ 
+ kern_return_t serial_irq_enable(serial_device_t device);
 diff --git a/pexpert/pexpert/arm64/Makefile b/pexpert/pexpert/arm64/Makefile
 index 75938b5..e704256 100644
 --- a/pexpert/pexpert/arm64/Makefile

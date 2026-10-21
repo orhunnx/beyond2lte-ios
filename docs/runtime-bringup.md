@@ -7,31 +7,58 @@ not assume that this CPU has MPIDR 0; the loader records the actual MPIDR.
 
 ## Display and progress evidence
 
-The loader supplies the existing UEFI GOP framebuffer. XNU does not reprogram
-the panel, display controller, GPU, clocks or display power domains.
+Build 0002 reached XNU assembly on the device: the user confirmed its separate
+green entry marker. C initialization and working interrupts remain unverified.
 
-1. `_start_first_cpu` writes a 128 by 64 green rectangle at x=8,
-   y=framebuffer-height-96. This occurs before any system-register write,
-   using the physical framebuffer before enabling the MMU. B2L does not write
-   the optional `OSLAR_EL1` debug register. The rectangle establishes entry
-   into XNU assembly, not completion of kernel initialization.
-2. Immediately after `arm_vm_init`, XNU maps the physical framebuffer, acquires
-   its built-in text console and initializes printing before KPRINTF startup.
-   The rectangle is cleared when the console acquires the screen, and a direct
-   `B2L XNU: VM initialized, framebuffer console active` banner establishes
-   mapped framebuffer access and execution of the C bootstrap.
-   Text uses genuine 3x bitmap expansion on the 1440-pixel-wide panel (24 by 48
-   pixel cells), or 2x at widths from 800 through 1199. Glyphs, cursor, clearing
-   and scrolling use matching cell geometry. UI progress-meter scaling alone
-   does not enlarge the text.
-3. `B2L GIC: GICv2 IRQ ready` establishes register programming only.
-4. `B2L CPU: 1/1 CPU initialized` establishes CPU registration with the scheduler.
-5. `B2L IRQ proof: timer=... SGI1=... scheduler awake` is printed after a timed
-   kernel-thread sleep. Both counters must be nonzero, so this is runtime
-   evidence of actual timer and self-SGI dispatch. It is emitted three times.
+The kernel owns the text renderer. It follows the A5 port's early-console and
+framebuffer serial-sink lifecycle, using the existing firmware GOP geometry
+from `boot_args` rather than any A5 addresses. Its glyph bitmap is upstream
+XNU's open-source `iso_font`, not a font extracted from an IPSW or KDK.
 
-These are milestones to observe on the physical device. Compilation and
-symbol inspection alone do not establish that any of them occurred.
+The display controller and its original reserved physical window remain intact.
+No GPU, panel, clock or power-domain reprogramming is needed to draw CPU text.
+
+| Visible milestone | What it establishes |
+| --- | --- |
+| Separate green rectangle near the bottom | First XNU instructions executed before system-register initialization |
+| `XNU ENTRY` | Stackless assembly font rendering before MMU setup |
+| `MMU PREP` | RAM and bounded GOP bootstrap mappings were installed |
+| `MMU ON` | Execution continued after enabling the MMU |
+| `ENTER C` | Assembly is about to branch to the C bootstrap |
+| `B2L XNU C ENTRY` | `arm_init` entered with a usable early framebuffer |
+| `B2L XNU 1..17: ...` | C bootstrap, VM transition and serial-sink milestones |
+| `B2L EARLY PANIC: ...` | Panic formatting before ordinary KPRINTF initialization |
+| `B2L GIC: GICv2 IRQ ready` | Controller register programming only |
+| `B2L CPU: 1/1 CPU initialized` | Boot CPU registered with the scheduler |
+| `B2L IRQ proof: timer=... SGI1=... scheduler awake` | Real interrupt delivery and timed scheduler wakeup; both counters must be nonzero |
+
+Assembly text starts at y=336, and C text around y=480, so a cropped photograph
+need not include the bottom marker. Text pixels are genuinely expanded 3x at
+1440 pixels (24x48 cells), or 2x at widths 800 through 1199. The early renderer
+wraps through text rows and clears the next row, avoiding a large scroll copy.
+
+The output-only framebuffer sink registers before the stock serial-device
+phandle checks, then carries both `printf` and `kprintf`. It does not invent
+UART input, receive interrupts or a keyboard. No late stock video-console
+acquisition clears the early stage history.
+
+These milestones must be observed on the physical device. Compilation and
+symbol inspection do not establish that C initialization or interrupts worked.
+
+### Mapping lifetime and unchanged physical guards
+
+The original firmware `DisplayReserved` region is `0xCA000000..0xCB400000`
+(20 MiB). The 1440x3040, stride-5760 visible buffer ends at `0xCB0B3000`.
+Its 2 MiB-aligned mapping ends at `0xCB200000`, inside that existing guard.
+Both bootstrap assembly and the final mapper reject any rounded GOP extent
+outside the original window. These pages are never advertised as normal RAM.
+
+Two extra static bootstrap table pages reside inside the kernel image. They
+map the already reserved GOP through TTBR0 without increasing the managed RAM
+arena. Before TTBR0 is removed, XNU installs the same bounded device-memory
+mapping at a reserved kernel VA below `LOW_GLOBAL_BASE_ADDRESS` and relocates
+the console pointer. That virtual gap is already excluded from the allocator
+by `pmap_virtual_region(3)`. The physical framebuffer remains the same.
 
 ## Interrupt controller and clock
 
@@ -101,3 +128,9 @@ B2L glyph, cursor and scrolling functions, compiles a host harness with
 AddressSanitizer/UndefinedBehaviorSanitizer, and checks 2x/3x raster expansion,
 last-cell bounds, stride padding and both overlapping scroll directions.
 This checks software geometry; it does not establish that a device booted.
+
+`python3 tests/test_early_console.py /path/to/patched/xnu` runs the actual early
+renderer against host-backed buffers with ASan/UBSan. It checks ring wrapping,
+carriage return, high-bit character indexing, stride-padding canaries, pointer
+relocation and rejection of geometry outside the original display guard.
+Only the MMIO pointer and architectural barrier are substituted in the harness.
