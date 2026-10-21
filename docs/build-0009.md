@@ -47,6 +47,11 @@ Independent review confirmed ABI layout and actual linked provider symbols.
 
 ## Installation and device boundary
 
-The package is ready. The next device report must show progress past
+The authorized BOOT-only update completed after a full verified backup of the
+previous BOOT. The original backup remains intact. Exact image-prefix readback
+matched, then the device was rebooted. Raw receipts and identifiers remain
+local and ignored.
+
+The next device report must show progress past
 pthread_init, with `B2L pthread: libpthread-539.100.4 registered` visible.
 No root filesystem is supplied, so a later root-device wait is expected.
