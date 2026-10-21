@@ -55,3 +55,15 @@ local and ignored.
 The next device report must show progress past
 pthread_init, with `B2L pthread: libpthread-539.100.4 registered` visible.
 No root filesystem is supplied, so a later root-device wait is expected.
+
+## Device result
+
+The user's screen report passes the previous pthread-provider panic. It reaches
+network initialization, DLIL checksum self-tests (PASSED) and DLIL worker
+scheduling. Boot CPU and real timer/SGI proof also remain visible.
+
+The next data abort was matched against this exact build's DWARF:
+`aes_encrypt_key` in corecrypto_aes.c:38, called from TCP initialization at
+tcp_subr.c:660. The absent external crypto function table is dereferenced while
+initializing TCP's AES-backed state. This is a missing AES provider, separate
+from pthread registration. No raw device dump is committed.

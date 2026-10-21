@@ -37,7 +37,7 @@ partition `BOOT`; no separate ESP or SYSTEM/USERDATA transfer is required.
 **Physical device proof now covers XNU entry, its own framebuffer console,
 VM bootstrap, boot CPU registration, real timer and self-SGI interrupts, and
 timed scheduler wakeup. Build 0008 reaches later BSD startup, where the absent
-libpthread kernel provider is the current blocker.**
+AES provider used by TCP initialization is the current blocker.**
 [Build 0004](docs/build-0004.md) supplies the required 256-byte seed; its
 device result identified the next DT contract gap. [Build 0005](docs/build-0005.md)
 adds the required /chosen/memory-map and /defaults containers.
@@ -50,8 +50,8 @@ console attachment and reaches the missing Image4 provider.
 handling to the current trust-cache APIs. Its BOOT-only installation is verified;
 the device photograph confirms progress into BSD startup and real IRQ proof.
 [Build 0009](docs/build-0009.md) links and registers the matching open-source
-libpthread kernel provider. Its BOOT-only installation is verified;
-the device screen result is pending.
+libpthread kernel provider. Its device test passes into network initialization;
+the next failure identifies the absent AES mode provider.
 BOOT writes were backed up and readback-verified.
 [Build 0002](docs/build-0002.md) uses a dynamic 1–2 GiB RAM arena within the
 unchanged firmware memory guards. [Build 0003](docs/build-0003.md) adds XNU-owned
