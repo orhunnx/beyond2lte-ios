@@ -86,6 +86,12 @@ Its device photograph confirms the read/write mount and a launchd load attempt,
 ending with errno 86 (EBADARCH). Recovery instruction probes catch PACIA as
 SIGILL on every core; a coherent ARM64e execution and dyld/cache implementation
 is required before this iOS userspace can run.
+[Build 0016](docs/build-0016.md) adds a resident kernel ARM64e compatibility
+PoC, with scalar assembly control-flow handling, software QARMA5 PACGA and
+16 KiB cache-slide / 4 KiB VM support. Full kernel/EFI/BOOT builds and focused
+host tests pass. BOOT installation was readback-verified and reboot accepted;
+physical EL0 execution remains unverified. Signed execution and other iOS
+services remain follow-on work.
 BOOT writes retain the original Android backup and are readback-verified.
 [Build 0002](docs/build-0002.md) uses a dynamic 1–2 GiB RAM arena within the
 unchanged firmware memory guards. [Build 0003](docs/build-0003.md) adds XNU-owned

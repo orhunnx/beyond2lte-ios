@@ -1,0 +1,393 @@
+--- a/bsd/dev/arm/kern_machdep.c
++++ b/bsd/dev/arm/kern_machdep.c
+@@ -16,6 +16,12 @@
+ #include        <libkern/libkern.h>
+ #include        <machine/exec.h>
+ #include        <pexpert/arm64/board_config.h>
++#if defined(ARM64_BOARD_CONFIG_B2L)
++#include <arm64/b2l_arm64e_compat.h>
++#include <sys/systm.h>
++#include <sys/proc.h>
++#include <sys/proc_internal.h>
++#endif
+ 
+ int ml_grade_binary(cpu_type_t, cpu_subtype_t, cpu_subtype_t, bool);
+ 
+@@ -87,6 +93,16 @@
+ 		switch (hostsubtype) {
+ 		case CPU_SUBTYPE_ARM64_V8:
+ 			switch (execsubtype) {
++#if defined(ARM64_BOARD_CONFIG_B2L)
++			case CPU_SUBTYPE_ARM64E:
++				/* Runtime service opt-in, never a changed host CPU identity. */
++				if (b2l_arm64e_compat_enabled() &&
++				    (execfeatures & CPU_SUBTYPE_PTRAUTH_ABI) &&
++				    CPU_SUBTYPE_ARM64_PTR_AUTH_VERSION(execfeatures) <=
++				    CPU_SUBTYPE_ARM64_PTR_AUTH_MAX_PREFERRED_VERSION)
++					return grade_arm64e_binary(execfeatures);
++				return 0;
++#endif
+ 			case CPU_SUBTYPE_ARM64_V8:
+ 				return 10;
+ 			case CPU_SUBTYPE_ARM64_ALL:
+@@ -202,3 +218,14 @@
+ 
+ 	return 0;
+ }
++
++#if defined(ARM64_BOARD_CONFIG_B2L)
++/* BSD-side process metadata access; no task flag or host subtype fabrication. */
++bool
++b2l_arm64e_current_task(void)
++{
++	proc_t process = current_proc();
++	return process && process->p_cputype == CPU_TYPE_ARM64 &&
++	       (process->p_cpusubtype & ~CPU_SUBTYPE_MASK) == CPU_SUBTYPE_ARM64E;
++}
++#endif
+--- a/bsd/kern/kern_exec.c
++++ b/bsd/kern/kern_exec.c
+@@ -78,6 +78,9 @@
+  * is included in support of clause 2.2 (b) of the Apple Public License,
+  * Version 2.0.
+  */
++#if defined(ARM64_BOARD_CONFIG_B2L)
++#include <arm64/b2l_arm64e_compat.h>
++#endif
+ #include <machine/reg.h>
+ #include <machine/cpu_capabilities.h>
+ 
+@@ -7253,6 +7256,15 @@
+ 	}
+ #endif /* __has_feature(ptrauth_calls) */
+ 
++#if defined(ARM64_BOARD_CONFIG_B2L) && !__has_feature(ptrauth_calls)
++	if (b2l_arm64e_compat_enabled() &&
++	    (imgp->ip_origcpusubtype & ~CPU_SUBTYPE_MASK) == CPU_SUBTYPE_ARM64E) {
++		error = exec_add_user_string(imgp, CAST_USER_ADDR_T("ptrauth_disabled=1"), UIO_SYSSPACE, FALSE);
++		if (error) goto bad;
++		imgp->ip_applec++;
++	}
++#endif
++
+ 	/*
+ 	 * Add main thread mach port name
+ 	 * +1 uref on main thread port, this ref will be extracted by libpthread in __pthread_init
+--- a/osfmk/arm64/Makefile
++++ b/osfmk/arm64/Makefile
+@@ -46,6 +46,7 @@
+ 
+ # Headers used to compile xnu
+ EXPORT_MD_LIST = \
++	b2l_arm64e_compat.h \
+ 	b2l_early.h \
+ 	cpc_arm64.h \
+ 	hv_hvc.h \
+--- a/osfmk/arm64/sleh.c
++++ b/osfmk/arm64/sleh.c
+@@ -35,6 +35,9 @@
+ #include <arm/trap_internal.h> /* for IS_ARM_GDB_TRAP() et al */
+ #include <arm64/proc_reg.h>
+ #include <arm64/machine_machdep.h>
++#if defined(ARM64_BOARD_CONFIG_B2L)
++#include <arm64/b2l_arm64e_compat.h>
++#endif
+ #include <kern/cpc.h>
+ #include <arm64/instructions.h>
+ 
+@@ -1190,6 +1193,10 @@
+ 	uint32_t                   instr     = 0;
+ 
+ 	COPYIN(get_saved_state_pc(state), (char *)&instr, sizeof(instr));
++
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	if (b2l_arm64e_compat_emulate(state, instr)) return;
++#endif
+ 
+ #if CONFIG_DTRACE
+ 
+--- a/osfmk/conf/Makefile.template
++++ b/osfmk/conf/Makefile.template
+@@ -517,3 +517,8 @@
+ 
+ include $(MakeInc_rule)
+ include $(MakeInc_dir)
++
++# These helpers run in the kernel exception path: no FP/SIMD register use.
++$(foreach o,b2l_arm64e_compat.o b2l_compat.o b2l_pacga_qarma5.o,$(eval $(o)_CFLAGS_ADD += -mgeneral-regs-only))
++b2l_arm64e_compat.o_CFLAGS_ADD += -DVM_UNSAFE_TYPES
++b2l_compat.o_CFLAGS_ADD += -DB2L_COMPAT_USE_ASM
+--- a/osfmk/conf/files
++++ b/osfmk/conf/files
+@@ -407,3 +407,10 @@
+ 
+ osfmk/prng/prng_random.c	standard
+ osfmk/prng/entropy.c   standard
++
++# B2L opt-in ARM64e development compatibility service.
++osfmk/arm64/b2l_arm64e_compat.c optional b2l
++osfmk/arm64/b2l_compat.c optional b2l
++osfmk/arm64/b2l_compat_fast.s optional b2l
++osfmk/arm64/b2l_pacga_qarma5.c optional b2l
++osfmk/arm64/b2l_pacga_qarma5_arm64.s optional b2l
+--- a/osfmk/vm/vm_shared_region.c
++++ b/osfmk/vm/vm_shared_region.c
+@@ -51,6 +51,9 @@
+  * without having to do a system call.
+  */
+ 
++#if defined(ARM64_BOARD_CONFIG_B2L)
++#include <arm64/b2l_arm64e_compat.h>
++#endif
+ #include <debug.h>
+ 
+ #include <kern/ipc_tt.h>
+@@ -3345,6 +3348,10 @@
+ 			} else {
+ 				memcpy(rebaseLocation, &value, sizeof(value));
+ 			}
++#elif defined(ARM64_BOARD_CONFIG_B2L)
++			if (!b2l_arm64e_compat_enabled()) return KERN_NOT_SUPPORTED;
++			/* Stripped-pointer ABI: preserve exact decoded user target. */
++			memcpy(rebaseLocation, &value, sizeof(value));
+ #endif /* __has_feature(ptrauth_calls) */
+ 		} else {
+ 			// The new value for a rebase is the low 51-bits of the threaded value plus the slide.
+@@ -3564,6 +3571,10 @@
+ 			} else {
+ 				memcpy(rebaseLocation, &value, sizeof(value));
+ 			}
++#elif defined(ARM64_BOARD_CONFIG_B2L)
++			if (!b2l_arm64e_compat_enabled()) return KERN_NOT_SUPPORTED;
++			/* Stripped-pointer ABI: preserve exact decoded user target. */
++			memcpy(rebaseLocation, &value, sizeof(value));
+ #endif /* __has_feature(ptrauth_calls) */
+ 		} else {
+ 			// the value already has the correct low bits, so just add in the high8 if it exists
+--- a/osfmk/vm/vm_shared_region_pager.c
++++ b/osfmk/vm/vm_shared_region_pager.c
+@@ -59,6 +59,9 @@
+ 
+ #include <sys/kdebug_triage.h>
+ #include <sys/random.h>
++#if defined(ARM64_BOARD_CONFIG_B2L)
++#include <arm64/b2l_arm64e_compat.h>
++#endif
+ 
+ #if __has_feature(ptrauth_calls)
+ #include <ptrauth.h>
+@@ -479,6 +482,184 @@
+  *
+  * Handles page-in requests from VM.
+  */
++#if defined(ARM64_BOARD_CONFIG_B2L)
++/* Read one physical VM page from the original vnode-backed object. Never
++ * assume that adjacent file pages have adjacent physical addresses. */
++static kern_return_t
++b2l_shared_region_read_page(vm_object_t object, vm_object_offset_t offset,
++    void *destination, struct vm_object_fault_info *info,
++    unsigned *validated, unsigned *tainted, unsigned *nx)
++{
++    vm_page_t page = VM_PAGE_NULL, top = VM_PAGE_NULL;
++    vm_object_t owner;
++    vm_prot_t prot;
++    kern_return_t error;
++    vm_fault_return_t result;
++    vm_offset_t address;
++    const struct vm_object_fault_info original_info = *info;
++    struct vm_object_fault_info local_info;
++retry:
++    /* vm_fault_page may adjust offsets while traversing shadows. */
++    local_info = original_info;
++    vm_page_grab_prime();
++    vm_object_lock(object);
++    vm_object_paging_begin(object);
++    prot = VM_PROT_READ;
++    error = 0;
++    page = VM_PAGE_NULL;
++    top = VM_PAGE_NULL;
++    result = vm_fault_page(object, offset, VM_PROT_READ, FALSE, FALSE,
++        &prot, &page, &top, NULL, &error, FALSE, &local_info, NULL);
++    switch (result) {
++    case VM_FAULT_SUCCESS:
++        break;
++    case VM_FAULT_RETRY:
++        goto retry;
++    case VM_FAULT_MEMORY_SHORTAGE:
++        if (vm_page_wait(info->interruptible)) goto retry;
++        return MACH_SEND_INTERRUPTED;
++    case VM_FAULT_INTERRUPTED:
++        return MACH_SEND_INTERRUPTED;
++    case VM_FAULT_SUCCESS_NO_VM_PAGE:
++        vm_object_paging_end(object);
++        vm_object_unlock(object);
++        return KERN_MEMORY_ERROR;
++    case VM_FAULT_BUSY:
++        return KERN_ALREADY_WAITING;
++    default:
++        return error ? error : KERN_MEMORY_ERROR;
++    }
++    assert(page != VM_PAGE_NULL);
++    owner = VM_PAGE_OBJECT(page);
++    assert(page->vmp_busy && owner->paging_in_progress > 0);
++    address = (vm_offset_t)phystokv((pmap_paddr_t)
++        VM_PAGE_GET_PHYS_PAGE(page) << PAGE_SHIFT);
++    if (owner->code_signed) {
++        vm_page_validate_cs_mapped(page, PAGE_SIZE, 0, (const void *)address);
++    }
++    *validated = page->vmp_cs_validated;
++    *tainted = page->vmp_cs_tainted;
++    *nx = page->vmp_cs_nx;
++    bcopy((const void *)address, destination, PAGE_SIZE);
++    vm_page_wakeup_done(owner, page);
++    vm_object_paging_end(owner);
++    vm_object_unlock(owner);
++    if (top != VM_PAGE_NULL) {
++        assert(VM_PAGE_OBJECT(top) == object);
++        vm_object_lock(object);
++        VM_PAGE_FREE(top);
++        vm_object_paging_end(object);
++        vm_object_unlock(object);
++    }
++    return KERN_SUCCESS;
++}
++
++/* Validate all original chain links before the upstream slide routine writes
++ * anything. Metadata is file input; an offset must never escape wired scratch. */
++static boolean_t
++b2l_shared_region_chain_valid(uint32_t version, uint16_t start,
++    const uint8_t *page, uint32_t size)
++{
++    uint64_t offset = start;
++    if (version != 3 && version != 5) return FALSE;
++    if (start == 0xffff) return TRUE;
++    for (;;) {
++        uint64_t value, delta;
++        if (size < sizeof(value) || offset > size - sizeof(value)) return FALSE;
++        memcpy(&value, page + offset, sizeof(value));
++        if (version == 3) {
++            if (value & (UINT64_C(1) << 62)) return FALSE;
++            delta = ((value >> 51) & 0x7ff) * sizeof(value);
++        } else {
++            delta = ((value >> 52) & 0x7ff) * sizeof(value);
++        }
++        if (delta == 0) return TRUE;
++        if (delta > size || offset > size - delta) return FALSE;
++        offset += delta;
++    }
++}
++
++/* A 16 KiB slide chain can start in any of its four 4 KiB VM pages. Assemble
++ * the original logical page in wired scratch, rebase there, then publish only
++ * the requested physical page. The backing file and other VM pages stay clean.
++ * This also avoids recursively faulting a source page already held busy. */
++static kern_return_t
++b2l_shared_region_copy_large(shared_region_pager_t pager, vm_object_t object,
++    vm_object_offset_t source_offset, vm_offset_t destination,
++    struct vm_object_fault_info *info, unsigned *validated,
++    unsigned *tainted, unsigned *nx)
++{
++    vm_shared_region_slide_info_t si = pager->srp_slide_info;
++    uint32_t size = si->si_slide_info_entry->page_size;
++    vm_object_offset_t first, relative, end;
++    kern_return_t result = KERN_FAILURE;
++    unsigned good = ~0u, bad = 0, noexec = 0;
++    uint8_t *scratch;
++    if (!b2l_arm64e_compat_enabled() || PAGE_SIZE != 4096 || size != 16384 ||
++        (source_offset & PAGE_MASK) || (si->si_start & PAGE_MASK) ||
++        (si->si_end & PAGE_MASK) || si->si_start > si->si_end) {
++        return KERN_FAILURE;
++    }
++    if (source_offset < si->si_start || source_offset >= si->si_end) {
++        return b2l_shared_region_read_page(object, source_offset,
++            (void *)destination, info, validated, tainted, nx);
++    }
++    relative = source_offset - si->si_start;
++    first = si->si_start + (relative & ~((uint64_t)size - 1));
++    if (first > UINT64_MAX - size || (end = first + size) > si->si_end ||
++        ((first - si->si_start) / size) > UINT32_MAX) {
++        return KERN_FAILURE;
++    }
++    scratch = kalloc_data(size, Z_WAITOK);
++    if (scratch == NULL) return KERN_RESOURCE_SHORTAGE;
++    for (uint32_t part = 0; part < size; part += PAGE_SIZE) {
++        unsigned v = 0, t = 0, n = 0;
++        result = b2l_shared_region_read_page(object, first + part,
++            scratch + part, info, &v, &t, &n);
++        if (result != KERN_SUCCESS) goto done;
++        /* All chain input pages influence the result. Propagate any taint. */
++        good &= v;
++        bad |= t;
++        if (first + part == source_offset) noexec = n;
++    }
++    uint32_t index = (uint32_t)((first - si->si_start) / size);
++    uint32_t version = si->si_slide_info_entry->version;
++    uint16_t start;
++    if (version == 3) {
++        if (index >= si->si_slide_info_entry->v3.page_starts_count) {
++            result = KERN_FAILURE;
++            goto done;
++        }
++        start = si->si_slide_info_entry->v3.page_starts[index];
++    } else if (version == 5) {
++        if (index >= si->si_slide_info_entry->v5.page_starts_count) {
++            result = KERN_FAILURE;
++            goto done;
++        }
++        start = si->si_slide_info_entry->v5.page_starts[index];
++    } else {
++        result = KERN_FAILURE;
++        goto done;
++    }
++    if (!b2l_shared_region_chain_valid(version, start, scratch, size)) {
++        result = KERN_FAILURE;
++        goto done;
++    }
++    result = vm_shared_region_slide_page(si, (vm_offset_t)scratch,
++        si->si_slid_address + first - si->si_start,
++        (uint32_t)((first - si->si_start) / size), 0);
++    if (result == KERN_SUCCESS) {
++        bcopy(scratch + source_offset - first, (void *)destination, PAGE_SIZE);
++        *validated = good;
++        *tainted = bad;
++        *nx = noexec;
++    }
++done:
++    kfree_data(scratch, size);
++    return result;
++}
++#endif /* ARM64_BOARD_CONFIG_B2L */
++
+ int shared_region_pager_data_request_debug = 0;
+ kern_return_t
+ shared_region_pager_data_request(
+@@ -590,6 +771,29 @@
+ 			/* this page is not in the UPL: skip it */
+ 			continue;
+ 		}
++
++#if defined(ARM64_BOARD_CONFIG_B2L)
++        if (slide_info_page_size > PAGE_SIZE) {
++            unsigned valid = 0, taint = 0, nx = 0;
++            vm_object_offset_t source;
++            if (offset > UINT64_MAX - cur_offset ||
++                offset + cur_offset > UINT64_MAX - pager->srp_backing_offset) {
++                retval = KERN_FAILURE;
++                break;
++            }
++            source = pager->srp_backing_offset + offset + cur_offset;
++            vm_offset_t destination = (vm_offset_t)phystokv((pmap_paddr_t)
++                upl_phys_page(upl_pl, (int)(cur_offset / PAGE_SIZE)) << PAGE_SHIFT);
++            retval = b2l_shared_region_copy_large(pager, src_top_object,
++                source, destination, &fault_info, &valid, &taint, &nx);
++            if (retval != KERN_SUCCESS) break;
++            UPL_SET_CS_VALIDATED(upl_pl, cur_offset / PAGE_SIZE, valid);
++            UPL_SET_CS_TAINTED(upl_pl, cur_offset / PAGE_SIZE, taint);
++            UPL_SET_CS_NX(upl_pl, cur_offset / PAGE_SIZE, nx);
++            shared_region_pager_slid++;
++            continue;
++        }
++#endif
+ 
+ 		/*
+ 		 * Map the source (dyld shared cache) page in the kernel's
