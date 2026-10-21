@@ -47,3 +47,16 @@ and identifiers stay local and ignored.
 Physical progress past the policy assertion is pending.
 The next screen report should show later BSD autoconfiguration or a root-device
 wait; no root filesystem or native UFS driver is supplied by this update.
+
+## Device result
+
+The user's photograph confirms progress past kminit without the prior assertion.
+Boot CPU registration and timer counts 42, 44 and 46 with SGI1=1 confirm that
+interrupt delivery remains functional. DLIL and Skywalk self-tests complete;
+loopback worker scheduling also proceeds. XNU then waits for IOMedia with
+Content Apple_HFS. This is the expected root-device wait of a kernel with no
+native storage/root filesystem provider, not a kernel panic.
+
+The initial target of physical XNU boot, readable kernel output, CPU registration
+and timed interrupt-driven scheduling has been achieved. A mounted root and
+userspace are separate remaining milestones.

@@ -34,10 +34,12 @@ firmware profile build locally. Packaging produces a single Android v1
 loader reads that payload through the existing firmware UFS service from GPT
 partition `BOOT`; no separate ESP or SYSTEM/USERDATA transfer is required.
 
-**Physical device proof now covers XNU entry, its own framebuffer console,
-VM bootstrap, boot CPU registration, real timer and self-SGI interrupts, and
-timed scheduler wakeup. Build 0008 reaches later BSD startup, where the absent
-CTRR policy metadata expected by the DEVELOPMENT kernel is the current blocker.**
+**The first kernel-boot milestone is achieved on the physical device: XNU owns
+its framebuffer console, completes VM startup and reaches BSD root discovery,
+registers its boot
+CPU, and receives real timer/self-SGI interrupts with timed scheduler wakeups.
+Build 0011 reaches a root-device wait for Apple_HFS without a panic. Native
+storage access, an HFS root and iOS userspace remain separate next milestones.**
 [Build 0004](docs/build-0004.md) supplies the required 256-byte seed; its
 device result identified the next DT contract gap. [Build 0005](docs/build-0005.md)
 adds the required /chosen/memory-map and /defaults containers.
@@ -56,8 +58,8 @@ the next failure identifies the absent AES mode provider.
 unavailable GCM operations safely. Its device test passes into BSD autoconfiguration
 and exposes a missing boot-policy property.
 [Build 0011](docs/build-0011.md) supplies the explicit existing non-CTRR policy
-in the Apple device tree. Its BOOT-only installation is verified;
-the device screen result is pending.
+in the Apple device tree. Its device photograph confirms the root-device wait
+without the previous panic.
 BOOT writes were backed up and readback-verified.
 [Build 0002](docs/build-0002.md) uses a dynamic 1–2 GiB RAM arena within the
 unchanged firmware memory guards. [Build 0003](docs/build-0003.md) adds XNU-owned
@@ -99,4 +101,5 @@ must first be verified as beyond2lte and its real BOOT capacity checked.
 See [the boot contract](docs/boot-contract.md),
 [EFI handoff](docs/efi-xnu-loader.md) and
 [runtime milestones](docs/runtime-bringup.md) for execution details and the
-screen output needed to establish a successful device test.
+screen output needed to establish a successful device test. Native disk/root
+prerequisites are recorded in [storage next steps](docs/storage-next.md).

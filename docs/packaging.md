@@ -116,3 +116,16 @@ No SYSTEM, USERDATA, recovery, or partition-table update is part of this package
 
 The first boot target is kernel entry, console output and timer/interrupt
 progress. It is not a bootable iOS userspace or a SpringBoard image.
+
+## Backup policy for the authorized device trials
+
+Preserve the original full Android BOOT backup. Subsequent XNU build updates do
+not require another BOOT backup; continue checking the target identity, partition
+capacity and written-image readback. Existing backups are not automatically deleted.
+
+Before repurposing SYSTEM, retain one verified full backup of its original
+Android contents. That backup is taken once, not on every subsequent HFS or
+kernel update. Confirm whether SYSTEM names a logical volume or a shared dynamic
+partition container before choosing a write extent. All backups and raw inventory
+remain local and ignored. Authorization to use SYSTEM does not authorize changes
+to recovery, EFS, GPT or unrelated partitions.

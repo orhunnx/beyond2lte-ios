@@ -345,4 +345,49 @@ current B2L target has neither Apple CTRR/KTRR/paravirtualized CTRR nor PPL/SPTM
 no associated protected-region property is required by this current build.
 The policy value does not itself program a protection register, change normal
 page-table read-only/execute permissions or expand physical RAM/MMIO guards.
-Actual loader-only 0011 device execution remains pending.
+The loader-only 0011 device photo confirms this assertion is gone. Startup
+passes `kminit` and loopback setup without a reported panic, then waits in root
+discovery for `IOMedia` with `Content = Apple_HFS`. This establishes the initial
+XNU kernel boot milestone; it does not establish a mounted root filesystem,
+completed BSD startup or userspace execution.
+
+## Root filesystem prerequisites: read-only audit
+
+The displayed `Apple_HFS` match is XNU's default root-search dictionary. It does
+not establish that HFS or a storage driver is installed. Apple OSS HFS is separate
+from XNU; the release-paired candidate is `hfs-715.120.4`, commit
+`124b970fd5390f1c2cd6f985478616a04f6eeb1f` (annotated tag
+`fa6f37df5ceb82c4149fa5caff89f75662457fc9`). An isolated source checkout was
+reviewed, not compiled or integrated.
+
+The A5 `0026` built-in HFS registration remains a viable design reference:
+register the real filesystem/vnode operations with `vfs_fsadd` after `vfsinit`,
+then initialize its zones, encoding and sysctl state. Current iPhoneOS HFS
+configuration enables AppleKeyStore content protection; an initial unencrypted
+HFS root needs an explicit unencrypted feature configuration and corresponding
+guarded AKS glue. The old macOS-target feature assumptions cannot be copied.
+
+A native BSD block device can use the A5/memory-device style instead of importing
+all IOStorageFamily: real bdevsw/cdevsw operations, device nodes, bounded storage
+geometry and an explicit root-selection path. Stock arbitrary `rd=` names still
+wait for IOKit matching; only `mdN` has a built-in direct-device exception. Root
+media helpers also currently assert that IOMedia/IOBlockStorageDriver classes
+exist, requiring honest optional-family handling for a native device. The full
+IOMedia route instead requires actual IOStorageFamily, media/BSD-client and
+partition/transport services; publishing a class name alone is insufficient.
+
+HFS requires logical block size/count ioctls and may temporarily select a 512-byte
+view. A UFS backend must correctly translate that view over its physical sectors,
+complete buffer I/O with errors/residuals and enforce the selected logical
+partition's extent bounds. It must resolve the actual LU and logical extents;
+a TWRP partition alias is not by itself an on-disk GPT identity. Read-only
+metadata access and a clean HFS mount are separate milestones from write/journal
+support. An existing memory disk can isolate filesystem bring-up from transport,
+provided its pages remain within the unchanged reserved boot arena.
+
+After a mount, this iPhoneOS-target kernel still requires `FSIOC_KERNEL_ROOTAUTH`;
+a plain custom HFS volume does not provide Apple's sealed-root authentication.
+That research-root policy must be explicit rather than falsely reporting a
+verified seal. An empty HFS volume also contains no init/launchd userspace. No
+filesystem integration, kernel build or device/storage writes were performed
+as part of this audit.
