@@ -61,7 +61,8 @@ and exposes a missing boot-policy property.
 in the Apple device tree. Its device photograph confirms the root-device wait
 without the previous panic.
 [Build 0012](docs/build-0012.md) adds native read-only UFS transport and bounded
-BSD disk/GPT access, adapted from the working UEFI driver. Device proof is pending.
+BSD disk/GPT access, adapted from the working UEFI driver. Its BOOT-only
+installation is verified; physical UFS proof is pending.
 BOOT writes were backed up and readback-verified.
 [Build 0002](docs/build-0002.md) uses a dynamic 1–2 GiB RAM arena within the
 unchanged firmware memory guards. [Build 0003](docs/build-0003.md) adds XNU-owned

@@ -56,7 +56,12 @@ sectors and identifiers are not committed. Host checks are not device DMA proof.
 
 ## Installation and device boundary
 
-The package is ready. The device test must report successful native capacity,
+The authorized BOOT-only update completed without taking another backup. The
+original Android BOOT and SYSTEM backups remain intact. Exact image-prefix
+readback matched, then the device was rebooted. SYSTEM was not written; raw
+receipts and identifiers remain local and ignored.
+
+The device test must report successful native capacity,
 primary/backup GPT CRC verification and bounded SYSTEM signature reads. Existing
 HFS root waiting is expected because HFS/root integration is outside this update.
 No SYSTEM write is performed and no new BOOT backup is required.
