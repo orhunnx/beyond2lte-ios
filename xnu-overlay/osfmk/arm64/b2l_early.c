@@ -13,7 +13,12 @@ static volatile uint32_t *b2l_fb;
 static uint64_t b2l_fb_physical, b2l_fb_length;
 static unsigned b2l_width, b2l_height, b2l_stride, b2l_scale;
 static unsigned b2l_cols, b2l_rows, b2l_row, b2l_col;
-static unsigned b2l_active, b2l_panicking;
+static unsigned b2l_active, b2l_panic_owner, b2l_panic_floor;
+static unsigned b2l_console_cpu(void)
+{
+    return (unsigned)(__builtin_arm_rsr64("MPIDR_EL1") & 0xffff) + 1;
+}
+extern void b2l_smp_dump(void);
 
 static void
 b2l_clear_row(unsigned row)
@@ -30,14 +35,16 @@ static void
 b2l_newline(void)
 {
 	b2l_col = 0;
-	b2l_row = (b2l_row + 1) % b2l_rows;
+	b2l_row = b2l_row + 1 < b2l_rows ? b2l_row + 1 : b2l_panic_floor;
 	b2l_clear_row(b2l_row);
-	b2l_clear_row((b2l_row + 1) % b2l_rows);
+	b2l_clear_row(b2l_row + 1 < b2l_rows ? b2l_row + 1 : b2l_panic_floor);
 }
 
 void
 b2l_early_putc(char c)
 {
+	unsigned owner = __atomic_load_n(&b2l_panic_owner, __ATOMIC_ACQUIRE);
+	if (owner && owner != b2l_console_cpu()) return;
 	b2l_log_append(c);
 	if (!b2l_active) return;
 	if (c == '\r') { b2l_col = 0; return; }
@@ -112,15 +119,34 @@ b2l_early_mark(unsigned stage, const char *label)
 	__asm__ volatile("dsb sy" ::: "memory");
 }
 
+static unsigned b2l_first_line_done;
+static void b2l_first_line_putc(char c)
+{
+    if (b2l_first_line_done) return;
+    b2l_early_putc(c);
+    if (c == '\n') b2l_first_line_done = 1;
+}
+
 void
 b2l_early_panic(const char *fmt, va_list *args)
 {
-	if (!b2l_active || b2l_panicking) return;
-	b2l_panicking = 1;
+	if (!b2l_active) return;
+    unsigned expected = 0, owner = b2l_console_cpu();
+    if (!__atomic_compare_exchange_n(&b2l_panic_owner, &expected, owner, 0,
+            __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) return;
+    b2l_row = b2l_col = 0;
+    for (unsigned row = 0; row < b2l_rows; ++row) b2l_clear_row(row);
+    b2l_early_trace("B2L FIRST PANIC: MPIDR=0x%x\n", owner - 1);
 	b2l_string("\nB2L EARLY PANIC: ");
 	va_list copy; va_copy(copy, *args);
-	_doprnt(fmt, &copy, b2l_early_putc, 16); va_end(copy);
-	b2l_early_putc('\n');
+    _doprnt(fmt, &copy, b2l_first_line_putc, 16); va_end(copy);
+    if (!b2l_first_line_done) b2l_early_putc('\n');
+    b2l_smp_dump();
+    b2l_panic_floor = b2l_row + 2 < b2l_rows / 2 ? b2l_row + 2 : b2l_rows / 2;
+    b2l_row = b2l_panic_floor; b2l_col = 0;
+    va_copy(copy, *args);
+    _doprnt(fmt, &copy, b2l_early_putc, 16); va_end(copy);
+    b2l_early_putc('\n');
 	__asm__ volatile("dsb sy" ::: "memory");
 }
 

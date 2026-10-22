@@ -19,6 +19,7 @@ def main():
     body = body.replace("b2l_fb = (volatile uint32_t *)(uintptr_t)physical;",
                         "b2l_fb = host_framebuffer;")
     body = body.replace('__asm__ volatile("dsb sy" ::: "memory");', '(void)0;')
+    body = body.replace('__builtin_arm_rsr64("MPIDR_EL1")', 'host_mpidr')
     pre = r'''
 #include <stdint.h>
 #include <stdarg.h>
@@ -32,6 +33,9 @@ def main():
 #define B2L_FB_RESERVED_SIZE 0x01400000ULL
 struct video { uint64_t v_baseAddr,v_display,v_rowBytes,v_width,v_height,v_depth; };
 typedef struct { struct video Video; uint64_t memSize; } boot_args;
+void b2l_early_putc(char c);
+static _Thread_local unsigned long long host_mpidr;
+void b2l_smp_dump(void) { b2l_early_putc('S'); b2l_early_putc('\n'); }
 static uint64_t host_log_count;static unsigned char host_log_last;
 void b2l_log_append(char c){++host_log_count;host_log_last=(unsigned char)c;}
 unsigned char iso_font[256*16];
@@ -76,6 +80,20 @@ int main(void) {
  assert(b2l_early_virtual()==(uintptr_t)(second+64));
  b2l_early_mark(19,"relocated");panic_format("test %u",17U);
  canaries(second,size,width,height,stride);
+ /* The first panic owns output; a second CPU cannot modify scanout or log.
+  * Later output by the owner may wrap, but cannot erase the retained header. */
+ assert(b2l_panic_owner==1&&b2l_panic_floor>0);
+ size_t band=(size_t)b2l_panic_floor*16*b2l_scale*stride;
+ uint8_t *snapshot=malloc(size),*header=malloc(band);
+ memcpy(snapshot,second+64,size);memcpy(header,second+64,band);
+ logged=host_log_count;host_mpidr=1;
+ b2l_early_putc('X');b2l_early_trace("foreign CPU\n");panic_format("nested foreign");
+ assert(host_log_count==logged&&memcmp(snapshot,second+64,size)==0);
+ host_mpidr=0;panic_format("nested owner");
+ assert(memcmp(snapshot,second+64,size)==0);
+ for(unsigned i=0;i<200;++i)b2l_early_trace("later panic detail %u\n",i);
+ assert(memcmp(header,second+64,band)==0);
+ free(snapshot);free(header);
  const uint64_t bad_bases[]={B2L_FB_RESERVED_BASE-4096,B2L_FB_RESERVED_BASE+B2L_FB_RESERVED_SIZE-4096,UINT64_MAX-8};
  for(unsigned i=0;i<sizeof(bad_bases)/sizeof(bad_bases[0]);++i){
   b2l_active=0;args.Video.v_baseAddr=bad_bases[i];b2l_early_init(&args);assert(!b2l_active);
@@ -86,7 +104,7 @@ int main(void) {
  b2l_early_init(&args);assert(!b2l_active);
  canaries(raw,size,width,height,stride);canaries(second,size,width,height,stride);
  b2l_active=0;logged=host_log_count;b2l_early_putc('X');assert(host_log_count==logged+1&&host_log_last=='X');
- free(raw);free(second);puts("B2L early console geometry/ring/CR/high-bit/relocation guards passed");
+ free(raw);free(second);puts("B2L early console geometry/ring/CR/relocation, first-panic owner and retained header passed");
 }
 '''
     with tempfile.TemporaryDirectory(prefix="b2l-early-console-") as temporary:

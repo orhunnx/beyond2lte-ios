@@ -10,6 +10,7 @@ a=p.parse_args()
 objects=[a.object_root/'bsd/DEVELOPMENT'/f'{x}.o' for x in ['b2l_native_cache','b2l_cache_core','CacheHfs','CacheSha']]
 objects.append(a.object_root/'osfmk/DEVELOPMENT/b2l_arm64e_compat.o')
 objects.append(a.object_root/'iokit/DEVELOPMENT/B2LCPU.cpo')
+objects.append(a.object_root/'osfmk/DEVELOPMENT/b2l_early.o')
 for obj in objects:
  args=json.loads(Path(str(obj)+'.json').read_text().rstrip(',\n'))['arguments']
  if '-mgeneral-regs-only' not in args:raise SystemExit(f'{obj.name}: scalar compiler flag missing')

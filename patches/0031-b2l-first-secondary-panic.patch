@@ -1,0 +1,207 @@
+--- a/osfmk/arm64/start.s
++++ b/osfmk/arm64/start.s
+@@ -180,6 +180,10 @@
+     cmp x17, #6
+     b.hs .Lb2l_stage_done\@
+     add x16, x16, x17, lsl #7
++    str lr, [x16, #8]
++    str x0, [x16, #16]
++    mov x17, sp
++    str x17, [x16, #24]
+     mov x17, #\value
+     str x17, [x16]
+     dc civac, x16
+@@ -975,7 +979,10 @@
+ 	isb		sy
+ 
+ #if defined(B2L)
++	B2L_SMP_STAGE 6
++	cbnz x21, Lb2l_secondary_mmu_text_done
+ 	B2L_BOOT_TEXT "MMU ON", 432
++Lb2l_secondary_mmu_text_done:
+ #endif
+ 
+ #if !VMAPPLE
+@@ -1063,6 +1070,9 @@
+ 	.align 2
+ arm_init_tramp:
+ 	ARM64_JUMP_TARGET
++#if defined(B2L)
++	B2L_SMP_STAGE 7
++#endif
+ 	/* On a warm boot, the full kernel translation table is initialized in
+ 	 * addition to the bootstrap tables. The layout is as follows:
+ 	 *
+@@ -1099,6 +1109,9 @@
+ 	bl		EXT(phystokv)
+ 
+ 	mov		lr, x19
++#if defined(B2L)
++	B2L_SMP_STAGE 8
++#endif
+ 
+ 	/* Return to arm_init() */
+ 	ret
+--- a/osfmk/arm64/cpu.c
++++ b/osfmk/arm64/cpu.c
+@@ -1361,3 +1361,31 @@
+     return *(volatile uint64_t *)b2l_smp_mailbox[cpu];
+ }
+ #endif
++
++#if defined(B2L)
++/* Per-CPU diagnostic record, with no allocation, mutex or thread dependency. */
++void b2l_smp_checkpoint(unsigned stage, uintptr_t arg)
++{
++    unsigned cpu = (unsigned)(__builtin_arm_rsr64("MPIDR_EL1") & 0xffff);
++    if (!cpu || cpu >= 6) return;
++    extern uint64_t b2l_smp_mailbox[6][16];
++    uint64_t *m = b2l_smp_mailbox[cpu];
++    uintptr_t sp; __asm__ volatile("mov %0, sp" : "=r"(sp));
++    m[1] = (uintptr_t)__builtin_return_address(0); m[2] = arg; m[3] = sp;
++    __atomic_store_n(&m[0], stage, __ATOMIC_RELEASE);
++    CleanPoC_DcacheRegion((vm_offset_t)m, 128);
++    __builtin_arm_dsb(DSB_SY);
++}
++void b2l_smp_dump(void)
++{
++    extern uint64_t b2l_smp_mailbox[6][16];
++    extern void b2l_early_trace(const char *, ...);
++    for (unsigned cpu = 1; cpu < 6; ++cpu) {
++        uint64_t stage = b2l_smp_progress(cpu);
++        if (!stage) continue;
++        volatile uint64_t *m = b2l_smp_mailbox[cpu];
++        b2l_early_trace("B2L FIRST: cpu=%u stage=%llu lr=0x%llx\n arg=0x%llx sp=0x%llx\n",
++            cpu, stage, m[1], m[2], m[3]);
++    }
++}
++#endif
+--- a/osfmk/arm/arm_init.c
++++ b/osfmk/arm/arm_init.c
+@@ -741,6 +741,10 @@
+ 	cpu_data_t      *cpu_data_ptr,
+ 	uint64_t __unused hib_header_phys)
+ {
++#if defined(B2L)
++    extern void b2l_smp_checkpoint(unsigned, uintptr_t);
++    b2l_smp_checkpoint(9, (uintptr_t)cpu_data_ptr);
++#endif
+ #if __ARM_PAN_AVAILABLE__
+ 	__builtin_arm_wsr("pan", 1);
+ #endif
+@@ -759,6 +763,9 @@
+ 
+ 
+ 	machine_set_current_thread(cpu_data_ptr->cpu_active_thread);
++#if defined(B2L)
++    b2l_smp_checkpoint(10, (uintptr_t)cpu_data_ptr->cpu_active_thread);
++#endif
+ 
+ #if APPLE_ARM64_ARCH_FAMILY
+ 	configure_late_apple_regs(false);
+@@ -795,8 +802,14 @@
+ #endif
+ 
+ 	cpu_machine_idle_init(FALSE);
++#if defined(B2L)
++    b2l_smp_checkpoint(11, (uintptr_t)cpu_data_ptr);
++#endif
+ 
+ 	cpu_init();
++#if defined(B2L)
++    b2l_smp_checkpoint(12, (uintptr_t)cpu_data_ptr);
++#endif
+ 
+ #ifdef  APPLETYPHOON
+ 	if ((cpus_defeatures & (0xF << 4 * cpu_data_ptr->cpu_number)) != 0) {
+@@ -807,6 +820,9 @@
+ 	 * drivers use mach_absolute_time() to implement rate control
+ 	 */
+ 	cpu_timebase_init(FALSE);
++#if defined(B2L)
++    b2l_smp_checkpoint(13, (uintptr_t)cpu_data_ptr);
++#endif
+ 
+ #if KPERF
+ 	/* kptimer_curcpu_up() must be called after cpu_timebase_init */
+@@ -826,6 +842,9 @@
+ 		commpage_update_timebase();
+ 	}
+ 	PE_init_cpu();
++#if defined(B2L)
++    b2l_smp_checkpoint(14, (uintptr_t)cpu_data_ptr);
++#endif
+ #if __arm64__
+ 	apt_msg_init_cpu();
+ #endif
+@@ -833,6 +852,9 @@
+ 	fiq_context_init(TRUE);
+ 	cpu_data_ptr->rtcPop = EndOfAllTime;
+ 	timer_resync_deadlines();
++#if defined(B2L)
++    b2l_smp_checkpoint(15, (uintptr_t)cpu_data_ptr);
++#endif
+ 
+ 	processor_t processor = PERCPU_GET_RELATIVE(processor, cpu_data, cpu_data_ptr);
+ 	bool should_kprintf = processor_should_kprintf(processor, true);
+@@ -874,6 +896,10 @@
+ 	}
+ #endif
+ 
++
++#if defined(B2L)
++    b2l_smp_checkpoint(16, (uintptr_t)cpu_data_ptr);
++#endif
+ 	secondary_cpu_main(NULL);
+ }
+ 
+--- a/osfmk/kern/startup.c
++++ b/osfmk/kern/startup.c
+@@ -970,6 +970,11 @@
+ 
+ 	thread->parameter = machine_param;
+ 
++
++#if defined(B2L)
++    extern void b2l_smp_checkpoint(unsigned, uintptr_t);
++    b2l_smp_checkpoint(17, (uintptr_t)thread);
++#endif
+ 	load_context(thread);
+ 	/*NOTREACHED*/
+ }
+--- a/osfmk/arm64/cswitch.s
++++ b/osfmk/arm64/cswitch.s
+@@ -317,6 +317,24 @@
+ 	load_general_registers 	x1, 2
+ 	set_process_dependent_keys_and_sync_context	x0, x1, x2, x3, w4
+ 	mov		x0, #0								// Clear argument to thread_continue
++#if defined(B2L)
++    adrp x16, EXT(b2l_smp_mailbox)@page
++    add x16, x16, EXT(b2l_smp_mailbox)@pageoff
++    mrs x17, MPIDR_EL1
++    and x17, x17, #0xffff
++    cmp x17, #6
++    b.hs Lb2l_context_record_done
++    add x16, x16, x17, lsl #7
++    str lr, [x16, #8]
++    str x0, [x16, #16]
++    mov x17, sp
++    str x17, [x16, #24]
++    mov x17, #18
++    str x17, [x16]
++    dc civac, x16
++    dsb sy
++Lb2l_context_record_done:
++#endif
+ 	cswitch_epilogue
+ 
+ /*
+--- a/osfmk/conf/Makefile.template
++++ b/osfmk/conf/Makefile.template
+@@ -525,3 +525,6 @@
+ 
+ b2l_log_core.o_CFLAGS_ADD += -mgeneral-regs-only
+ b2l_persistent_log.o_CFLAGS_ADD += -mgeneral-regs-only
++
++# First-panic framebuffer and checkpoint formatter must not borrow SIMD.
++b2l_early.o_CFLAGS_ADD += -mgeneral-regs-only
