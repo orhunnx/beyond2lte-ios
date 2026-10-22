@@ -1,0 +1,69 @@
+--- a/osfmk/arm64/start.s
++++ b/osfmk/arm64/start.s
+@@ -406,9 +406,31 @@
+ 	mrs x1, CurrentEL
+ 	cmp x1, #4
+ 	b.ne Lb2l_secondary_bad_el
++    /* HAS_CLUSTER=0 reset lookup masks Aff1. Never admit an affinity alias
++     * (e.g.0x100) that could select the live boot CPU's data. */
++    mrs x1, MPIDR_EL1
++    and x1, x1, #0xffff
++    sub x1, x1, #1
++    cmp x1, #5
++    b.hs Lb2l_secondary_bad_affinity
+ 	msr SPSel, #1
+ 	B2L_SMP_STAGE 2
+ 	b EXT(LowResetVectorBase)
++Lb2l_secondary_bad_affinity:
++    adrp x16, EXT(b2l_smp_mailbox)@page
++    add x16, x16, EXT(b2l_smp_mailbox)@pageoff
++    mrs x17, MPIDR_EL1
++    and x17, x17, #0xffff
++    str x17, [x16, #64]
++    mrs x17, MIDR_EL1
++    str x17, [x16, #72]
++    mov x17, #254
++    str x17, [x16, #80]
++    dc civac, x16
++    dsb sy
++Lb2l_affinity_park:
++    wfe
++    b Lb2l_affinity_park
+ Lb2l_secondary_bad_el:
+ 	B2L_SMP_STAGE 255
+ 	wfe
+--- a/osfmk/arm64/cpu.c
++++ b/osfmk/arm64/cpu.c
+@@ -1376,10 +1376,19 @@
+     CleanPoC_DcacheRegion((vm_offset_t)m, 128);
+     __builtin_arm_dsb(DSB_SY);
+ }
++bool b2l_smp_rejected(void)
++{
++    extern uint64_t b2l_smp_mailbox[6][16];
++    __asm__ volatile("dc ivac, %0; dsb sy" :: "r"(b2l_smp_mailbox[0]) : "memory");
++    return __atomic_load_n(&b2l_smp_mailbox[0][10], __ATOMIC_ACQUIRE) == 254;
++}
+ void b2l_smp_dump(void)
+ {
+     extern uint64_t b2l_smp_mailbox[6][16];
+     extern void b2l_early_trace(const char *, ...);
++    if (b2l_smp_rejected())
++        b2l_early_trace("B2L REJECT: MPIDR=0x%llx MIDR=0x%llx\n",
++            b2l_smp_mailbox[0][8], b2l_smp_mailbox[0][9]);
+     for (unsigned cpu = 1; cpu < 6; ++cpu) {
+         uint64_t stage = b2l_smp_progress(cpu);
+         if (!stage) continue;
+--- a/osfmk/arm64/sleh.c
++++ b/osfmk/arm64/sleh.c
+@@ -628,6 +628,10 @@
+ 
+ 	ss_valid = is_saved_state64(ss);
+ 	arm_saved_state64_t *state = saved_state64(ss);
++#if defined(B2L)
++    extern void b2l_early_fault(const char *, uint64_t, uint64_t, uint64_t, uint64_t);
++    if (ss_valid) b2l_early_fault(msg, state->pc, state->lr, state->esr, state->far);
++#endif
+ 
+ 	os_atomic_cmpxchg(&original_faulting_state, NULL, state, seq_cst);
+ 

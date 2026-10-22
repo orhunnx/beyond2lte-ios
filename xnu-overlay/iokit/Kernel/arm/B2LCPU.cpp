@@ -26,6 +26,7 @@ extern "C" void b2l_send_ipi(unsigned cpu);
 extern "C" bool b2l_cpu_ipi_ready(unsigned cpu);
 extern "C" uint64_t b2l_cpu_irq_count(unsigned cpu, boolean_t timer);
 extern "C" bool b2l_prepare_cpu_start(unsigned cpu);
+extern "C" bool b2l_smp_rejected(void);
 extern "C" processor_t b2l_bind_cpu(processor_t processor);
 
 static_assert(MAX_CPUS == 6, "CPU0..5 A55/A75 experiment only");
@@ -247,6 +248,7 @@ void B2LCPU::finishStartup(void *, wait_result_t)
     for (unsigned i = 0; i < 6; ++i) last_stage[i] = UINT64_MAX;
     nanoseconds_to_deadline(20 * NSEC_PER_SEC, &deadline);
     for (;;) {
+        if (b2l_smp_rejected()) panic("B2L SMP: unexpected secondary affinity rejected before CPU-data lookup");
         for (unsigned i = 1; i < 6; ++i) {
             uint64_t stage = b2l_smp_progress(i);
             if (stage != last_stage[i]) {

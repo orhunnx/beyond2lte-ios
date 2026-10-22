@@ -78,7 +78,11 @@ int main(void) {
  canaries(raw,size,width,height,stride);
  b2l_early_relocate((uintptr_t)(second+64));
  assert(b2l_early_virtual()==(uintptr_t)(second+64));
- b2l_early_mark(19,"relocated");panic_format("test %u",17U);
+ b2l_early_mark(19,"relocated");
+ b2l_early_fault("first",0x1234,0x5678,0xabcd,4);
+ b2l_early_fault("second",0,0,0,0);
+ assert(b2l_first_fault.ready&&b2l_first_fault.pc==0x1234&&b2l_first_fault.lr==0x5678);
+ panic_format("test %u",17U);
  canaries(second,size,width,height,stride);
  /* The first panic owns output; a second CPU cannot modify scanout or log.
   * Later output by the owner may wrap, but cannot erase the retained header. */

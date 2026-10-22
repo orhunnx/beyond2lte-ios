@@ -119,35 +119,51 @@ b2l_early_mark(unsigned stage, const char *label)
 	__asm__ volatile("dsb sy" ::: "memory");
 }
 
-static unsigned b2l_first_line_done;
-static void b2l_first_line_putc(char c)
+static struct {
+    unsigned claimed, ready, cpu;
+    const char *message;
+    uint64_t pc, lr, esr, far;
+} b2l_first_fault;
+void b2l_early_fault(const char *message, uint64_t pc, uint64_t lr, uint64_t esr, uint64_t far)
 {
-    if (b2l_first_line_done) return;
-    b2l_early_putc(c);
-    if (c == '\n') b2l_first_line_done = 1;
+    unsigned expected = 0;
+    if (!__atomic_compare_exchange_n(&b2l_first_fault.claimed, &expected, 1, 0,
+            __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) return;
+    b2l_first_fault.cpu = b2l_console_cpu() - 1;
+    b2l_first_fault.message = message;
+    b2l_first_fault.pc = pc; b2l_first_fault.lr = lr;
+    b2l_first_fault.esr = esr; b2l_first_fault.far = far;
+    __atomic_store_n(&b2l_first_fault.ready, 1, __ATOMIC_RELEASE);
 }
 
 void
 b2l_early_panic(const char *fmt, va_list *args)
 {
-	if (!b2l_active) return;
+    (void)args;
+    if (!b2l_active) return;
     unsigned expected = 0, owner = b2l_console_cpu();
     if (!__atomic_compare_exchange_n(&b2l_panic_owner, &expected, owner, 0,
             __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) return;
     b2l_row = b2l_col = 0;
     for (unsigned row = 0; row < b2l_rows; ++row) b2l_clear_row(row);
     b2l_early_trace("B2L FIRST PANIC: MPIDR=0x%x\n", owner - 1);
-	b2l_string("\nB2L EARLY PANIC: ");
-	va_list copy; va_copy(copy, *args);
-    _doprnt(fmt, &copy, b2l_first_line_putc, 16); va_end(copy);
-    if (!b2l_first_line_done) b2l_early_putc('\n');
+    /* Record and render typed fault fields, without replaying foreign varargs.
+     * Native panic handling still prints its complete message below the band. */
+    if (__atomic_load_n(&b2l_first_fault.ready, __ATOMIC_ACQUIRE)) {
+        b2l_string(b2l_first_fault.message); b2l_early_putc('\n');
+        b2l_early_trace("B2L FAULT: MPIDR=0x%x pc=0x%llx lr=0x%llx\n esr=0x%llx far=0x%llx\n",
+            b2l_first_fault.cpu, b2l_first_fault.pc, b2l_first_fault.lr,
+            b2l_first_fault.esr, b2l_first_fault.far);
+    } else {
+        b2l_string("B2L PANIC FORMAT: ");
+        for (unsigned i = 0; i < 160 && fmt[i] && fmt[i] != '\n'; ++i)
+            b2l_early_putc(fmt[i]);
+        b2l_early_putc('\n');
+    }
     b2l_smp_dump();
     b2l_panic_floor = b2l_row + 2 < b2l_rows / 2 ? b2l_row + 2 : b2l_rows / 2;
     b2l_row = b2l_panic_floor; b2l_col = 0;
-    va_copy(copy, *args);
-    _doprnt(fmt, &copy, b2l_early_putc, 16); va_end(copy);
-    b2l_early_putc('\n');
-	__asm__ volatile("dsb sy" ::: "memory");
+    __asm__ volatile("dsb sy" ::: "memory");
 }
 
 void b2l_early_relocate(uint64_t base)
