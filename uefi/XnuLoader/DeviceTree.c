@@ -46,7 +46,7 @@ int b2l_build_device_tree(void *buffer, b2l_size capacity,
                          const struct b2l_dt_config *c, b2l_size *used)
 {
     struct writer w = { buffer, capacity, 0, 0 };
-    struct node root, chosen, memory_map, defaults, memory, cpus, cpu, arm_io, gic, aliases;
+    struct node root, chosen, memory_map, manifest, product, defaults, memory, cpus, cpu, arm_io, gic, aliases;
     b2l_u32 two = 2, one = 1, zero = 0, cpu_reg, cluster_type = 'S';
     b2l_u64 ranges[] = { 0, 0x10000000ULL, 0x20000000ULL };
     b2l_u64 gic_regs[] = { 0x101000, 0x1000, 0x102000, 0x1000 };
@@ -97,7 +97,17 @@ int b2l_build_device_tree(void *buffer, b2l_size capacity,
      * Omit range properties unless an actual corresponding payload exists. */
     memory_map = begin(&w, &chosen, "memory-map");
     end(&w, &memory_map);
+    /* libimage4 opens this registry container independently of its properties.
+     * No Apple manifest, signed chip identity or trust value is fabricated. */
+    manifest = begin(&w, &chosen, "manifest-properties");
+    end(&w, &manifest);
     end(&w, &chosen);
+    /* The board has a product node even though it is not an Apple product. */
+    product = begin(&w, &root, "product");
+    text_prop(&w, &product, "product-name", "Samsung Galaxy S10+");
+    text_prop(&w, &product, "model", "SM-G975F");
+    text_prop(&w, &product, "board-config", "beyond2lte");
+    end(&w, &product);
     /* pmap requires /defaults; absent tuning/range properties retain its
      * built-in defaults instead of claiming nonexistent protected regions. */
     defaults = begin(&w, &root, "defaults");

@@ -26,6 +26,35 @@ def hashes(root):
             if p.is_file() and p.name != 'b2l-provider.json'}
 
 
+def unencrypted_getattr(text):
+    """Keep native unencrypted class-0 queries when the key-service build is off.
+
+    Native CONFIG_PROTECT HFS returns class 0 for c_cpentry == NULL. The B2L
+    key-service-free build must not turn that read-only query into ENOTSUP.
+    This does not add encrypted files, class changes or key generation.
+    """
+    start = text.index('#if CONFIG_PROTECT\n\tif (VATTR_IS_ACTIVE(vap, va_dataprotect_class))')
+    end = text.index('\n#endif', start) + len('\n#endif')
+    old = text[start:end]
+    if 'CP_CLASS(cp->c_cpentry->cp_pclass)' not in old or old.count('VATTR_SET_SUPPORTED') != 1:
+        raise SystemExit('Pinned HFS protection getattr changed')
+    new = old.replace('#if CONFIG_PROTECT', '#if CONFIG_PROTECT || defined(ARM64_BOARD_CONFIG_B2L)', 1)
+    line = next(line for line in old.splitlines() if 'vap->va_dataprotect_class =' in line)
+    new = new.replace(line, '#if CONFIG_PROTECT\n' + line + '\n#else\n\t\tvap->va_dataprotect_class = 0; /* explicitly unencrypted */\n#endif')
+    return text[:start] + new + text[end:]
+
+
+def upgrade_unencrypted_getattr(destination, data):
+    path = destination / 'core/hfs_vnops.c'
+    if data.get('unencrypted_getattr_revision') == 1:
+        return
+    text = unencrypted_getattr(path.read_text())
+    path.write_text(text)
+    data['unencrypted_getattr_revision'] = 1
+    data['files'] = hashes(destination)
+    (destination / 'b2l-provider.json').write_text(json.dumps(data, indent=2, sort_keys=True) + '\n')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('xnu', type=Path)
@@ -44,6 +73,7 @@ def main():
         if (data.get('format') != 1 or data.get('source_commit') != COMMIT or
                 data.get('files') != hashes(destination)):
             raise SystemExit('Staged HFS sources were modified or have an unexpected revision')
+        upgrade_unencrypted_getattr(destination, data)
         print('Pinned HFS source already staged and verified')
         return
     source = args.source
@@ -82,7 +112,7 @@ def main():
         shutil.copyfile(header, staged / 'TargetConditionals.h')
         data = {'format': 1, 'release': RELEASE, 'source_commit': COMMIT,
                 'upstream': UPSTREAM, 'files': hashes(staged)}
-        (staged / 'b2l-provider.json').write_text(json.dumps(data, indent=2, sort_keys=True) + '\n')
+        upgrade_unencrypted_getattr(staged, data)
         staged.rename(destination)
     print(f'Staged {RELEASE} @ {COMMIT} for unencrypted HFS')
 

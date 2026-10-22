@@ -170,6 +170,7 @@ int main(){
                            '-Werror', '-fsanitize=address,undefined',
                            str(path / 'native.cpp'), '-o', str(path / 'native')], check=True)
             subprocess.run([str(path / 'native')], check=True)
+            subprocess.run([sys.executable, str(stage / 'tests/test_hfs_unencrypted_class.py'), str(xnu)], check=True)
 
 
 if __name__ == '__main__':

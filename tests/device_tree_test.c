@@ -7,7 +7,7 @@
 static unsigned seed_properties, memory_map_nodes, defaults_nodes, ctrr_properties;
 static unsigned boot_lun_properties, secondary_properties;
 static unsigned development_security_properties;
-static unsigned cpu_nodes, cpu_ids;
+static unsigned cpu_nodes, cpu_ids, product_nodes, manifest_nodes;
 static uint64_t read64(const unsigned char*p){uint64_t v;memcpy(&v,p,8);return v;}
 static uint32_t read32(const unsigned char *p) { uint32_t n; memcpy(&n,p,4); return n; }
 static size_t decode(const unsigned char *buf, size_t size, size_t off,
@@ -19,7 +19,7 @@ static size_t decode(const unsigned char *buf, size_t size, size_t off,
     off += 8; ++*nodes;
     const char *node_name = 0;
     char path[128];
-    assert(nprops && nprops < 64 && children < 8);
+    assert(nprops && nprops < 64 && children <= 8);
     for (uint32_t i=0; i<nprops; ++i) {
         assert(off + 36 <= size && memchr(buf+off, 0, 32));
         uint32_t len=read32(buf+off+32);
@@ -61,6 +61,8 @@ static size_t decode(const unsigned char *buf, size_t size, size_t off,
         }
         if (!strcmp(name,"timebase-frequency")) assert(len==4 && read32(buf+off)==26000000);
         if (!strcmp(name,"state")) { assert(node_name); const char *v=!strcmp(node_name,"cpu0")?"running":"stopped"; assert(len==8 && !memcmp(buf+off,v,8)); }
+        assert(strcmp(name,"chip-id") && strcmp(name,"unique-chip-id") && strcmp(name,"board-id"));
+        if (!strcmp(name,"product-name")) assert(len==sizeof("Samsung Galaxy S10+") && !memcmp(buf+off,"Samsung Galaxy S10+",len));
         if (!strcmp(name,"device_type")) assert(len && buf[off+len-1]==0);
         if (!strcmp(name,"cluster-type")) assert(len==4 && read32(buf+off)=='S');
         if ((!strcmp(name,"reg") || !strcmp(name,"cpu-id")) && len==4) { assert(node_name); assert(read32(buf+off)==(unsigned)(node_name[3]-'0')); }
@@ -77,6 +79,12 @@ static size_t decode(const unsigned char *buf, size_t size, size_t off,
     else { int n=snprintf(path,sizeof(path),"%s/%s",parent_path,node_name); assert(n>0 && (size_t)n<sizeof(path)); }
     if(!strcmp(path,"/chosen/memory-map")) {
         ++memory_map_nodes; assert(nprops==1 && children==0);
+    }
+    if(!strcmp(path,"/product")) {
+        ++product_nodes; assert(nprops==4 && children==0);
+    }
+    if(!strcmp(path,"/chosen/manifest-properties")) {
+        ++manifest_nodes; assert(nprops==1 && children==0);
     }
     if(!strcmp(path,"/defaults")) {
         ++defaults_nodes; assert(nprops==1 && children==0);
@@ -99,11 +107,12 @@ int main(void)
     assert(b2l_build_device_tree(buf,sizeof(buf),&c,&used)==0);
     unsigned nodes=0, props=0;
     assert(decode(buf,used,0,0,&nodes,&props,"")==used);
-    assert(nodes==16 && props>42 && seed_properties==1);
+    assert(nodes==18 && props>42 && seed_properties==1);
     assert(memory_map_nodes==1 && defaults_nodes==1 && ctrr_properties==1);
     assert(boot_lun_properties==1 && secondary_properties==1);
     assert(development_security_properties==4);
     assert(cpu_nodes==6 && cpu_ids==0x3f);
+    assert(product_nodes==1 && manifest_nodes==1);
     for(size_t capacity=0;capacity<used;++capacity) {
         size_t ignored=0; memset(small,0x5a,sizeof(small));
         assert(b2l_build_device_tree(small,capacity,&c,&ignored)<0);
