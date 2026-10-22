@@ -93,3 +93,32 @@ At least one learned record and a later boot with `applied`/`already` increasing
 are required to call the complete automatic cycle hardware-verified. A reduction
 in traps or improved startup time must be measured separately; there is no
 assumption that caching fixes missing graphics, input, services or SMP support.
+
+## Integrity-measured code exclusion (0034)
+
+Only `/usr/lib/system/libcorecrypto.dylib`'s `__TEXT,__text` is excluded from
+persistent instruction translation. The kernel finds its unslid address and
+image UUID in the main dyld cache image table, then validates the owning
+subcache's mappings, Mach-O UUID and section bounds. No release-specific UUID,
+address, CNID or subcache suffix is embedded in source. Malformed or ambiguous
+metadata stops pre-init application; learning rejects an unresolved candidate.
+
+After normal HFS journal replay, existing records provide the original bytes
+for this exact section. The target for a boundary page retains every native
+byte outside the section. Original/native undo records remain intact, so an
+interrupted selective restoration is retryable using the existing bytewise
+mixture check, synchronous VFS write, flush and readback. A full maintenance
+restore remains available independently of module discovery.
+
+Future observations within this range remain on runtime emulation and cannot
+create new persistent translations. Other modules, including other code in the
+same subcache file, remain eligible. The actual FIPS tests and their expected
+integrity values are unchanged. This narrow exclusion is not a general solution
+for every self-measuring binary; further exclusions require evidence.
+
+The host exclusion test checks image/UUID binding, malformed mappings and load
+commands, adjacent translations on both boundary pages, and every interrupted
+selective-restoration prefix. An optional private-cache run accepts main-cache,
+owning-subcache and saved-native-cache paths as its three arguments. It verifies
+that every restored byte equals the pristine measured code, while every byte
+outside that range retains its cached native value.

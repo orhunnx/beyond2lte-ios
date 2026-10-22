@@ -12,3 +12,6 @@ if [[ $# == 1 ]]; then
  "$cc" "${flags[@]}" "$repo/tests/native_cache_hfs_test.c" "$repo/common/cache/b2l_cache_core.c" "$repo/common/cache/CacheHfs.c" "$repo/common/cache/CacheSha.c" -o "$tmp/hfs"
  "$tmp/hfs" "$1"
 fi
+
+"$cc" "${flags[@]}" -I"$repo/xnu-overlay/bsd/kern" "$repo/tests/native_cache_exclusion_test.c" "$repo/common/cache/b2l_cache_core.c" "$repo/common/cache/CacheSha.c" -o "$tmp/exclusion"
+"$tmp/exclusion"
