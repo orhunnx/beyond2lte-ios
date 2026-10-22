@@ -1,0 +1,144 @@
+--- a/osfmk/arm64/start.s
++++ b/osfmk/arm64/start.s
+@@ -29,6 +29,7 @@
+ #include <arm64/asm.h>
+ #include <arm64/proc_reg.h>
+ #include <arm64/machine_machdep.h>
++#include <arm64/b2l_cpu_affinity.h>
+ #include <arm64/proc_reg.h>
+ #include <pexpert/arm64/board_config.h>
+ #include <mach_assert.h>
+@@ -176,7 +177,7 @@
+     adrp x16, EXT(b2l_smp_mailbox)@page
+     add x16, x16, EXT(b2l_smp_mailbox)@pageoff
+     mrs x17, MPIDR_EL1
+-    and x17, x17, #0xffff
++    ubfx x17, x17, #8, #8
+     cmp x17, #6
+     b.hs .Lb2l_stage_done\@
+     add x16, x16, x17, lsl #7
+@@ -242,7 +243,9 @@
+ 	adrp	x19, EXT(ResetHandlerData)@page			// Get address of the reset handler data
+ 	add		x19, x19, EXT(ResetHandlerData)@pageoff
+ 	mrs		x15, MPIDR_EL1						// Load MPIDR to get CPU number
+-#if HAS_CLUSTER
++#if defined(B2L)
++    ubfx x0, x15, #8, #8
++#elif HAS_CLUSTER
+ 	and		x0, x15, #0xFFFF					// CPU number in Affinity0, cluster ID in Affinity1
+ #else
+ 	and		x0, x15, #0xFF						// CPU number is in MPIDR Affinity Level 0
+@@ -402,17 +405,37 @@
+ 	.globl EXT(b2l_secondary_entry)
+ LEXT(b2l_secondary_entry)
+ 	msr DAIFSet, #0xf
+-	B2L_SMP_STAGE 1
+ 	mrs x1, CurrentEL
+ 	cmp x1, #4
+ 	b.ne Lb2l_secondary_bad_el
+-    /* HAS_CLUSTER=0 reset lookup masks Aff1. Never admit an affinity alias
+-     * (e.g.0x100) that could select the live boot CPU's data. */
++    /* EL1 Aff1 core index -> firmware/DT CPU number. Check all affinity
++     * fields and actual implementer/part before touching any CPU data. */
+     mrs x1, MPIDR_EL1
+-    and x1, x1, #0xffff
+-    sub x1, x1, #1
+-    cmp x1, #5
++    tst x1, #0xff
++    b.ne Lb2l_secondary_bad_affinity
++    ubfx x17, x1, #16, #8
++    cbnz x17, Lb2l_secondary_bad_affinity
++    ubfx x17, x1, #32, #8
++    cbnz x17, Lb2l_secondary_bad_affinity
++    ubfx x1, x1, #8, #8
++    sub x17, x1, #1
++    cmp x17, #5
+     b.hs Lb2l_secondary_bad_affinity
++    mrs x17, MIDR_EL1
++    ubfx x16, x17, #24, #8
++    cmp x16, #0x41
++    b.ne Lb2l_secondary_bad_affinity
++    ubfx x17, x17, #4, #12
++    cmp x1, #4
++    b.hs Lb2l_check_a75
++    cmp x17, #B2L_A55_PART
++    b.ne Lb2l_secondary_bad_affinity
++    b Lb2l_part_accepted
++Lb2l_check_a75:
++    cmp x17, #B2L_A75_PART
++    b.ne Lb2l_secondary_bad_affinity
++Lb2l_part_accepted:
++    B2L_SMP_STAGE 1
+ 	msr SPSel, #1
+ 	B2L_SMP_STAGE 2
+ 	b EXT(LowResetVectorBase)
+--- a/osfmk/arm64/cpu.c
++++ b/osfmk/arm64/cpu.c
+@@ -49,6 +49,9 @@
+ #include <arm/machine_cpu.h>
+ #include <arm/rtclock.h>
+ #include <arm64/proc_reg.h>
++#if defined(B2L)
++#include <arm64/b2l_cpu_affinity.h>
++#endif
+ #include <mach/processor_info.h>
+ #include <vm/pmap.h>
+ #include <vm/vm_kern_xnu.h>
+@@ -1366,8 +1369,8 @@
+ /* Per-CPU diagnostic record, with no allocation, mutex or thread dependency. */
+ void b2l_smp_checkpoint(unsigned stage, uintptr_t arg)
+ {
+-    unsigned cpu = (unsigned)(__builtin_arm_rsr64("MPIDR_EL1") & 0xffff);
+-    if (!cpu || cpu >= 6) return;
++    int cpu = b2l_cpu_from_mpidr(__builtin_arm_rsr64("MPIDR_EL1"));
++    if (cpu <= 0) return;
+     extern uint64_t b2l_smp_mailbox[6][16];
+     uint64_t *m = b2l_smp_mailbox[cpu];
+     uintptr_t sp; __asm__ volatile("mov %0, sp" : "=r"(sp));
+--- a/osfmk/arm64/machine_routines.c
++++ b/osfmk/arm64/machine_routines.c
+@@ -63,6 +63,9 @@
+ #include <kern/coalition.h>
+ #include <pexpert/device_tree.h>
+ #include <pexpert/arm64/board_config.h>
++#if defined(B2L)
++#include <arm64/b2l_cpu_affinity.h>
++#endif
+ #include <kern/smr.h>
+ 
+ #include <IOKit/IOPlatformExpert.h>
+@@ -1446,6 +1449,11 @@
+ 
+ 	/* We identify the CPU based on the constant bits of MPIDR_EL1. */
+ 	MRS(mpidr_el1_value, "MPIDR_EL1");
++#if defined(B2L)
++    int target = b2l_cpu_from_mpidr(mpidr_el1_value);
++    if (target < 0) panic("B2L CPU: unsupported local affinity 0x%llx", mpidr_el1_value);
++    mpidr_el1_value = (uint32_t)target;
++#endif
+ 	cpu_id = ml_get_cpu_number((uint32_t)mpidr_el1_value);
+ 
+ 	assert(cpu_id <= (unsigned int)ml_get_max_cpu_number());
+@@ -1461,6 +1469,11 @@
+ 
+ 	/* We identify the cluster based on the constant bits of MPIDR_EL1. */
+ 	MRS(mpidr_el1_value, "MPIDR_EL1");
++#if defined(B2L)
++    int target = b2l_cpu_from_mpidr(mpidr_el1_value);
++    if (target < 0) panic("B2L CPU: unsupported local affinity 0x%llx", mpidr_el1_value);
++    mpidr_el1_value = (uint32_t)target;
++#endif
+ 	cluster_id = ml_get_cluster_number((uint32_t)mpidr_el1_value);
+ 
+ 	assert(cluster_id <= (unsigned int)ml_get_max_cluster_number());
+--- a/osfmk/arm64/cswitch.s
++++ b/osfmk/arm64/cswitch.s
+@@ -321,7 +321,7 @@
+     adrp x16, EXT(b2l_smp_mailbox)@page
+     add x16, x16, EXT(b2l_smp_mailbox)@pageoff
+     mrs x17, MPIDR_EL1
+-    and x17, x17, #0xffff
++    ubfx x17, x17, #8, #8
+     cmp x17, #6
+     b.hs Lb2l_context_record_done
+     add x16, x16, x17, lsl #7

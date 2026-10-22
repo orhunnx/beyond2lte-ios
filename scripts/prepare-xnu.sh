@@ -39,7 +39,8 @@ python3 "$repo_root/scripts/apply-board-patches.py" "$xnu_path" \
   "$repo_root/patches/0029-b2l-ordered-cpu-registration.patch" \
   "$repo_root/patches/0030-b2l-cpu-startup-context.patch" \
   "$repo_root/patches/0031-b2l-first-secondary-panic.patch" \
-  "$repo_root/patches/0032-b2l-reject-secondary-affinity-alias.patch"
+  "$repo_root/patches/0032-b2l-reject-secondary-affinity-alias.patch" \
+  "$repo_root/patches/0033-b2l-el1-affinity-translation.patch"
 # New files have separate provenance and are kept as an overlay.
 while IFS= read -r -d '' source_file; do
   relative="${source_file#"$repo_root/xnu-overlay/"}"
