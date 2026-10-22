@@ -101,3 +101,83 @@ Runtime acceptance is pending. On the next capture inspect `B2L INPUT`,
 `B2L FB`, `B2L SURF`, `B2L MCMQUERY` and `B2L EXECMETA`, then compare the original
 lsd, AppProtection, ManagedSettingsAgent, mobileactivationd, passd and cryptexd
 exit reasons. Do not equate a successful build or BOOT write with solved crashes.
+
+
+## First 0052 recovery capture: no UI observed
+
+The user reports that no UI appeared. Recovery capture is read-only:
+`out/logs/0052-recovery-first.region.bin` and decoded text, epoch 18, 201 valid
+records, 311,285 decoded bytes, one missing byte position, zero producer drops.
+Concurrent console output interleaves some text before framing; zero producer
+drops therefore does not mean every line is recoverable. No kernel panic is
+present in this window.
+
+The HFS catalog and extent-overflow B-tree were read without mounting or replay.
+This allowed recovery of the fragmented current launchd.log (1,031,940 bytes),
+its two rotations, usermanagerd.log.0 and other small logs. The current launchd
+file covers its initial hello through approximately 12.5 minutes of operation.
+An unreplayed catalog can omit newer journaled updates. Raw logs and private
+container metadata stay ignored under out; they are not committed.
+
+### Confirmed progress
+
+- Six CPUs again pass timers and bidirectional SGI; native-cache peak is four
+  workers with CPU mask 0x3f. Last complete cache line has queued=26713,
+  learned=6820, applied=4071, errors=0, pending=0 and active=0. Flush errors=0.
+- IOCoreSurfaceRoot registers. AppleCLCD's interleaved registration reports
+  1440x3040, stride 5760, framebuffer at 0xca000000, default surface 1.
+- Five complete regular-file swap fallback samples return zero. The latest
+  usermanagerd session reports diskSaveUserSessions Success and a two-user
+  persona manifest. Earlier sessions in that same rotated file contain the old
+  ENOTSUP errors and must not be attributed to the current successful session.
+- launchd_cache_loader.log reports use of the unsecure development cache and
+  successful delivery to launchd. cryptexd PID 268 starts and has no captured
+  exit or old crypto-hash-method panic in this window. FIPS_POST returns true.
+
+### Missing graphics/input runtime milestone
+
+There is no IOSurface user-client selector/create log, swap record or first-frame
+copy message. Provider registration is established; client connection and
+presentation are not. Button GPIO transitions produce HID consumer events,
+but the recorded client count is zero. The interleaved input initialization
+line says sec_ts=unavailable; touch initialization is not successful.
+
+SpringBoard PID 28 and backboardd PID 62 are spawned. Neither has a recorded
+exit in the current launchd file. Repeated AXSpringBoardServer lookup failures
+show SpringBoard's endpoint is not ready; they do not identify its blocking
+stack. There is also one iomfb_fdr_loader exit(1); its cause is not logged here.
+It cannot yet be named as the blocker for all presentation.
+
+### Remaining userspace exits
+
+| Service | Current launchd exit count | Mechanism |
+| --- | ---: | --- |
+| lsd | 20 | SIGABRT |
+| appprotectiond | 16 | SIGTRAP |
+| ManagedSettingsAgent | 16 | SIGTRAP |
+| mobileactivationd | 16 | SIGTRAP |
+| passd | 12 | SIGTRAP |
+| fairplayd.H2 | 68 | exit(190) |
+| PerfPowerServices | 68 | exit(1) |
+| webinspectord | 65 | exit(1) |
+
+Current shared-cache slide is 0x1b7c000. Symbolized lsd frames return to the
+same CoreServices abort at unslid 0x18178b38c as 0051 (the previously inspected
+system/group-container URL path). AppProtection returns to 0x18606c6bc,
+ManagedSettings to 0x212f413b8, and passd's FinanceKit frame to 0x1b9ba2848,
+also the previous assertion/error sites. New current fault-message strings are
+absent, so prior static messages must not be presented as newly logged text.
+lsd's exponential respawn throttle reaches 512 seconds.
+
+Target exec metadata confirms system_container=1 and cdhash_error=0 for
+backboardd and lsd; AppProtection has the same complete values. MCM-CSOPS
+samples show successful self queries by PIDs 72 and 99 (status and entitlement
+operations 11/16). No complete cross-process MCM query appears. These samples
+do not prove successful client authorization or container URL creation.
+
+The next targeted diagnosis is the container request/response failure plus
+SpringBoard/backboardd wait or initialization stages, and the sec_ts probe
+failure stage. The present evidence does not justify blaming RAM size, CPU
+count, a missing framebuffer registration or a pixel-copy failure. A complete
+cause of the absent UI is still unproven because no frame submission occurred.
+No new BOOT was installed or reboot requested during this capture.
