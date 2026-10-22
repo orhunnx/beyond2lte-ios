@@ -21,3 +21,8 @@ directions. Only after those tests may the 2/2 initialized line be emitted.
 No CPU_OFF, suspend, hotplug or heterogeneous cluster policy is provided.
 Installation and sustained runtime proof are recorded separately in the build
 note; a successful build or CPU_ON return alone is not SMP runtime proof.
+
+First device result: 0032 rapidly resets before creating a persistent log epoch.
+No CPU1 or 2/2 runtime proof is available. The readback-verified 0031 single-core
+BOOT has been restored. See the 0032 build note; the exact early failure remains
+unidentified.

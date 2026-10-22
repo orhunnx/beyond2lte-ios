@@ -50,3 +50,17 @@ Reboot is requested. Stripped/unstripped kernel and preserved dSYM share UUID
 `0778C5BD-86AE-3C56-82E1-61F8A76A3E72`. These are installation/build checks;
 actual CPU1 startup, the 2/2 proof and short sustained runtime are pending the
 next device screen or extracted log.
+
+## First hardware result: rapid reset, rolled back
+
+The user reports a rapid crash/reset loop. Recovery extraction still shows the
+previous 0031 epoch-1 log, byte-identical to the saved pre-test region: no 0032
+log epoch was created. This provides no CPU_ON result, secondary-entry marker,
+panic PC or 2/2 proof; the exact cause is unknown. Failure occurs before the new
+persistent logger becomes active, so this test does not establish working SMP.
+Do not attribute it to the high physical entry without a captured early error.
+
+The complete previous 0031 BOOT is restored, its full image-prefix readback hash
+matches the retained package, and reboot is requested. No filesystem image or
+partition layout is rewritten during rollback. A further SMP experiment needs
+an early screen/reset diagnostic before another userland performance comparison.
