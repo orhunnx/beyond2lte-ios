@@ -40,3 +40,11 @@ and completion of boot remain unverified; no startup speed claim is made.
 
 Private image/cache contents, logs, photographs and filesystem catalogs are
 kept in ignored local artifacts and are not part of the source commit.
+
+## Later recovery verification
+
+The saved epoch-7 run explicitly passes the corecrypto integrity test and all
+FIPS tests, with aggregate result true. It applies 3426 pages and finds 1130
+already matching, retaining the 589-word exclusion without needing another
+restore. launchd completes early boot; repeated service crashes remain. See
+[0035 diagnostics](build-0035.md) for the detailed recovery findings and next run.
