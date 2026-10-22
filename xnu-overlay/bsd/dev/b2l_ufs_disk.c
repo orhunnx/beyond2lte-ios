@@ -21,6 +21,8 @@
 #include "b2l_ufs_transport.h"
 #include "b2l_ufs_aux.h"
 #include <arm64/b2l_persistent_log.h>
+#include "../kern/b2l_native_cache.h"
+#include "../kern/b2l_cache_core.h"
 
 struct b2l_ufs_view {
 	uint64_t base, size;
@@ -418,6 +420,36 @@ static void b2l_start_system_log(void)
  }
 }
 
+/* Private cache writer: only the validated, fully allocated data fork of the
+ * provisioned cache file. SYSTEM BSD devices stay read-only. */
+static struct b2l_ufs_reader b2l_cache_reader;
+static struct b2l_hfs b2l_cache_hfs;
+static void b2l_start_native_cache(void)
+{
+ int enabled=0;if(!PE_parse_boot_argn("b2l_native_cache",&enabled,sizeof(enabled))||enabled!=1)return;
+ struct b2l_ufs_aux_layout layout;uint64_t capacity,extent;int error=b2l_ufs_capacity(&b2l_reader,&capacity);
+ if(!error)error=b2l_ufs_aux_layout(&b2l_partitions,b2l_root_index,b2l_reader.block_size,capacity,&layout);
+ if(error)return;
+ b2l_cache_reader=b2l_reader;b2l_cache_reader.writable_base=layout.partition_base;b2l_cache_reader.writable_size=layout.hfs_size;
+ struct b2l_io disk={b2l_aux_log_read,NULL,NULL,&b2l_cache_reader,layout.hfs_size};
+ struct b2l_hfs_file file;
+ error=b2l_hfs_open(&b2l_cache_hfs,&disk);
+ if(!error&&b2l_cache_hfs.bytes!=layout.hfs_size)error=EINVAL;
+ if(!error)error=b2l_hfs_find(&b2l_cache_hfs,"b2l-cache.bin",&file);
+ if(!error)error=b2l_hfs_cache_extent(&b2l_cache_hfs,&file,&extent);
+ uint8_t vh[512],id[12];size_t done=0;
+ if(!error){lck_mtx_lock(&b2l_ufs_disk_lock);
+  error=b2l_ufs_read_view(&b2l_reader,b2l_reader.writable_base,b2l_reader.writable_size,1024,sizeof(vh),0,vh,&done);
+  lck_mtx_unlock(&b2l_ufs_disk_lock);if(!error&&done!=sizeof(vh))error=EIO;
+ }
+ if(error){printf("B2L NCACHE: provisioned file unavailable error=%d; emulation retained\n",error);return;}
+ memcpy(id,vh+104,8);memcpy(id+8,vh+16,4);
+ b2l_cache_reader.writable_base=layout.partition_base+extent;b2l_cache_reader.writable_size=B2L_NC_BYTES;
+ struct b2l_io sink={b2l_aux_log_read,b2l_aux_log_write,b2l_aux_log_sync,&b2l_cache_reader,B2L_NC_BYTES};
+ b2l_native_cache_storage(&sink,id);
+ printf("B2L NCACHE: bounded SYSTEM file storage ready (%u MiB); log tail unchanged\n",B2L_NC_BYTES/(1024*1024));
+}
+
 void
 b2l_ufs_disk_init(void)
 {
@@ -466,6 +498,7 @@ b2l_ufs_disk_init(void)
 	b2l_probe_selected();
 	lck_mtx_unlock(&b2l_ufs_disk_lock);
 	b2l_start_system_log();
+	b2l_start_native_cache();
 	for (unsigned i = 0; i < b2l_partitions.partition_count; i++) {
 		const struct b2l_gpt_partition *p = &b2l_partitions.partitions[i];
 		error = b2l_publish(p->index, p->first_lba * geometry.block_size,

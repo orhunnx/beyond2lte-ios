@@ -22,11 +22,14 @@ and selects the XNU loader as its default boot application. U-Boot is not used.
 - [XNU `rel/xnu-12377`](https://github.com/apple-oss-distributions/xnu/tree/rel/xnu-12377),
   pinned to `ac9718fb1af618d5ce8678d0dc6e8a58f252216f`.
 - Generic ARMv8-A with crypto instructions and 4 KiB pages; the current
-  experimental source selects two same-cluster Cortex-A55 CPUs; its first hardware
-  test resets early, so the device is restored to the single-core 0031 package.
+  target uses one Cortex-A55 CPU. The isolated two-core 0032 experiment reset
+  early; 0033 restores the proven single-CPU topology.
 - GICv2 at `0x10101000` / `0x10102000`; virtual timer INTID 27.
 - Actual architected counter frequency read at runtime; expected 26 MHz.
 - Apple PAC, BTI, SPTM and PPL are not used by this initial B2L target.
+
+See [0033](docs/build-0033.md) and the [automatic native cache](docs/native-cache.md)
+for read-only EFI staging and journal-safe pre-init code-page reuse.
 
 ## Build and package status
 

@@ -6,6 +6,7 @@
 #define B2L_SEED_BYTES 256U
 struct b2l_dt_config {
     b2l_u64 memory_base, memory_size, mpidr;
+    b2l_u64 native_cache_base, native_cache_size;
     b2l_u32 counter_frequency;
     b2l_u32 boot_ufs_lun, has_boot_ufs_lun;
     unsigned char random_seed[B2L_SEED_BYTES];

@@ -19,6 +19,8 @@
 #include "BootPayload.h"
 #include "Progress.h"
 #include "Arena.h"
+#include "b2l_cache_core.h"
+UINTN B2lStageNativeCache(VOID*,UINTN);
 STATIC_ASSERT(B2L_SEED_BYTES == B2L_BOOT_SEED_SIZE, "BOOT payload and XNU seed sizes must match");
 
 #define B2L_DT_SPACE (64 * 1024)
@@ -270,7 +272,15 @@ EFI_STATUS EFIAPI UefiMain(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
         ZeroMem(Dest, (UINTN)S->size);
         CopyMem(Dest, (UINT8 *)Kernel + S->file_offset, (UINTN)S->file_size);
     }
-    DtPhysical = ALIGN_VALUE(Base + Used, 4096);
+    /* Staging stays inside the already reserved conventional-memory arena.
+     * top_of_kernel_data keeps the snapshot out of the free-page allocator. */
+    UINT64 CachePhysical=ALIGN_VALUE(Base+Used,4096);
+    UINTN CacheSize=0;
+    if(CachePhysical>=Base && CachePhysical-Base<=ArenaSize &&
+       B2L_NC_BYTES+B2L_DT_SPACE+sizeof(*Args)+8192<=ArenaSize-(CachePhysical-Base))
+        CacheSize=B2lStageNativeCache((VOID*)(UINTN)CachePhysical,B2L_NC_BYTES);
+    if(CacheSize){Dt.native_cache_base=CachePhysical;Dt.native_cache_size=CacheSize;}
+    DtPhysical = ALIGN_VALUE(CachePhysical+CacheSize, 4096);
     Status = b2l_build_device_tree((VOID *)(UINTN)DtPhysical, B2L_DT_SPACE, &Dt, &DtSize) == 0
              ? EFI_SUCCESS : EFI_BAD_BUFFER_SIZE;
     ZeroMem(Dt.random_seed, sizeof(Dt.random_seed));
@@ -288,9 +298,9 @@ EFI_STATUS EFIAPI UefiMain(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
     /* Bit zero requests a physical framebuffer mapping even after VM init. */
     Args->video.base |= 1;
     AsciiStrCpyS(Args->command_line, sizeof(Args->command_line),
-                "-v debug=0x14e serial=3 cpus=2 keepsyms=1 -enable_kprintf_spam "
+                "-v debug=0x14e serial=3 cpus=1 keepsyms=1 -enable_kprintf_spam "
                 "rd=b2l-userdata b2l_root_rw=1 b2l_unsealed_root=1 b2l_arm64e_compat=1 cs_enforcement_disable=1 "
-                "launchd_unsecure_cache=1 b2l_system_log=1");
+                "launchd_unsecure_cache=1 b2l_system_log=1 b2l_native_cache=1");
     Entry = Base + Mach.entry - Mach.virtual_base;
     FreePool(Kernel); Kernel = NULL;
     if (Root) { Root->Close(Root); Root = NULL; }

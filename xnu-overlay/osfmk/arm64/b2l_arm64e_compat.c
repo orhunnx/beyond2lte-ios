@@ -19,6 +19,12 @@
 extern void read_frandom(void *, unsigned int);
 #include <vm/vm_map_internal.h>
 #include <vm/vm_map_xnu.h>
+#include <vm/vm_map_lock_internal.h>
+#include <vm/vm_object_internal.h>
+#include <vm/memory_object_internal.h>
+#include <vm/vm_protos_internal.h>
+#include <sys/errno.h>
+extern void b2l_native_cache_observe(uint64_t,uint32_t);
 #endif
 #include "b2l_compat.h"
 #include "b2l_pacga_qarma5.h"
@@ -192,6 +198,10 @@ b2l_arm64e_compat_emulate(arm_saved_state_t *state, uint32_t instruction)
             result, context.pc, context.x[8], context.x[16], context.x[30]);
         return false;
     }
+#ifndef B2L_COMPAT_HOST_TEST
+    /* Enqueue only after successful emulation, using the original PC. */
+    b2l_native_cache_observe(get_saved_state_pc(state),instruction);
+#endif
     __atomic_fetch_add(&b2l_compat_telemetry[1],1,__ATOMIC_RELAXED);
     for (unsigned i = 0; i < 29; ++i) set_user_saved_state_reg(state, i, context.x[i]);
     set_saved_state_fp(state, context.x[29]);
@@ -201,3 +211,54 @@ b2l_arm64e_compat_emulate(arm_saved_state_t *state, uint32_t instruction)
     /* Decoder preserves CPSR; never let emulation modify mode/masks/NZCV. */
     return true;
 }
+
+#ifndef B2L_COMPAT_HOST_TEST
+
+#if defined(B2L)
+/* Read-only address->file resolution for the background cache learner.
+ * Parent-address translation handles transparent and constant submaps; shadow
+ * and backing-pager offsets are accumulated exactly as code-signing mapping.
+ * The caller owns a map reference. No VFS I/O occurs while a VM lock is held.
+ */
+extern int vnode_getwithvid(struct vnode *,uint32_t);
+extern uint32_t vnode_vid(struct vnode *);
+int
+b2l_cache_resolve(vm_map_t source,uint64_t address,struct vnode **out,uint64_t *file_offset)
+{
+ VM_MAP_LOCK_CTX_DECLARE(ctx);
+ vm_map_t map=source;vm_map_entry_t entry;vm_object_t object,next;
+ uint64_t offset;struct vnode *vp=NULL;uint32_t vid=0;int error=EINVAL;
+ *out=NULL;*file_offset=0;
+ if((address&3)||address>UINT64_MAX-4)return EINVAL;
+ if(vm_map_range_sh_lock(ctx,&map,address,address+4,
+    VMRL_SH_STREAM_NO_HOLES|VMRL_SH_DESCEND_INTO_CONSTANT)!=KERN_SUCCESS)return EFAULT;
+ entry=vm_map_range_stream_next(ctx);
+ if(!entry||entry->is_sub_map||!(entry->protection&VM_PROT_EXECUTE)||VME_OBJECT(entry)==VM_OBJECT_NULL)goto unlock;
+ offset=vm_map_lock_ctx_offset_for_parent_address(ctx,address);
+ object=VME_OBJECT(entry);vm_object_lock_shared(object);
+ for(unsigned depth=0;depth<128;depth++){
+  if(object->shadow!=VM_OBJECT_NULL){
+   if(offset>UINT64_MAX-object->vo_shadow_offset)break;
+   offset+=object->vo_shadow_offset;next=object->shadow;
+   vm_object_lock_shared(next);vm_object_unlock(object);object=next;continue;
+  }
+  if(object->internal||!object->pager_ready||object->terminating||!object->alive||object->pager==MEMORY_OBJECT_NULL||offset>UINT64_MAX-object->paging_offset)break;
+  offset+=object->paging_offset;
+  vm_object_offset_t backing_offset;
+  if(memory_object_backing_object(object->pager,offset,&next,&backing_offset)){
+   if(next==VM_OBJECT_NULL||next==object)break;
+   vm_object_lock_shared(next);vm_object_unlock(object);object=next;offset=backing_offset;continue;
+  }
+  vp=vnode_pager_lookup_vnode(object->pager);
+  if(vp){vid=vnode_vid(vp);error=0;}
+  break;
+ }
+ vm_object_unlock(object);
+ unlock:vm_map_range_sh_unlock(ctx,&map);
+ if(error||!vp)return EINVAL;
+ if(vnode_getwithvid(vp,vid))return EAGAIN;
+ *out=vp;*file_offset=offset;return 0;
+}
+#endif
+
+#endif

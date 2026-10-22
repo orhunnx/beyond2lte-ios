@@ -1,0 +1,236 @@
+--- a/osfmk/arm64/cpu.c
++++ b/osfmk/arm64/cpu.c
+@@ -1311,40 +1311,3 @@
+ 	}
+ }
+ #endif
+-
+-#if defined(B2L)
+-/* CPU-private reset inputs for the board IOCPU provider. This function only
+- * publishes already-allocated XNU state; it never allocates firmware memory. */
+-extern boot_args const_boot_args;
+-bool
+-b2l_prepare_cpu_start(unsigned cpu)
+-{
+-    if (cpu != 1) return false;
+-    cpu_data_t *cdp = CpuDataEntries[cpu].cpu_data_vaddr;
+-    if (!cdp || !ResetHandlerData.cpu_data_entries || !cdp->cpu_reset_handler)
+-        return false;
+-    CleanPoC_DcacheRegion((vm_offset_t)&const_boot_args, sizeof(const_boot_args));
+-    CleanPoC_DcacheRegion((vm_offset_t)&ResetHandlerData, sizeof(ResetHandlerData));
+-    CleanPoC_DcacheRegion((vm_offset_t)&cpu_ttep, sizeof(cpu_ttep));
+-    CleanPoC_DcacheRegion((vm_offset_t)&CpuDataEntries[cpu], sizeof(CpuDataEntries[cpu]));
+-    CleanPoC_DcacheRegion((vm_offset_t)cdp, sizeof(*cdp));
+-    __builtin_arm_dsb(DSB_SY);
+-    return true;
+-}
+-
+-bool
+-b2l_cpu_signal_ready(unsigned cpu)
+-{
+-    if (cpu >= 2) return false;
+-    cpu_data_t *cdp = CpuDataEntries[cpu].cpu_data_vaddr;
+-    return cdp && !(os_atomic_load(&cdp->cpu_signal, acquire) & SIGPdisabled);
+-}
+-#endif
+-
+-#if defined(B2L)
+-processor_t
+-b2l_bind_cpu(processor_t processor)
+-{
+-    return thread_bind(processor);
+-}
+-#endif
+--- a/osfmk/arm64/start.s
++++ b/osfmk/arm64/start.s
+@@ -200,9 +200,7 @@
+ LEXT(reset_vector)
+ 	// Preserve x0 for start_first_cpu, if called
+ 	// Unlock the core for debugging
+-#if !defined(B2L)
+ 	msr		OSLAR_EL1, xzr
+-#endif
+ 	msr		DAIFSet, #(DAIFSC_ALL)				// Disable all interrupts
+ 
+ #if !(defined(KERNEL_INTEGRITY_KTRR) || defined(KERNEL_INTEGRITY_CTRR) || defined(KERNEL_INTEGRITY_PV_CTRR))
+@@ -364,27 +362,6 @@
+ LEXT(bootstrap_instructions)
+ 
+ #endif /* defined(KERNEL_INTEGRITY_KTRR) || defined(KERNEL_INTEGRITY_CTRR) || defined(KERNEL_INTEGRITY_PV_CTRR) */
+-#if defined(B2L)
+-/* Legacy PSCI CPU_ON physical entry: x0 is context, not boot_args.
+- * The proven S-Boot conduit enters secondaries at EL1. Do not reconfigure
+- * EL2 or firmware traps: unexpected entry levels stop before touching state.
+- * LowResetVectorBase resolves physical CPU data using MPIDR and XNU's
+- * already-published ResetHandlerData and cpu_reset_handler.
+- */
+-	.align 2
+-	.globl EXT(b2l_secondary_entry)
+-LEXT(b2l_secondary_entry)
+-	msr DAIFSet, #0xf
+-	mrs x1, CurrentEL
+-	cmp x1, #4
+-	b.ne Lb2l_secondary_bad_el
+-	msr SPSel, #1
+-	b EXT(LowResetVectorBase)
+-Lb2l_secondary_bad_el:
+-	wfe
+-	b Lb2l_secondary_bad_el
+-#endif
+-
+ 	.align 2
+ 	.globl EXT(resume_idle_cpu)
+ LEXT(resume_idle_cpu)
+--- a/pexpert/arm/pe_fiq.c
++++ b/pexpert/arm/pe_fiq.c
+@@ -13,9 +13,6 @@
+ 
+ 
+ #if defined(B2L)
+-#include <kern/cpu_number.h>
+-extern bool b2l_cpu_signal_ready(unsigned cpu);
+-#include "b2l_gic_target.h"
+ /*
+  * Exynos 9820 exposes the GICv2 non-secure CPU interface.  The architected
+  * virtual timer is PPI 27 and is delivered as IRQ (Group 1), not Apple FIQ.
+@@ -23,9 +20,8 @@
+  */
+ static vm_offset_t b2l_gicd;
+ static vm_offset_t b2l_gicc;
+-static uint64_t b2l_timer_irqs[MAX_CPUS];
+-static uint64_t b2l_signal_irqs[MAX_CPUS];
+-static unsigned b2l_gic_targets[MAX_CPUS];
++static volatile uint64_t b2l_timer_irqs;
++static volatile uint64_t b2l_signal_irqs;
+ 
+ static uint32_t
+ b2l_gic_read(vm_offset_t base, unsigned offset)
+@@ -61,57 +57,26 @@
+ }
+ 
+ void
+-b2l_send_ipi(unsigned cpu)
+-{
+-    if (cpu >= 2) panic("B2L GIC: invalid IPI CPU");
+-    unsigned target = __atomic_load_n(&b2l_gic_targets[cpu], __ATOMIC_ACQUIRE);
+-    unsigned sgir = b2l_gic_sgir(target);
+-    if (!sgir) panic("B2L GIC: target CPU has not initialized its interface");
+-    __builtin_arm_dsb(DSB_ISHST);
+-    b2l_gic_write(b2l_gicd, 0xf00, sgir);
+-    __builtin_arm_dsb(DSB_SY);
+-}
+-
+-void
+ b2l_irq_record(unsigned intid)
+ {
+-    unsigned cpu = cpu_number();
+-    if (cpu >= 2) panic("B2L GIC: interrupt on unexpected CPU");
+-    if (intid == B2L_TIMER_INTID)
+-        __atomic_add_fetch(&b2l_timer_irqs[cpu], 1, __ATOMIC_RELAXED);
+-    else if (intid == 1)
+-        __atomic_add_fetch(&b2l_signal_irqs[cpu], 1, __ATOMIC_RELAXED);
+-}
+-
+-uint64_t
+-b2l_cpu_irq_count(unsigned cpu, boolean_t timer)
+-{
+-    if (cpu >= 2) return 0;
+-    return __atomic_load_n(timer ? &b2l_timer_irqs[cpu] : &b2l_signal_irqs[cpu], __ATOMIC_ACQUIRE);
+-}
+-
+-bool
+-b2l_cpu_ipi_ready(unsigned cpu)
+-{
+-    if (cpu >= 2 || !b2l_cpu_irq_count(cpu, FALSE)) return false;
+-    return b2l_cpu_signal_ready(cpu);
++	if (intid == B2L_TIMER_INTID) {
++		b2l_timer_irqs++;
++	} else if (intid == 1) {
++		b2l_signal_irqs++;
++	}
+ }
+ 
+ uint64_t
+ b2l_irq_count(boolean_t timer)
+ {
+-    return b2l_cpu_irq_count(0, timer) + b2l_cpu_irq_count(1, timer);
++	return timer ? b2l_timer_irqs : b2l_signal_irqs;
+ }
+ 
+ void
+ pe_init_fiq(void)
+ {
+-    unsigned cpu = cpu_number();
+-    if (cpu >= 2) panic("B2L GIC: unsupported CPU topology");
+-    if (b2l_gicd == 0 && cpu != 0)
+-        panic("B2L GIC: CPU0 did not publish controller mappings");
+-    if (b2l_gicd == 0) {
+-        DTEntry entry;
++	if (b2l_gicd == 0) {
++		DTEntry entry;
+ 		const void *prop;
+ 		unsigned size;
+ 		if (SecureDTLookupEntry(NULL, "/arm-io/gic", &entry) != kSuccess ||
+@@ -139,14 +104,7 @@
+ 			b2l_gic_write(b2l_gicd, 0x280 + bank * 4, UINT32_MAX);
+ 		}
+ 	}
+-    /* ITARGETSR0 is banked on GICv2 and reports this physical CPU's target
+-     * bit. Firmware/SoC topology need not number these like MPIDR Aff0. */
+-    unsigned target = *(volatile uint8_t *)(b2l_gicd + 0x800);
+-    unsigned other = __atomic_load_n(&b2l_gic_targets[cpu ^ 1], __ATOMIC_ACQUIRE);
+-    if (!b2l_gic_valid_target(target, other))
+-        panic("B2L GIC: invalid or duplicate hardware CPU target mask");
+-    __atomic_store_n(&b2l_gic_targets[cpu], target, __ATOMIC_RELEASE);
+-    const uint32_t sources = (1U << B2L_TIMER_INTID) | (1U << 1);
++	const uint32_t sources = (1U << B2L_TIMER_INTID) | (1U << 1);
+ 	b2l_gic_write(b2l_gicd, 0x180, UINT32_MAX); /* banked PPI/SGI masks */
+ 	b2l_gic_write(b2l_gicd, 0x080,
+ 	    b2l_gic_read(b2l_gicd, 0x080) | sources); /* Group 1 */
+--- a/pexpert/pexpert/arm64/board_config.h
++++ b/pexpert/pexpert/arm64/board_config.h
+@@ -307,7 +307,7 @@
+ #ifdef ARM64_BOARD_CONFIG_B2L
+ #include <pexpert/arm64/B2L.h>
+ #define MAX_L2_CLINE                   7
+-#define MAX_CPUS                       2
++#define MAX_CPUS                       1
+ #define MAX_CPU_CLUSTERS               1
+ #define NO_XNU_PLATFORM_ERROR_HANDLER  1
+ #endif
+
+--- a/bsd/kern/bsd_init.c
++++ b/bsd/kern/bsd_init.c
+@@ -1115,6 +1115,11 @@
+ 
+ 	bsd_init_kprintf("bsd_do_post - done");
+ 
++	/* HFS root is mounted and its journal replayed; no EL0 has run yet. */
++#if defined(B2L)
++	extern void b2l_native_cache_before_init(void);
++	b2l_native_cache_before_init();
++#endif
+ 	load_init_program(p);
+ 	lock_trace = 1;
+ }
+--- a/bsd/conf/files
++++ b/bsd/conf/files
+@@ -677,3 +677,9 @@
+ bsd/kern/b2l_amfi_metadata.c optional b2l
+ 
+ bsd/dev/b2l_ufs_aux.c optional b2l
++
++# Automatic native-instruction cache (original sources).
++bsd/kern/b2l_native_cache.c optional b2l
++bsd/kern/b2l_cache_core.c optional b2l
++bsd/kern/CacheHfs.c optional b2l
++bsd/kern/CacheSha.c optional b2l
+--- a/bsd/conf/Makefile.template
++++ b/bsd/conf/Makefile.template
+@@ -665,3 +665,6 @@
+ b2l_amfi_metadata.o_CFLAGS_ADD += -mgeneral-regs-only
+ 
+ b2l_ufs_aux.o_CFLAGS_ADD += -mgeneral-regs-only
++
++# Cache code can run during exception-driven learning; no SIMD state use.
++$(foreach o,b2l_native_cache.o b2l_cache_core.o CacheHfs.o CacheSha.o,$(eval $(o)_CFLAGS_ADD += -mgeneral-regs-only))

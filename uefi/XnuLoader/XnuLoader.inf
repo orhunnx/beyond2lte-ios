@@ -19,6 +19,10 @@
   Arena.c
   BootPayload.c
   BootDevicePath.h
+  CacheEfi.c
+  CacheHfs.c
+  CacheSha.c
+  b2l_cache_core.c
 
 [Packages]
   MdePkg/MdePkg.dec

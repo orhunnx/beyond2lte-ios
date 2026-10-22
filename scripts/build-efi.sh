@@ -17,6 +17,7 @@ done
 [[ -x "$EDK_TOOLS_BIN/GenFw" ]] || { echo 'Build native BaseTools first.' >&2; exit 1; }
 mkdir -p "$WORKSPACE/B2LXnuPkg"
 rsync -a "$repo_root/uefi/" "$WORKSPACE/B2LXnuPkg/"
+rsync -a "$repo_root/common/cache/" "$WORKSPACE/B2LXnuPkg/XnuLoader/"
 cd "$WORKSPACE"
 exec "$EDK_TOOLS_PATH/BinWrappers/PosixLike/build" \
   -a AARCH64 -t CLANGPDB -b RELEASE -n "${BUILD_JOBS:-4}" \

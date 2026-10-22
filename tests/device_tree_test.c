@@ -5,8 +5,9 @@
 #include <string.h>
 #include "../uefi/XnuLoader/DeviceTree.h"
 static unsigned seed_properties, memory_map_nodes, defaults_nodes, ctrr_properties;
-static unsigned boot_lun_properties, cpu_nodes;
+static unsigned boot_lun_properties;
 static unsigned development_security_properties;
+static uint64_t read64(const unsigned char*p){uint64_t v;memcpy(&v,p,8);return v;}
 static uint32_t read32(const unsigned char *p) { uint32_t n; memcpy(&n,p,4); return n; }
 static size_t decode(const unsigned char *buf, size_t size, size_t off,
                      unsigned depth, unsigned *nodes, unsigned *properties, const char *parent_path)
@@ -50,18 +51,12 @@ static size_t decode(const unsigned char *buf, size_t size, size_t off,
             assert(read32(buf+off)==security_mode);
             ++development_security_properties;
         }
+        if (!strcmp(name,"b2l,native-cache")){assert(len==16);assert(read64(buf+off)==0x902000000ULL);assert(read64(buf+off+8)==128*1024*1024);}
         if (!strcmp(name,"timebase-frequency")) assert(len==4 && read32(buf+off)==26000000);
-        if (!strcmp(name,"state")) {
-            assert(node_name && len==8);
-            if (!strcmp(node_name,"cpu0")) assert(!memcmp(buf+off,"running",8));
-            else { assert(!strcmp(node_name,"cpu1")); assert(!memcmp(buf+off,"stopped",8)); }
-            ++cpu_nodes;
-        }
+        if (!strcmp(name,"state")) assert(len==8 && !memcmp(buf+off,"running",8));
         if (!strcmp(name,"device_type")) assert(len && buf[off+len-1]==0);
         if (!strcmp(name,"cluster-type")) assert(len==4 && read32(buf+off)=='S');
-        if ((!strcmp(name,"reg") || !strcmp(name,"cpu-id")) && len==4) {
-            assert(node_name); assert(read32(buf+off)==(!strcmp(node_name,"cpu1") ? 1U : 0U));
-        }
+        if (!strcmp(name,"reg") && len==4) assert(read32(buf+off)==0x100);
         off += (len + 3) & ~3U; ++*properties;
     }
     assert(node_name);
@@ -81,15 +76,16 @@ int main(void)
     unsigned char buf[8192], small[8192];
     struct b2l_dt_config c={0}; size_t used=0;
     c.memory_base=0x900000000ULL; c.memory_size=512ULL*1024*1024;
-    c.mpidr=0x80000000; c.counter_frequency=26000000;
+    c.mpidr=0x80000100; c.counter_frequency=26000000;
     c.has_boot_ufs_lun=1;c.boot_ufs_lun=3;
+    c.native_cache_base=c.memory_base+32*1024*1024;c.native_cache_size=128*1024*1024;
     c.video.base=0xca000000; c.video.row_bytes=1440*4; c.video.width=1440; c.video.height=3040;
     _Static_assert(B2L_SEED_BYTES == 256, "XNU PRNG seed length");
     for(unsigned i=0;i<B2L_SEED_BYTES;++i)c.random_seed[i]=(unsigned char)(i+1);
     assert(b2l_build_device_tree(buf,sizeof(buf),&c,&used)==0);
     unsigned nodes=0, props=0;
     assert(decode(buf,used,0,0,&nodes,&props,"")==used);
-    assert(nodes==12 && cpu_nodes==2 && props>42 && seed_properties==1);
+    assert(nodes==11 && props>42 && seed_properties==1);
     assert(memory_map_nodes==1 && defaults_nodes==1 && ctrr_properties==1);
     assert(boot_lun_properties==1);
     assert(development_security_properties==4);
@@ -106,9 +102,6 @@ int main(void)
     assert(b2l_build_device_tree(buf,sizeof(buf),&c,&used)==0);
     nodes=0;props=0;assert(decode(buf,used,0,0,&nodes,&props,"")==used);
     assert(boot_lun_properties==0); /* Filesystem fallback must not guess LUN0. */
-    c.mpidr=0x100;
-    assert(b2l_build_device_tree(buf,sizeof(buf),&c,&used)<0);
-    c.mpidr=0;
     c.counter_frequency=0;
     assert(b2l_build_device_tree(buf,sizeof(buf),&c,&used)<0);
     assert(sizeof(struct b2l_boot_args)==1152);
