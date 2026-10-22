@@ -6,7 +6,9 @@
 #ifndef _PEXPERT_ARM64_B2L_H
 #define _PEXPERT_ARM64_B2L_H
 #define B2L                             1
-#define B2L_BOOTSTRAP_TABLE_PAGES       10
+/* Two L1 roots + up to5 L2 tables per4GiB mapping + one GOP L2.
+ * Keep additional slack; these pages are zeroed and included in boot tables. */
+#define B2L_BOOTSTRAP_TABLE_PAGES       16
 /* Existing firmware DisplayReserved descriptor, unchanged. */
 #define B2L_FB_RESERVED_BASE            0xCA000000ULL
 #define B2L_FB_RESERVED_SIZE            0x01400000ULL

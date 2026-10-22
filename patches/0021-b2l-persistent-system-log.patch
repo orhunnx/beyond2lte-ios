@@ -1,0 +1,45 @@
+--- a/bsd/conf/files
++++ b/bsd/conf/files
+@@ -675,3 +675,5 @@
+ 
+ bsd/kern/b2l_amfi.c optional b2l
+ bsd/kern/b2l_amfi_metadata.c optional b2l
++
++bsd/dev/b2l_ufs_aux.c optional b2l
+--- a/bsd/conf/Makefile.template
++++ b/bsd/conf/Makefile.template
+@@ -663,3 +663,5 @@
+ 
+ b2l_amfi.o_CFLAGS_ADD += -mgeneral-regs-only
+ b2l_amfi_metadata.o_CFLAGS_ADD += -mgeneral-regs-only
++
++b2l_ufs_aux.o_CFLAGS_ADD += -mgeneral-regs-only
+--- a/osfmk/conf/files.arm64
++++ b/osfmk/conf/files.arm64
+@@ -132,3 +132,6 @@
+ osfmk/kern/memory_error_logging.c	standard
+ 
+ osfmk/arm64/b2l_early.c optional b2l
++
++osfmk/arm64/b2l_log_core.c optional b2l
++osfmk/arm64/b2l_persistent_log.c optional b2l
+--- a/osfmk/conf/Makefile.template
++++ b/osfmk/conf/Makefile.template
+@@ -522,3 +522,6 @@
+ $(foreach o,b2l_arm64e_compat.o b2l_compat.o b2l_pacga_qarma5.o,$(eval $(o)_CFLAGS_ADD += -mgeneral-regs-only))
+ b2l_arm64e_compat.o_CFLAGS_ADD += -DVM_UNSAFE_TYPES
+ b2l_compat.o_CFLAGS_ADD += -DB2L_COMPAT_USE_ASM
++
++b2l_log_core.o_CFLAGS_ADD += -mgeneral-regs-only
++b2l_persistent_log.o_CFLAGS_ADD += -mgeneral-regs-only
+--- a/osfmk/arm64/Makefile
++++ b/osfmk/arm64/Makefile
+@@ -48,6 +48,8 @@
+ EXPORT_MD_LIST = \
+ 	b2l_arm64e_compat.h \
+ 	b2l_early.h \
++	b2l_log_core.h \
++	b2l_persistent_log.h \
+ 	cpc_arm64.h \
+ 	hv_hvc.h \
+ 	lowglobals.h \

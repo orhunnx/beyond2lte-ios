@@ -27,10 +27,13 @@ def main():
 #include <string.h>
 #include <assert.h>
 #define B2L 1
+#define B2L_BOOTSTRAP_TABLE_PAGES 16
 #define B2L_FB_RESERVED_BASE 0xCA000000ULL
 #define B2L_FB_RESERVED_SIZE 0x01400000ULL
 struct video { uint64_t v_baseAddr,v_display,v_rowBytes,v_width,v_height,v_depth; };
-typedef struct { struct video Video; } boot_args;
+typedef struct { struct video Video; uint64_t memSize; } boot_args;
+static uint64_t host_log_count;static unsigned char host_log_last;
+void b2l_log_append(char c){++host_log_count;host_log_last=(unsigned char)c;}
 unsigned char iso_font[256*16];
 static volatile uint32_t *host_framebuffer;
 void b2l_early_putc(char c);
@@ -59,7 +62,9 @@ int main(void) {
  assert(b2l_early_virtual()==(uintptr_t)(raw+64));
  uint64_t pa,bytes;assert(b2l_early_range(&pa,&bytes));assert(pa==B2L_FB_RESERVED_BASE&&bytes==size);
  b2l_col=0;b2l_row=b2l_rows-1;
+ uint64_t logged=host_log_count;
  b2l_early_putc((char)0xff);assert(b2l_col==1);
+ assert(host_log_count==logged+1&&host_log_last==0xff);
  unsigned y=b2l_row*16*b2l_scale;
  const uint32_t *line=(const uint32_t *)(raw+64+(size_t)y*stride);
  for(unsigned x=0;x<24;++x)assert(line[x]==((x<3||x>=21)?0xffffffff:0xff000000));
@@ -80,6 +85,7 @@ int main(void) {
  args.Video.v_rowBytes=stride;args.Video.v_depth=16;
  b2l_early_init(&args);assert(!b2l_active);
  canaries(raw,size,width,height,stride);canaries(second,size,width,height,stride);
+ b2l_active=0;logged=host_log_count;b2l_early_putc('X');assert(host_log_count==logged+1&&host_log_last=='X');
  free(raw);free(second);puts("B2L early console geometry/ring/CR/high-bit/relocation guards passed");
 }
 '''

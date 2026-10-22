@@ -103,6 +103,8 @@ for confirmed gaps and the distinction between local tests and runtime proof.
 The 0029 device subsequently reaches keybagd; [0030](docs/build-0030.md) adds a
 scoped [volatile development KeyStore](docs/development-keystore.md) for this
 no-passcode HFS bring-up.
+[0031](docs/build-0031.md) adds framed SYSTEM console persistence, a reserved-range
+aware larger RAM profile and the launchd development cache boot option.
 BOOT writes retain the original Android backup and are readback-verified.
 [Build 0002](docs/build-0002.md) uses a dynamic 1–2 GiB RAM arena within the
 unchanged firmware memory guards. [Build 0003](docs/build-0003.md) adds XNU-owned

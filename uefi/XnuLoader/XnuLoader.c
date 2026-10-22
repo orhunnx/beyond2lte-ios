@@ -186,7 +186,17 @@ static EFI_STATUS AllocateArena(VOID *Map, EFI_PHYSICAL_ADDRESS *Base,
         EFI_PHYSICAL_ADDRESS Candidate=BestStart;
         UINTN CandidatePages=EFI_SIZE_TO_PAGES(BestSize);
         Status=gBS->AllocatePages(AllocateAddress,EfiLoaderData,CandidatePages,&Candidate);
-        if(!EFI_ERROR(Status)){*Base=Candidate; *Pages=CandidatePages; *Size=BestSize; return EFI_SUCCESS;}
+        if(!EFI_ERROR(Status)){
+            if(Candidate!=BestStart) {
+                gBS->FreePages(Candidate,CandidatePages); return EFI_COMPROMISED_DATA;
+            }
+            MapSize=B2L_MAP_SPACE;
+            Status=gBS->GetMemoryMap(&MapSize,Map,&Key,&DescSize,&Version);
+            if(EFI_ERROR(Status) || b2l_validate_arena(Map,MapSize,DescSize,Candidate,BestSize,2)) {
+                gBS->FreePages(Candidate,CandidatePages); return EFI_COMPROMISED_DATA;
+            }
+            *Base=Candidate; *Pages=CandidatePages; *Size=BestSize; return EFI_SUCCESS;
+        }
     }
     return Status;
 }
@@ -279,7 +289,8 @@ EFI_STATUS EFIAPI UefiMain(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
     Args->video.base |= 1;
     AsciiStrCpyS(Args->command_line, sizeof(Args->command_line),
                 "-v debug=0x14e serial=3 cpus=1 keepsyms=1 -enable_kprintf_spam "
-                "rd=b2l-userdata b2l_root_rw=1 b2l_unsealed_root=1 b2l_arm64e_compat=1 cs_enforcement_disable=1");
+                "rd=b2l-userdata b2l_root_rw=1 b2l_unsealed_root=1 b2l_arm64e_compat=1 cs_enforcement_disable=1 "
+                "launchd_unsecure_cache=1 b2l_system_log=1");
     Entry = Base + Mach.entry - Mach.virtual_base;
     FreePool(Kernel); Kernel = NULL;
     if (Root) { Root->Close(Root); Root = NULL; }
@@ -311,6 +322,9 @@ EFI_STATUS EFIAPI UefiMain(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
         MapSize = B2L_MAP_SPACE;
         Status = gBS->GetMemoryMap(&MapSize, MemoryMap, &MapKey, &DescSize, &DescVersion);
         if (EFI_ERROR(Status)) { B2lProgressSet(&Handoff,0,0x00ff0000); CpuDeadLoop(); }
+        if(b2l_validate_arena(MemoryMap,MapSize,DescSize,Base,ArenaSize,2)) {
+            B2lProgressSet(&Handoff,0,0x00ff0000); CpuDeadLoop();
+        }
         B2lProgressSet(&Handoff,0,0x0000ff00);
         B2lProgressSet(&Handoff,1,0x00ffff00);
         Status = gBS->ExitBootServices(ImageHandle, MapKey);

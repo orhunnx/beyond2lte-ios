@@ -21,3 +21,10 @@ Stripped kernel, unstripped kernel and preserved dSYM share UUID
 Runtime success is pending the next physical screen: service registration,
 successful selector 0/14 queries, and keybagd passing its previous fatal
 system-bag initialization. Later cryptographic operations remain unsupported.
+
+## Device continuation
+
+The next physical boot reaches xpcroleaccountd, init_featureflags, sysstatuscheck,
+prng_seedctl and launchd_cache_loader. The previous fatal keybag recovery reboot
+is passed. The new stop is launchd_cache_loader's explicit `Unable to find AMFI`
+service lookup, not a renewed Mach-O signature-admission failure.

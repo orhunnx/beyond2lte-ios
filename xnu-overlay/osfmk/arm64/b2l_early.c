@@ -5,6 +5,7 @@
  * reserved TTBR1 alias before removing TTBR0; the serial sink uses it thereafter.
  */
 #include <arm64/b2l_early.h>
+#include <arm64/b2l_persistent_log.h>
 #if defined(B2L)
 #include <kern/misc_protos.h>
 extern unsigned char iso_font[256 * 16];
@@ -37,6 +38,7 @@ b2l_newline(void)
 void
 b2l_early_putc(char c)
 {
+	b2l_log_append(c);
 	if (!b2l_active) return;
 	if (c == '\r') { b2l_col = 0; return; }
 	if (c == '\n') { b2l_newline(); return; }
@@ -95,6 +97,8 @@ b2l_early_init(const boot_args *args)
 	b2l_row = b2l_rows > 12 ? 10 : 0; b2l_col = 0; b2l_active = 1;
 	b2l_clear_row(b2l_row);
 	b2l_string("B2L XNU C ENTRY\n");
+	b2l_early_trace("B2L RAM: arena=%llu MiB; bootstrap table pages=%u\n",
+	    (uint64_t)args->memSize / (1024 * 1024), B2L_BOOTSTRAP_TABLE_PAGES);
 }
 
 void

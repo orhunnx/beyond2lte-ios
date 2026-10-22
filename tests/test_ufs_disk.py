@@ -83,7 +83,8 @@ static unsigned char image[256*4096], scratch[4096];
 static uint32_t bs=4096;
 static struct b2l_ufs_reader b2l_reader;
 static struct b2l_gpt b2l_partitions;
-static unsigned b2l_root_index;
+static unsigned b2l_root_index, b2l_aux_cache_index;
+static uint64_t b2l_aux_cache_size;
 static int b2l_block_major = 42, b2l_char_major = 43;
 static const char *boot_rd;
 static int PE_parse_boot_argn(const char*name,void*out,size_t n){assert(!strcmp(name,"rd"));if(!boot_rd)return 0;assert(n);size_t len=strlen(boot_rd);if(len>=n)len=n-1;memcpy(out,boot_rd,len);((char*)out)[len]=0;return 1;}
@@ -378,7 +379,13 @@ static void userdata_selector_tests(void){
  strcpy(b2l_partitions.partitions[0].name,"SYSTEM");image[32*bs+1024]='x';b2l_probe_selected();assert(!b2l_root_index&&!b2l_reader.writable_size);
  hfs_header(32,5);be32(image+32*bs+1024+44,UINT32_MAX);b2l_probe_selected();assert(!b2l_root_index&&!b2l_reader.writable_size);
 }
-int main(void){gpt_tests();read_tests();write_view_tests();strategy_tests();write_adapter_tests();signature_tests();userdata_selector_tests();puts("UFS GPT/SYSTEM/USERDATA selection, write boundaries, RMW, strategy and flush tests passed");return 0;}
+static void auxiliary_view_test(void){
+ fixture(4096);b2l_root_index=2;b2l_aux_cache_index=1;b2l_aux_cache_size=4096;
+ assert(!b2l_publish(1,16*bs,8*bs));assert(b2l_views[1].size==4096&&!b2l_views[1].writable);
+ unsigned before=write_calls;unsigned char data[512]={0};struct buf b={.dev=1,.count=512,.data=data};
+ b2l_strategy(&b);assert(b.error==EROFS&&before==write_calls);b2l_aux_cache_index=0;b2l_aux_cache_size=0;
+}
+int main(void){auxiliary_view_test();gpt_tests();read_tests();write_view_tests();strategy_tests();write_adapter_tests();signature_tests();userdata_selector_tests();puts("UFS GPT/SYSTEM/USERDATA selection, write boundaries, RMW, strategy and flush tests passed");return 0;}
 '''
     with tempfile.TemporaryDirectory(prefix="b2l-ufs-test-") as td:
         path = Path(td)

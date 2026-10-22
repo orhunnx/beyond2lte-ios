@@ -22,6 +22,18 @@ def replace_function(source, name, body):
     return source[:brace] + "{\n" + body + "\n}" + source[end:]
 
 
+def xnu_memory_profile(source):
+    """Relax only the Windows budget guard, preserving the real EL2 top reserve."""
+    old = '  {"Upper bank guard", 0x980000000ULL, 0x080000000ULL, AddMem, MEM_RES, SYS_MEM_CAP, Reserv, WRITE_THROUGH},'
+    new = '  {"B2L EL2 early memory", 0x9FD800000ULL, 0x02800000ULL, AddMem, MEM_RES, SYS_MEM_CAP, Reserv, WRITE_THROUGH},'
+    if source.count(old) == 1 and new not in source:
+        return source.replace(old, '// B2L XNU RAM profile: live 8GiB board DT reserves the final40MiB.\n'
+                             '// RamManagerDxe discovers only actual DDR and excludes this reservation.\n' + new)
+    if source.count(new) == 1 and old not in source:
+        return source
+    raise ValueError("expected original last-bank guard or exact XNU EL2 reservation is missing")
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--mu", type=Path, required=True, help="Disposable Mu-Silicium build tree")
@@ -41,9 +53,16 @@ def main():
     manager_path = library_root / "Library/BootManagerLib/BootManager.c"
     manager_inf_path = library_root / "Library/BootManagerLib/BootManagerLib.inf"
     gic_path = root / "Mu_Basecore/ArmPkg/Drivers/ArmGicDxe/GicV2/ArmGicV2Dxe.c"
-    for path in (dsc_path, fdf_path, bindings_path, manager_path, manager_inf_path, gic_path, a.loader):
+    memory_path = platform / "Library/MemoryMapLib/MemoryMapLib.c"
+    for path in (memory_path, dsc_path, fdf_path, bindings_path, manager_path, manager_inf_path, gic_path, a.loader):
         if not path.is_file():
             p.error(f"missing input: {path}")
+    if re.search(r"MemoryMapLib\s*\|\s*beyond2ltePkg/Library/MemoryMapLib/MemoryMapLib\.inf", dsc_path.read_text()) is None:
+        p.error("external MemoryMapLib binding changed")
+    try:
+        memory = xnu_memory_profile(memory_path.read_text())
+    except ValueError as error:
+        p.error(str(error))
     bindings = bindings_path.read_text()
     if re.search(r"PlatformBootManagerLib\s*\|\s*SiliciumPkg/Library/BootManagerLib/BootManagerLib\.inf", bindings) is None:
         p.error("external firmware PlatformBootManagerLib binding changed; refusing an ineffective boot policy patch")
@@ -173,6 +192,7 @@ def main():
     manager_path.write_text(manager)
     manager_inf_path.write_text(manager_inf)
     gic_path.write_text(gic)
+    memory_path.write_text(memory)
     print(f"Prepared external 4 MiB firmware profile at {root}")
     print(f"Embedded loader {guid}; post-console launch precedes BootNext/BootOrder and stops if the loader returns")
 

@@ -19,6 +19,8 @@
 #include "b2l_ufs_disk.h"
 #include "b2l_ufs_core.h"
 #include "b2l_ufs_transport.h"
+#include "b2l_ufs_aux.h"
+#include <arm64/b2l_persistent_log.h>
 
 struct b2l_ufs_view {
 	uint64_t base, size;
@@ -34,7 +36,8 @@ static unsigned char b2l_read_scratch[B2L_UFS_MAX_BLOCK_SIZE];
 static struct b2l_gpt b2l_partitions;
 static struct b2l_ufs_view b2l_views[B2L_GPT_MAX_ENTRIES + 1];
 static int b2l_block_major = -1, b2l_char_major = -1;
-static unsigned b2l_root_index;
+static unsigned b2l_root_index, b2l_aux_cache_index;
+static uint64_t b2l_aux_cache_size;
 
 static struct b2l_ufs_view *
 b2l_view(dev_t dev)
@@ -249,6 +252,7 @@ static int
 b2l_publish(unsigned index, uint64_t base, uint64_t size)
 {
 	struct b2l_ufs_view *v = &b2l_views[index];
+	if (index && index == b2l_aux_cache_index) size = b2l_aux_cache_size;
 	v->base = base; v->size = size; v->sector_size = 512;
 	v->writable = index && index == b2l_root_index;
 	if (!index) {
@@ -360,6 +364,60 @@ b2l_ufs_root_device(dev_t *dev)
 	return error;
 }
 
+/* The auxiliary logger has its own exact tail view. It never changes the BSD
+ * root/whole-disk write authorization or exposes a writable raw-tail node. */
+static struct b2l_ufs_reader b2l_aux_log_reader;
+static int b2l_aux_log_read(void *context,uint64_t off,void*out,size_t count)
+{
+ struct b2l_ufs_reader*r=context;size_t done=0;
+ if(off>r->writable_size||count>r->writable_size-off)return EINVAL;
+ lck_mtx_lock(&b2l_ufs_disk_lock);
+ int error=b2l_ufs_read_view(r,r->writable_base,r->writable_size,off,count,0,out,&done);
+ lck_mtx_unlock(&b2l_ufs_disk_lock);
+ return error?error:(done==count?0:EIO);
+}
+static int b2l_aux_log_write(void *context,uint64_t off,const void*in,size_t count)
+{
+ struct b2l_ufs_reader*r=context;size_t done=0;
+ lck_mtx_lock(&b2l_ufs_disk_lock);
+ int error=b2l_ufs_write_view(r,r->writable_base,r->writable_size,off,count,in,&done);
+ lck_mtx_unlock(&b2l_ufs_disk_lock);
+ return error?error:(done==count?0:EIO);
+}
+static int b2l_aux_log_sync(void *context __unused)
+{
+ lck_mtx_lock(&b2l_ufs_disk_lock);int error=b2l_ufs_transport_sync();
+ lck_mtx_unlock(&b2l_ufs_disk_lock);return error;
+}
+static void b2l_start_system_log(void)
+{
+ int enabled=0;
+ if(!PE_parse_boot_argn("b2l_system_log",&enabled,sizeof(enabled))||enabled!=1)return;
+ struct b2l_ufs_aux_layout layout;uint64_t capacity;unsigned char first[512],last[512];size_t done=0;
+ int error=b2l_ufs_capacity(&b2l_reader,&capacity);
+ if(!error)error=b2l_ufs_aux_layout(&b2l_partitions,b2l_root_index,b2l_reader.block_size,capacity,&layout);
+ if(!error){
+  lck_mtx_lock(&b2l_ufs_disk_lock);
+  error=b2l_ufs_read_view(&b2l_reader,layout.partition_base,layout.hfs_size,1024,sizeof(first),0,first,&done);
+  if(!error&&done!=sizeof(first))error=EIO;
+  if(!error)error=b2l_ufs_read_view(&b2l_reader,layout.partition_base,layout.hfs_size,layout.hfs_size-1024,sizeof(last),0,last,&done);
+  if(!error&&done!=sizeof(last))error=EIO;
+  lck_mtx_unlock(&b2l_ufs_disk_lock);
+ }
+ if(!error)error=b2l_ufs_aux_hfs(first,last,layout.hfs_size);
+ if(error){printf("B2L LOG: SYSTEM auxiliary layout rejected error=%d\n",error);return;}
+ b2l_aux_log_reader=b2l_reader;
+ b2l_aux_log_reader.writable_base=layout.log_base;
+ b2l_aux_log_reader.writable_size=layout.log_size;
+ const struct b2l_log_sink sink={b2l_aux_log_read,b2l_aux_log_write,b2l_aux_log_sync,&b2l_aux_log_reader,layout.log_size};
+ error=b2l_log_start(&sink);
+ if(error)printf("B2L LOG: provisioned region rejected error=%d\n",error);
+ else {
+  b2l_aux_cache_index=layout.index;b2l_aux_cache_size=layout.hfs_size;
+  printf("B2L LOG: SYSTEM p%u persistent console enabled; HFS cache bytes=%llu; log bytes=%llu\n",layout.index,layout.hfs_size,layout.log_size);
+ }
+}
+
 void
 b2l_ufs_disk_init(void)
 {
@@ -407,6 +465,7 @@ b2l_ufs_disk_init(void)
 	lck_mtx_lock(&b2l_ufs_disk_lock);
 	b2l_probe_selected();
 	lck_mtx_unlock(&b2l_ufs_disk_lock);
+	b2l_start_system_log();
 	for (unsigned i = 0; i < b2l_partitions.partition_count; i++) {
 		const struct b2l_gpt_partition *p = &b2l_partitions.partitions[i];
 		error = b2l_publish(p->index, p->first_lba * geometry.block_size,

@@ -20,7 +20,7 @@ class PreparationTests(unittest.TestCase):
     def fixture(self, root):
         (root / "Mu_Basecore").mkdir()
         files = {
-            "Platforms/Samsung/beyond2ltePkg/beyond2lte.dsc": "[PcdsFixedAtBuild]\n  gPcBdsPkgTokenSpaceGuid.PcdShellFile|{ 0 }\n",
+            "Platforms/Samsung/beyond2ltePkg/beyond2lte.dsc": "[PcdsFixedAtBuild]\n  gPcBdsPkgTokenSpaceGuid.PcdShellFile|{ 0 }\n[LibraryClasses]\n MemoryMapLib|beyond2ltePkg/Library/MemoryMapLib/MemoryMapLib.inf\n",
             "Platforms/Samsung/beyond2ltePkg/beyond2lte.fdf": "[FV.FvMain]\n[FV.FVMAIN_COMPACT]\n",
             BINDINGS: "PlatformBootManagerLib|SiliciumPkg/Library/BootManagerLib/BootManagerLib.inf\n",
             MANAGER: """VOID PlatformBootManagerBeforeConsole () {
@@ -33,6 +33,7 @@ VOID PlatformBootManagerAfterConsole () {
             INF: "[LibraryClasses]\n  PcdLib\n[Pcd]\n  gEfiMdePkgTokenSpaceGuid.PcdPlatformBootTimeOut\n",
             GIC: "VOID ArmGicV2DisableInterruptInterface (UINTN GicInterruptInterfaceBase) { OriginalDisable (); }\n"
                  "VOID GicV2ExitBootServicesEvent (EFI_EVENT Event, VOID *Context) { OriginalDrain (); }\n",
+            "Platforms/Samsung/beyond2ltePkg/Library/MemoryMapLib/MemoryMapLib.c": '  {"Upper bank guard", 0x980000000ULL, 0x080000000ULL, AddMem, MEM_RES, SYS_MEM_CAP, Reserv, WRITE_THROUGH},',
             "Loader.efi": "MZ-test-loader",
         }
         for name, text in files.items():
@@ -168,7 +169,7 @@ int main(void) {
             root = Path(directory)
             self.fixture(root)
             before = (root / MANAGER).read_text()
-            (root / "Platforms/Samsung/beyond2ltePkg/beyond2lte.dsc").write_text("[Components]\n")
+            (root / "Platforms/Samsung/beyond2ltePkg/beyond2lte.dsc").write_text("[Components]\n[LibraryClasses]\n MemoryMapLib|beyond2ltePkg/Library/MemoryMapLib/MemoryMapLib.inf\n")
             result = self.prepare(root)
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("PcdShellFile", result.stderr)

@@ -25,6 +25,15 @@ extern void read_frandom(void *, unsigned int);
 extern uint64_t b2l_pacga_qarma5_asm(uint64_t, uint64_t, uint64_t, uint64_t);
 
 static bool b2l_compat_requested;
+static uint64_t b2l_compat_telemetry[4];
+#ifndef B2L_COMPAT_HOST_TEST
+extern int proc_selfpid(void);
+#endif
+void b2l_arm64e_compat_snapshot(uint64_t values[4])
+{
+    for(unsigned i=0;i<4;i++)values[i]=__atomic_load_n(&b2l_compat_telemetry[i],__ATOMIC_RELAXED);
+}
+
 static void
 b2l_compat_init(void)
 {
@@ -157,6 +166,11 @@ b2l_arm64e_compat_emulate(arm_saved_state_t *state, uint32_t instruction)
         !PSR64_IS_USER64(get_saved_state_cpsr(state)) ||
         !b2l_arm64e_current_task()) return false;
     if (trace) b2l_early_trace("B2L COMPAT: process and EL0 gates passed\n");
+    __atomic_fetch_add(&b2l_compat_telemetry[0],1,__ATOMIC_RELAXED);
+#ifndef B2L_COMPAT_HOST_TEST
+    __atomic_store_n(&b2l_compat_telemetry[2],(uint64_t)proc_selfpid(),__ATOMIC_RELAXED);
+#endif
+    __atomic_store_n(&b2l_compat_telemetry[3],get_saved_state_pc(state),__ATOMIC_RELAXED);
     struct b2l_compat_ctx context = {0};
     for (unsigned i = 0; i < 29; ++i) context.x[i] = get_saved_state_reg(state, i);
     context.x[29] = get_saved_state_fp(state);
@@ -178,6 +192,7 @@ b2l_arm64e_compat_emulate(arm_saved_state_t *state, uint32_t instruction)
             result, context.pc, context.x[8], context.x[16], context.x[30]);
         return false;
     }
+    __atomic_fetch_add(&b2l_compat_telemetry[1],1,__ATOMIC_RELAXED);
     for (unsigned i = 0; i < 29; ++i) set_user_saved_state_reg(state, i, context.x[i]);
     set_saved_state_fp(state, context.x[29]);
     set_user_saved_state_lr(state, context.x[30]);
