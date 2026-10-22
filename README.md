@@ -174,4 +174,10 @@ and reboot are verified; daemon startup and UI remain runtime tests.
 
 [Build 0039](docs/build-0039.md) supplies original DER entitlement metadata
 through the iOS 26 SecTask query interface, targeting shared-container and lsd
-failures. BOOT readback and reboot are verified; runtime results are pending.
+failures. BOOT readback and reboot are verified; the recovered log still shows
+lsd aborts, so that failure remains unresolved.
+
+[Build0040](docs/build-0040.md) reintroduces SMP for the four A55 and two A75
+cores, using a fresh MAX_CPUS6 build and per-core early startup diagnostics.
+M4 cores remain absent. The single cache worker is retained until real per-core
+timer/IPI proof and sustained runtime have been confirmed on the device.

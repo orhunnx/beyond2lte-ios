@@ -17,5 +17,11 @@ int main(void)
     /* Nonidentity physical target mapping: logical CPU1 can have bit5. */
     assert(b2l_gic_sgir(1U<<5)==0x00200001U);
     assert(!(b2l_gic_sgir(1)&0xff000000U)); /* explicit target list, not broadcast */
+    for (unsigned bit=1;bit<=128;bit<<=1)
+        for (unsigned byte=0;byte<4;++byte)
+            assert(b2l_gic_target_word(bit<<(byte*8))==bit);
+    assert(!b2l_gic_target_word(0));
+    assert(b2l_gic_target_word(0x02020202)==2);
+    assert(!b2l_gic_valid_target(b2l_gic_target_word(0x02010000),0));
     puts("GICv2 discovered-mask, duplicate, and SGI encoding tests passed");
 }

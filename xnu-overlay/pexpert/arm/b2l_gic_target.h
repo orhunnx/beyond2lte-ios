@@ -3,6 +3,10 @@
 #define B2L_GIC_TARGET_H
 /* GICv2 CPU targets are discovered through banked ITARGETSR0, not assumed
  * equal to MPIDR Aff0. Reject zero, non-one-hot and duplicate target masks. */
+static inline unsigned b2l_gic_target_word(unsigned word)
+{
+    return (word | (word >> 8) | (word >> 16) | (word >> 24)) & 255U;
+}
 static inline int b2l_gic_valid_target(unsigned mask, unsigned other)
 {
     return mask && mask <= 255 && !(mask & (mask - 1)) && !(mask & other);

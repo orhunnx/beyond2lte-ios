@@ -298,7 +298,7 @@ EFI_STATUS EFIAPI UefiMain(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
     /* Bit zero requests a physical framebuffer mapping even after VM init. */
     Args->video.base |= 1;
     AsciiStrCpyS(Args->command_line, sizeof(Args->command_line),
-                "-v debug=0x14e serial=3 cpus=1 keepsyms=1 -enable_kprintf_spam "
+                "-v debug=0x14e serial=3 cpus=6 keepsyms=1 -enable_kprintf_spam "
                 "rd=b2l-userdata b2l_root_rw=1 b2l_unsealed_root=1 b2l_arm64e_compat=1 cs_enforcement_disable=1 "
                 "launchd_unsecure_cache=1 b2l_system_log=1 b2l_native_cache=1 exception_log_max_pid=4096");
     Entry = Base + Mach.entry - Mach.virtual_base;

@@ -50,9 +50,13 @@ int b2l_build_device_tree(void *buffer, b2l_size capacity,
     b2l_u64 ranges[] = { 0, 0x10000000ULL, 0x20000000ULL };
     b2l_u64 gic_regs[] = { 0x101000, 0x1000, 0x102000, 0x1000 };
     b2l_u64 mem_regs[2];
+    unsigned cpu_id;
+    static const char *const cpu_names[] = {"cpu0","cpu1","cpu2","cpu3","cpu4","cpu5"};
     if (!buffer || !c || !used || !c->counter_frequency || capacity < 8 ||
         (c->has_boot_ufs_lun && c->boot_ufs_lun > 7)) return -1;
     cpu_reg = (b2l_u32)(c->mpidr & 0x0000ffffULL);
+    /* This isolated SMP target only supports the proven boot MPIDR 0. */
+    if (cpu_reg != 0) return -1;
     mem_regs[0] = c->memory_base; mem_regs[1] = c->memory_size;
     root = begin(&w, 0, "device-tree");
     text_prop(&w, &root, "model", "Samsung Galaxy S10+ (beyond2lte)");
@@ -98,19 +102,21 @@ int b2l_build_device_tree(void *buffer, b2l_size capacity,
     cpus = begin(&w, &root, "cpus");
     prop(&w, &cpus, "#address-cells", &one, 4);
     prop(&w, &cpus, "#size-cells", &zero, 4);
-    cpu = begin(&w, &cpus, "cpu0");
-    text_prop(&w, &cpu, "device_type", "cpu");
-    text_prop(&w, &cpu, "compatible", "b2l,boot-cpu");
-    text_prop(&w, &cpu, "state", "running");
-    prop(&w, &cpu, "reg", &cpu_reg, 4);
-    prop(&w, &cpu, "cpu-id", &zero, 4);
-    prop(&w, &cpu, "cluster-id", &zero, 4);
-    prop(&w, &cpu, "cluster-type", &cluster_type, 4);
-    prop(&w, &cpu, "timebase-frequency", &c->counter_frequency, 4);
-    prop(&w, &cpu, "fixed-frequency", &c->counter_frequency, 4);
-    /* DVFS-dependent CPU/bus rates are not measured here. Only the real
-     * architected counter rate is published. B2L handles missing rates. */
-    end(&w, &cpu); end(&w, &cpus);
+    for (cpu_id = 0; cpu_id < 6; ++cpu_id) {
+        cpu_reg = cpu_id;
+        cpu = begin(&w, &cpus, cpu_names[cpu_id]);
+        text_prop(&w, &cpu, "device_type", "cpu");
+        text_prop(&w, &cpu, "compatible", "b2l,boot-cpu");
+        text_prop(&w, &cpu, "state", cpu_id ? "stopped" : "running");
+        prop(&w, &cpu, "reg", &cpu_reg, 4);
+        prop(&w, &cpu, "cpu-id", &cpu_reg, 4);
+        prop(&w, &cpu, "cluster-id", &zero, 4);
+        prop(&w, &cpu, "cluster-type", &cluster_type, 4);
+        prop(&w, &cpu, "timebase-frequency", &c->counter_frequency, 4);
+        prop(&w, &cpu, "fixed-frequency", &c->counter_frequency, 4);
+        end(&w, &cpu);
+    }
+    end(&w, &cpus);
     arm_io = begin(&w, &root, "arm-io");
     text_prop(&w, &arm_io, "device_type", "soc");
     text_prop(&w, &arm_io, "compatible", "samsung,exynos9820");
