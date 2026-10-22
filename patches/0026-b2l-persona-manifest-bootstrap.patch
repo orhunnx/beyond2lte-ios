@@ -1,0 +1,27 @@
+--- a/bsd/conf/files
++++ b/bsd/conf/files
+@@ -683,3 +683,5 @@
+ bsd/kern/b2l_cache_core.c optional b2l
+ bsd/kern/CacheHfs.c optional b2l
+ bsd/kern/CacheSha.c optional b2l
++
++bsd/kern/b2l_persona_seed.c optional b2l
+--- a/bsd/conf/Makefile.template
++++ b/bsd/conf/Makefile.template
+@@ -668,3 +668,5 @@
+ 
+ # Cache code can run during exception-driven learning; no SIMD state use.
+ $(foreach o,b2l_native_cache.o b2l_cache_core.o CacheHfs.o CacheSha.o,$(eval $(o)_CFLAGS_ADD += -mgeneral-regs-only))
++
++b2l_persona_seed.o_CFLAGS_ADD += -mgeneral-regs-only
+--- a/bsd/kern/bsd_init.c
++++ b/bsd/kern/bsd_init.c
+@@ -1119,6 +1119,8 @@
+ #if defined(B2L)
+ 	extern void b2l_native_cache_before_init(void);
+ 	b2l_native_cache_before_init();
++	extern void b2l_persona_before_init(void);
++	b2l_persona_before_init();
+ #endif
+ 	load_init_program(p);
+ 	lock_trace = 1;

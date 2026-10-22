@@ -167,3 +167,7 @@ and reboot are verified; a working graphical session remains unverified.
 [Build 0037](docs/build-0037.md) targets the recovered SpringBoard
 platform-status assertion and adds the missing development IOWatchdog service.
 BOOT readback and reboot are verified; runtime confirmation is pending.
+
+[Build 0038](docs/build-0038.md) adds missing-only persona metadata initialization
+after the recovered daemon log identifies ENOENT for its manifest. BOOT readback
+and reboot are verified; daemon startup and UI remain runtime tests.

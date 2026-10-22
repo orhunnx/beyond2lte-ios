@@ -61,3 +61,11 @@ image was rewritten. Service registration, passing the SpringBoard initializer
 and later graphical startup require the next device observation.
 
 Raw logs, Apple code and addresses remain ignored local artifacts.
+
+## Recovered device result
+
+The next recovery capture confirms IOWatchdog registration and successful
+selector 0. The previous SpringBoard and watchdog failures are not observed;
+a graphical session remains unverified. usermanagerd repeatedly fails with
+ENOENT for its missing persona manifest. [0038](build-0038.md) seeds that
+metadata after journal replay without replacing an existing manifest.
