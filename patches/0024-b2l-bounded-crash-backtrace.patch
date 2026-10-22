@@ -1,0 +1,52 @@
+--- a/bsd/kern/kern_exit.c
++++ b/bsd/kern/kern_exit.c
+@@ -2024,6 +2024,39 @@
+ 	}
+ }
+ 
++#if defined(ARM64_BOARD_CONFIG_B2L)
++/* Existing diagnostic boot parameter, bounded per process class. Keep this
++ * separate from the 96-byte system-event payload and the first-eight-exits
++ * sample budget. backtrace_user is already used below for crash processing. */
++static void
++b2l_trace_crash(proc_t p, int rv, struct uthread *ut)
++{
++	static unsigned samples[6];
++	const char *names[] = { "SpringBoard", "usermanagerd", "UserEventAgent",
++	    "securityd", "ManagedSettings", "mobileactivat" };
++	unsigned slot;
++	if (!exception_log_max_pid || proc_getpid(p) > exception_log_max_pid ||
++	    p != current_proc() || (!rv && !ut->uu_exception)) return;
++	for (slot = 0; slot < 6; slot++)
++		if (!strncmp(p->p_comm, names[slot], strlen(names[slot]))) break;
++	if (slot == 6 || __atomic_fetch_add(&samples[slot], 1, __ATOMIC_RELAXED) >= 4) return;
++	const char *desc = exit_reason_get_string_desc(p->p_exit_reason);
++	b2l_early_trace("B2L CRASH: %s[%d] status=0x%x exception=%u code=0x%llx sub=0x%llx\n",
++	    p->p_comm, proc_getpid(p), rv, ut->uu_exception,
++	    (uint64_t)ut->uu_code, (uint64_t)ut->uu_subcode);
++	if (p->p_exit_reason != OS_REASON_NULL)
++		b2l_early_trace("B2L REASON: pid=%d ns=%u code=0x%llx desc=%.256s\n",
++		    proc_getpid(p), p->p_exit_reason->osr_namespace,
++		    p->p_exit_reason->osr_code, desc ? desc : "none");
++	uintptr_t bt[12];
++	struct backtrace_user_info info = BTUINFO_INIT;
++	unsigned frames = backtrace_user(bt, 12, NULL, &info);
++	b2l_early_trace("B2L BT: pid=%d frames=%u error=%d\n", proc_getpid(p), frames, info.btui_error);
++	for (unsigned i = 0; i < frames && i < 12; i++)
++		b2l_early_trace("B2L BT: pid=%d frame=%u pc=0x%llx\n", proc_getpid(p), i, (uint64_t)bt[i]);
++}
++#endif
++
+ void
+ proc_prepareexit(proc_t p, int rv, boolean_t perf_notify)
+ {
+@@ -2039,6 +2072,9 @@
+ 	bool corpse_source = false;
+ 	task_t task = proc_task(p);
+ 
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	b2l_trace_crash(p, rv, ut);
++#endif
+ 
+ #if defined(ARM64_BOARD_CONFIG_B2L)
+ 	/* Before PID 1's critical-exit handler can panic or start a coredump. */

@@ -159,3 +159,7 @@ prerequisites are recorded in [storage next steps](docs/storage-next.md).
 [0032](docs/build-0032.md) integrates a bounded two-core startup experiment,
 with per-core timer and bidirectional remote-IPI proof before publishing 2/2 CPUs.
 The known single-core 0031 package is retained as rollback.
+
+[Build 0036](docs/build-0036.md) adds bounded crash reasons and user backtraces
+after the recovered 0035 log confirmed repeated service aborts. BOOT readback
+and reboot are verified; a working graphical session remains unverified.

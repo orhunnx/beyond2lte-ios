@@ -65,3 +65,10 @@ results on the next device run still require a screen or saved-log confirmation.
 Raw logs, catalogs, cache pages, process addresses and private firmware artifacts
 remain ignored local files. The detailed private analysis is saved under
 `out/reports/0034-recovery-incelemesi.md`.
+
+## Recovered device result
+
+The 0035 recovery log confirms the tunable is active, FIPS returns true and
+early boot completes. Repeated SpringBoard SIGABRT and service assertion exits
+remain. The 96-byte native system-event payload truncates reason descriptions;
+[0036](build-0036.md) adds bounded direct reasons and user backtraces.

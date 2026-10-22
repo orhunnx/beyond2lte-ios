@@ -30,7 +30,8 @@ python3 "$repo_root/scripts/apply-board-patches.py" "$xnu_path" \
   "$repo_root/patches/0020-b2l-volatile-development-keystore.patch" \
   "$repo_root/patches/0021-b2l-persistent-system-log.patch" \
   "$repo_root/patches/0022-b2l-two-core-startup.patch" \
-  "$repo_root/patches/0023-b2l-automatic-native-cache.patch"
+  "$repo_root/patches/0023-b2l-automatic-native-cache.patch" \
+  "$repo_root/patches/0024-b2l-bounded-crash-backtrace.patch"
 # New files have separate provenance and are kept as an overlay.
 while IFS= read -r -d '' source_file; do
   relative="${source_file#"$repo_root/xnu-overlay/"}"
