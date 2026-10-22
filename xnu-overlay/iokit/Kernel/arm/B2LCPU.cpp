@@ -9,6 +9,7 @@
 #include <libkern/c++/OSData.h>
 #include <libkern/c++/OSNumber.h>
 #include <arm64/proc_reg.h>
+extern "C" int get_preemption_level(void);
 #include <kern/clock.h>
 #include <kern/processor.h>
 #include <kern/thread.h>
@@ -51,6 +52,20 @@ static void prepareSecondaryPage(void)
     b2l_early_trace("B2L SMP: low entry prepared pa=0x%llx size=16KiB\n",secondary_pa);
 }
 static uint32_t xcall_observed[MAX_CPUS];
+
+/* Observe context without changing IRQ state, binding or preemption counts.
+ * Never repair an imbalance by forcibly enabling preemption. */
+static void startupContext(const char *stage, unsigned target, bool sleepable)
+{
+    int level = get_preemption_level();
+    boolean_t irq = ml_get_interrupts_enabled();
+    b2l_early_trace("B2L CTX: %s target=%u current=%u preempt=%d irq=%u thread=%p\n",
+        stage, target, (unsigned)cpu_number(), level, (unsigned)irq, current_thread());
+    if (sleepable && (level != 0 || !irq))
+        panic("B2L SMP: non-sleepable context at %s target=%u current=%u preempt=%d irq=%u",
+            stage, target, (unsigned)cpu_number(), level, (unsigned)irq);
+}
+
 
 /* SMCCC v1.0 permits x0..x17 to change. No version/feature probe is needed:
  * the stock DT explicitly supplies this legacy CPU_ON ID and SMC conduit. */
@@ -134,6 +149,7 @@ void B2LCPU::registerProcessor(void)
 {
     unsigned id = getCPUNumber();
     const ml_topology_cpu_t *cpu = &ml_get_topology_info()->cpus[id];
+    startupContext("register-enter", id, true);
     ml_processor_info_t info = {};
     info.cpu_id = reinterpret_cast<cpu_id_t>(this);
     info.phys_id = cpu->phys_id;
@@ -149,11 +165,14 @@ void B2LCPU::registerProcessor(void)
      * processor_start again: that would violate its boot state machine. */
     b2l_early_trace("B2L SMP: register CPU%u begin\n", id);
     kern_return_t kr = ml_processor_register(&info, &machProcessor, &ipi_handler, &pmi);
+    startupContext("native-register-return", id, true);
     if (kr != KERN_SUCCESS || pmi)
         panic("B2L CPU: registration failed (%d), PMI=%p", kr, pmi);
     b2l_early_trace("B2L SMP: register CPU%u returned\n", id);
     __atomic_add_fetch(&registered_cpus, 1, __ATOMIC_ACQ_REL);
+    startupContext("publish-begin", id, true);
     registerService();
+    startupContext("publish-return", id, true);
 }
 
 void B2LCPU::initCPU(bool boot)
@@ -161,13 +180,15 @@ void B2LCPU::initCPU(bool boot)
     unsigned id = getCPUNumber();
     if (!boot || id >= 6 || (unsigned)cpu_number() != id)
         panic("B2L CPU: unsupported resume or wrong startup CPU");
+    startupContext("initCPU-enter", id, false);
     ml_broadcast_cpu_event(CPU_BOOTED, id);
     /* Secondary init runs at splsched with IRQs masked. Queue self-SGI
      * and return; waiting here would deadlock before secondary_cpu_main. */
     b2l_send_self_ipi();
     setCPUState(kIOCPUStateRunning);
     __atomic_store_n(&cpuInitialized, 1, __ATOMIC_RELEASE);
-    kprintf("B2L CPU: cpu=%u entered initCPU, MPIDR=0x%llx\n", id,
+    startupContext("initCPU-return", id, false);
+    b2l_early_trace("B2L CPU: cpu=%u entered initCPU, MPIDR=0x%llx\n", id,
         __builtin_arm_rsr64("MPIDR_EL1") & 0xffffULL);
 }
 
@@ -193,7 +214,9 @@ kern_return_t B2LCPU::startCPU(vm_offset_t start, vm_offset_t arg)
         panic("B2L SMP: low entry target readback failed");
     b2l_early_trace("B2L SMP: CPU_ON begin target=%u entry=0x%llx destination=0x%llx\n",
         target,secondary_pa,(uint64_t)entry);
+    startupContext("CPU_ON-enter", target, false);
     int32_t result = b2l_cpu_on(target, secondary_pa, 0);
+    startupContext("CPU_ON-return", target, false);
     b2l_early_trace("B2L SMP: CPU_ON result=%d low-stage=%llu secondary-stage=%llu\n",
         result,secondary_page[B2L_SECONDARY_STAGE_WORD],b2l_smp_progress(target));
     /* XNU discards the startCPU return. Fail explicitly on real EL3 errors. */

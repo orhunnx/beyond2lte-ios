@@ -1,0 +1,62 @@
+--- a/iokit/conf/Makefile.template
++++ b/iokit/conf/Makefile.template
+@@ -256,3 +256,6 @@
+ b2l_aks_core.o_CFLAGS_ADD += -mgeneral-regs-only
+ 
+ B2LWatchdog.cpo_CFLAGS_ADD += -mgeneral-regs-only
++
++# CPU callbacks can run with IRQs/preemption disabled; never borrow SIMD.
++B2LCPU.cpo_CFLAGS_ADD += -mgeneral-regs-only
+--- a/osfmk/arm64/machine_routines.c
++++ b/osfmk/arm64/machine_routines.c
+@@ -1652,7 +1652,7 @@
+ {
+ #if defined(B2L)
+     extern void b2l_early_trace(const char *, ...);
+-    b2l_early_trace("B2L REG: cpu=%u enter\n", in_processor_info->log_id);
++    b2l_early_trace("B2L REG: cpu=%u enter current=%d preempt=%d irq=%d\n", in_processor_info->log_id, cpu_number(), get_preemption_level(), ml_get_interrupts_enabled());
+ #endif
+ 	cpu_data_t *this_cpu_datap = cpu_datap(in_processor_info->log_id);
+ 	assert3u(this_cpu_datap->cpu_number, ==, in_processor_info->log_id); /* from ml_bootstrap_processors() */
+@@ -1711,11 +1711,11 @@
+ 	*processor_out = processor;
+ 	if (!is_boot_cpu) {
+ #if defined(B2L)
+-        b2l_early_trace("B2L REG: cpu=%u smr begin\n", in_processor_info->log_id);
++        b2l_early_trace("B2L REG: cpu=%u smr begin current=%d preempt=%d irq=%d\n", in_processor_info->log_id, cpu_number(), get_preemption_level(), ml_get_interrupts_enabled());
+ #endif
+ 		smr_cpu_init(*processor_out);
+ #if defined(B2L)
+-        b2l_early_trace("B2L REG: cpu=%u smr done\n", in_processor_info->log_id);
++        b2l_early_trace("B2L REG: cpu=%u smr done current=%d preempt=%d irq=%d\n", in_processor_info->log_id, cpu_number(), get_preemption_level(), ml_get_interrupts_enabled());
+ #endif
+ 	}
+ 	*ipi_handler_out = cpu_signal_handler;
+@@ -1762,11 +1762,11 @@
+ 
+ 	if (!is_boot_cpu) {
+ #if defined(B2L)
+-        b2l_early_trace("B2L REG: cpu=%u random begin\n", in_processor_info->log_id);
++        b2l_early_trace("B2L REG: cpu=%u random begin current=%d preempt=%d irq=%d\n", in_processor_info->log_id, cpu_number(), get_preemption_level(), ml_get_interrupts_enabled());
+ #endif
+ 		random_cpu_init(this_cpu_datap->cpu_number);
+ #if defined(B2L)
+-        b2l_early_trace("B2L REG: cpu=%u random done\n", in_processor_info->log_id);
++        b2l_early_trace("B2L REG: cpu=%u random done current=%d preempt=%d irq=%d\n", in_processor_info->log_id, cpu_number(), get_preemption_level(), ml_get_interrupts_enabled());
+ #endif
+ 		// now let next CPU register itself
+ 		OSIncrementAtomic((SInt32*)&real_ncpus);
+@@ -1783,11 +1783,11 @@
+ 	 * subsequent registerInterrupt operations and unblock the other cores.
+ 	 */
+ #if defined(B2L)
+-    b2l_early_trace("B2L REG: cpu=%u processor_boot begin\n", in_processor_info->log_id);
++    b2l_early_trace("B2L REG: cpu=%u processor_boot begin current=%d preempt=%d irq=%d\n", in_processor_info->log_id, cpu_number(), get_preemption_level(), ml_get_interrupts_enabled());
+ #endif
+ 	processor_boot(processor);
+ #if defined(B2L)
+-    b2l_early_trace("B2L REG: cpu=%u processor_boot done\n", in_processor_info->log_id);
++    b2l_early_trace("B2L REG: cpu=%u processor_boot done current=%d preempt=%d irq=%d\n", in_processor_info->log_id, cpu_number(), get_preemption_level(), ml_get_interrupts_enabled());
+ #endif
+ #endif /* !USE_APPLEARMSMP */
+ 

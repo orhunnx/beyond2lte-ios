@@ -9,8 +9,9 @@ p.add_argument('--objdump',default='llvm-objdump')
 a=p.parse_args()
 objects=[a.object_root/'bsd/DEVELOPMENT'/f'{x}.o' for x in ['b2l_native_cache','b2l_cache_core','CacheHfs','CacheSha']]
 objects.append(a.object_root/'osfmk/DEVELOPMENT/b2l_arm64e_compat.o')
+objects.append(a.object_root/'iokit/DEVELOPMENT/B2LCPU.cpo')
 for obj in objects:
- args=json.loads(obj.with_suffix('.o.json').read_text().rstrip(',\n'))['arguments']
+ args=json.loads(Path(str(obj)+'.json').read_text().rstrip(',\n'))['arguments']
  if '-mgeneral-regs-only' not in args:raise SystemExit(f'{obj.name}: scalar compiler flag missing')
  text=subprocess.check_output([a.objdump,'-d',str(obj)],text=True)
  if obj.name=="b2l_arm64e_compat.o" and "<_b2l_cache_resolve>:" not in text:raise SystemExit("VM resolver absent from scalar ARM64e object")
