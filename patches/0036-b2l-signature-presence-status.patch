@@ -1,0 +1,35 @@
+--- a/bsd/kern/kern_proc.c
++++ b/bsd/kern/kern_proc.c
+@@ -78,6 +78,7 @@
+ 
+ #if defined(ARM64_BOARD_CONFIG_B2L)
+ #include "b2l_amfi.h"
++#include <arm64/b2l_early.h>
+ #endif
+ #include <sys/param.h>
+ #include <sys/systm.h>
+@@ -3838,6 +3839,24 @@
+ 		}
+ 		proc_unlock(pt);
+ 
++#if defined(ARM64_BOARD_CONFIG_B2L)
++		/* CS_SIGNED means signature presence, not signature validity. MCM
++		 * rejects clients without this bit before asking for their CDHash.
++		 * Read immutable metadata outside proc_lock. This explicit development
++		 * query does not create a cs_blob, signed VM page or trust chain. */
++		if (b2l_amfi_active() && (retflags & CS_PLATFORM_BINARY)) {
++			uint8_t hash[20], type = 0;
++			int metadata_error = b2l_amfi_proc_copy_cdhash(pt, hash, &type);
++			if (!metadata_error) retflags |= CS_SIGNED;
++			proc_t caller = current_proc();
++			if (!strncmp(caller->p_comm, "containermanager", 15)) {
++				static unsigned samples;
++				if (__atomic_fetch_add(&samples, 1, __ATOMIC_RELAXED) < 12)
++					b2l_early_trace("B2L CSSTATUS: caller=%d target=%d flags=0x%x signature_metadata=%d\n",
++					    proc_getpid(caller), proc_getpid(pt), retflags, metadata_error);
++			}
++		}
++#endif
+ 		if (uaddr != USER_ADDR_NULL) {
+ 			error = copyout(&retflags, uaddr, sizeof(uint32_t));
+ 		}

@@ -55,3 +55,16 @@ its complete readback hash. USERDATA's 4096-byte header matches before/after;
 reboot was requested. The expanded SYSTEM cache and its current durable records
 were not rewritten. The retained 0049 BOOT is the matching V2 rollback.
 There is no 0050 runtime proof of crash resolution yet.
+
+## Subsequent device capture
+
+Recovery capture epoch 16 contains 65 valid records / 142,266 bytes, with no
+missing positions or producer drops. Six CPUs and four cache workers are still
+active. Pre-init applied 14,031 cells and found 5,068 already applied. Cache and
+flush error counters are zero. FIPS completed all tests successfully.
+
+The container-related lsd, ManagedSettings, AppProtection and mobileactivationd
+crashes recur. The HFS attribute correction did not resolve these failures.
+The old product-node fatal is absent in this short capture, but cryptexd itself
+is not captured, so that correction has no runtime success claim yet. 0051
+addresses the separate CS_SIGNED presence gate found in the actual IPSW.
