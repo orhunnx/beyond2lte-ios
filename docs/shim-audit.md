@@ -1,5 +1,8 @@
 # B2L / A5 compatibility audit
 
+Historical build 0027 baseline. See the [0051 source comparison](a5-parity-0051.md)
+for current A5 differences; CPU, cache and metadata support have since changed.
+
 **Verdict: CONCERNS.** Baseline: build 0027; review date: 2026-10-22.
 
 The B2L kernel reaches real ARM64e launchd code and shared-cache libraries. Its
