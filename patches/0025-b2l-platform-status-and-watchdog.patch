@@ -1,0 +1,44 @@
+--- a/iokit/conf/files
++++ b/iokit/conf/files
+@@ -169,3 +169,5 @@
+ 
+ iokit/Kernel/arm/B2LKeyStore.cpp optional iokitcpp b2l
+ iokit/Kernel/arm/b2l_aks_core.c optional b2l
++
++iokit/Kernel/arm/B2LWatchdog.cpp optional iokitcpp b2l
+--- a/iokit/conf/Makefile.template
++++ b/iokit/conf/Makefile.template
+@@ -254,3 +254,5 @@
+ 
+ B2LKeyStore.cpo_CFLAGS_ADD += -mgeneral-regs-only
+ b2l_aks_core.o_CFLAGS_ADD += -mgeneral-regs-only
++
++B2LWatchdog.cpo_CFLAGS_ADD += -mgeneral-regs-only
+--- a/iokit/KernelConfigTables.cpp
++++ b/iokit/KernelConfigTables.cpp
+@@ -53,6 +53,11 @@
+     "     'IOProviderClass' = IOResources;"
+     "     'IOMatchCategory' = AppleKeyStore;"
+     "   },"
++    "   {"
++    "     'IOClass' = IOWatchdog;"
++    "     'IOProviderClass' = IOResources;"
++    "     'IOMatchCategory' = IOWatchdog;"
++    "   },"
+ #endif
+     "   {"
+     "     'IOClass'         = IOPanicPlatform;"
+--- a/bsd/kern/kern_proc.c
++++ b/bsd/kern/kern_proc.c
+@@ -3823,6 +3823,11 @@
+ 		}
+ 		if (csproc_get_platform_binary(pt)) {
+ 			retflags |= CS_PLATFORM_BINARY;
++#if defined(ARM64_BOARD_CONFIG_B2L)
++			/* Development status compatibility for SecTask platform checks.
++			 * Query-only acceptance: no cs_blob or signed VM page is created. */
++			if (b2l_amfi_active()) retflags |= CS_VALID;
++#endif
+ 		}
+ 		if (csproc_get_platform_path(pt)) {
+ 			retflags |= CS_PLATFORM_PATH;

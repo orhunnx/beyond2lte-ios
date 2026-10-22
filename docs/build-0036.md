@@ -57,3 +57,9 @@ No SYSTEM or USERDATA image was rewritten. Runtime diagnostics and graphical
 startup still require the next device capture.
 
 Private logs, binaries, cache contents and addresses remain ignored locally.
+
+## Recovered runtime result
+
+Epoch 9 confirms the bounded crash trace is active. SpringBoard aborts in a
+CoverSheet platform-status assertion; usermanagerd reports failure to load its
+persona manifest. [0037](build-0037.md) documents the evidence and scoped fixes.

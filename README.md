@@ -163,3 +163,7 @@ The known single-core 0031 package is retained as rollback.
 [Build 0036](docs/build-0036.md) adds bounded crash reasons and user backtraces
 after the recovered 0035 log confirmed repeated service aborts. BOOT readback
 and reboot are verified; a working graphical session remains unverified.
+
+[Build 0037](docs/build-0037.md) targets the recovered SpringBoard
+platform-status assertion and adds the missing development IOWatchdog service.
+BOOT readback and reboot are verified; runtime confirmation is pending.
