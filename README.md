@@ -21,7 +21,8 @@ and selects the XNU loader as its default boot application. U-Boot is not used.
 
 - [XNU `rel/xnu-12377`](https://github.com/apple-oss-distributions/xnu/tree/rel/xnu-12377),
   pinned to `ac9718fb1af618d5ce8678d0dc6e8a58f252216f`.
-- Generic ARMv8-A with crypto instructions, 4 KiB pages, one boot CPU.
+- Generic ARMv8-A with crypto instructions and 4 KiB pages; the current
+  experimental target selects two same-cluster Cortex-A55 CPUs (hardware proof pending).
 - GICv2 at `0x10101000` / `0x10102000`; virtual timer INTID 27.
 - Actual architected counter frequency read at runtime; expected 26 MHz.
 - Apple PAC, BTI, SPTM and PPL are not used by this initial B2L target.
@@ -41,7 +42,9 @@ CPU, and receives real timer/self-SGI interrupts with timed scheduler wakeups.
 Build 0011 reaches a root-device wait for Apple_HFS without a panic. Native
 read-only UFS access is also verified on the device in build 0012. Build 0015
 mounts the populated native USERDATA HFS root read/write, then
-rejects the ARM64e launchd executable with EBADARCH. iOS userspace execution
+rejects the ARM64e launchd executable with EBADARCH. Later compatibility builds
+reach real iOS userspace; the recovered 0031 log confirms service startup but
+also repeated SpringBoard/user-manager crashes. A usable graphical session
 remains unverified.**
 [Build 0004](docs/build-0004.md) supplies the required 256-byte seed; its
 device result identified the next DT contract gap. [Build 0005](docs/build-0005.md)
@@ -148,3 +151,7 @@ See [the boot contract](docs/boot-contract.md),
 [runtime milestones](docs/runtime-bringup.md) for execution details and the
 screen output needed to establish a successful device test. Native disk/root
 prerequisites are recorded in [storage next steps](docs/storage-next.md).
+
+[0032](docs/build-0032.md) integrates a bounded two-core startup experiment,
+with per-core timer and bidirectional remote-IPI proof before publishing 2/2 CPUs.
+The known single-core 0031 package is retained as rollback.

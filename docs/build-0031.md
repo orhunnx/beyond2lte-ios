@@ -76,5 +76,13 @@ BOOT SHA-256:
 Stripped kernel, unstripped kernel and preserved dSYM share UUID
 `98E01992-1BEC-31A6-B7D1-3BDFB785E2C2`. Reboot was requested after both checks.
 
-Device runtime proof still requires the next screen and a recovered log record.
+The subsequent recovery-extracted epoch-1 log contains 290,889 text bytes with
+no missing sequence positions or producer drops. It confirms a 4024 MiB arena,
+one initialized CPU, successful launchd cache delivery, and sustained iOS
+service execution. It also reports at least 39 SpringBoard and 38 user-manager
+crashes, CPU-resource warnings, and about 1.18 billion compatibility traps.
+This is not a completed graphical boot. Exact late crash reasons are absent:
+the initial exit diagnostic only covers eight exits plus PID 1. The raw log
+and device identifiers remain local and are not tracked.
+
 Persistence can lose the final seconds before a panic or disk fault.

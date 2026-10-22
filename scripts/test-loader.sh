@@ -16,3 +16,7 @@ mkdir -p "$build_dir"
   "$repo_root/tests/progress_test.c" "$repo_root/uefi/XnuLoader/Progress.c" \
   -o "$build_dir/progress_test"
 "$build_dir/progress_test"
+
+"${CC:-clang}" -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined \
+  "$repo_root/tests/gic_target_test.c" -o "$build_dir/gic_target_test"
+"$build_dir/gic_target_test"
