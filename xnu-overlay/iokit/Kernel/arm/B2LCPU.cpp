@@ -14,6 +14,8 @@
 #include <kern/thread.h>
 #include <mach/mach_time.h>
 #include <pexpert/pexpert.h>
+#include <pexpert/device_tree.h>
+#include "b2l_secondary.h"
 
 extern "C" void b2l_secondary_entry(void);
 extern "C" uint64_t b2l_smp_progress(unsigned cpu);
@@ -29,6 +31,25 @@ static_assert(MAX_CPUS == 6, "CPU0..5 A55/A75 experiment only");
 class B2LCPU;
 static B2LCPU *b2l_cpus[MAX_CPUS];
 static unsigned providers_ready, registered_cpus;
+static uint64_t secondary_pa;
+static volatile unsigned long long *secondary_page;
+extern "C" vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
+static void prepareSecondaryPage(void)
+{
+    DTEntry chosen; const void *property; unsigned size; uint64_t range[2];
+    if (SecureDTLookupEntry(nullptr,"/chosen",&chosen)!=kSuccess ||
+        SecureDTGetProperty(chosen,"b2l,secondary-trampoline",&property,&size)!=kSuccess || size!=16)
+        panic("B2L SMP: missing firmware-owned low entry");
+    memcpy(range,property,sizeof(range));
+    if (!b2l_secondary_address(range[0]) || range[1]!=B2L_SECONDARY_BYTES)
+        panic("B2L SMP: invalid low secondary allocation");
+    secondary_pa=range[0];
+    secondary_page=(volatile unsigned long long *)ml_io_map(secondary_pa,B2L_SECONDARY_BYTES);
+    if (!secondary_page || !b2l_secondary_template(secondary_page) ||
+        secondary_page[B2L_SECONDARY_TARGET_WORD] || secondary_page[B2L_SECONDARY_STAGE_WORD])
+        panic("B2L SMP: low entry template is not pristine");
+    b2l_early_trace("B2L SMP: low entry prepared pa=0x%llx size=16KiB\n",secondary_pa);
+}
 static uint32_t xcall_observed[MAX_CPUS];
 
 /* SMCCC v1.0 permits x0..x17 to change. No version/feature probe is needed:
@@ -162,9 +183,19 @@ kern_return_t B2LCPU::startCPU(vm_offset_t start, vm_offset_t arg)
     unsigned target = getCPUNumber();
     if (!b2l_prepare_cpu_start(target))
         panic("B2L CPU: secondary reset data incomplete");
-    b2l_early_trace("B2L SMP: CPU_ON begin target=%u entry=0x%llx context=0\n", target, (uint64_t)entry);
-    int32_t result = b2l_cpu_on(target, entry, 0);
-    b2l_early_trace("B2L SMP: CPU_ON result=%d secondary-stage=%llu\n", result, b2l_smp_progress(target));
+    if (!secondary_page || !b2l_secondary_template(secondary_page) ||
+        (secondary_page[B2L_SECONDARY_TARGET_WORD] && secondary_page[B2L_SECONDARY_TARGET_WORD]!=entry))
+        panic("B2L SMP: secondary trampoline changed");
+    secondary_page[B2L_SECONDARY_TARGET_WORD]=entry;
+    secondary_page[B2L_SECONDARY_STAGE_WORD]=0;
+    __asm__ volatile("dsb sy":::"memory");
+    if (secondary_page[B2L_SECONDARY_TARGET_WORD]!=entry)
+        panic("B2L SMP: low entry target readback failed");
+    b2l_early_trace("B2L SMP: CPU_ON begin target=%u entry=0x%llx destination=0x%llx\n",
+        target,secondary_pa,(uint64_t)entry);
+    int32_t result = b2l_cpu_on(target, secondary_pa, 0);
+    b2l_early_trace("B2L SMP: CPU_ON result=%d low-stage=%llu secondary-stage=%llu\n",
+        result,secondary_page[B2L_SECONDARY_STAGE_WORD],b2l_smp_progress(target));
     /* XNU discards the startCPU return. Fail explicitly on real EL3 errors. */
     if (result != 0) panic("B2L CPU: CPU%u CPU_ON failed (%d)", target, result);
     return KERN_SUCCESS;
@@ -183,6 +214,7 @@ void B2LCPU::finishStartup(void *, wait_result_t)
         panic("B2L SMP: coordinator before complete CPU provider topology");
     /* Announce known topology, without claiming any secondary is online. */
     ml_set_max_cpus(6);
+    prepareSecondaryPage();
     for (unsigned id = 0; id < 6; ++id) {
         B2LCPU *c = __atomic_load_n(&b2l_cpus[id], __ATOMIC_ACQUIRE);
         if (!c) panic("B2L SMP: missing provider %u", id);

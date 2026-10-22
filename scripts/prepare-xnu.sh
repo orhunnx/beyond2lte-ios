@@ -55,3 +55,11 @@ for source_file in "$repo_root/common/cache/"*; do
   cp "$source_file" "$destination"
 done
 echo "Prepared B2L source: $xnu_path"
+
+for source_file in "$repo_root/common/smp/"*; do
+  destination="$xnu_path/iokit/Kernel/arm/$(basename "$source_file")"
+  if [[ -f "$destination" ]] && ! cmp -s "$source_file" "$destination"; then
+    echo "Refusing different generated SMP header: $destination" >&2; exit 1
+  fi
+  cp "$source_file" "$destination"
+done

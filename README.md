@@ -185,3 +185,8 @@ timer/IPI proof and sustained runtime have been confirmed on the device.
 [Build0041](docs/build-0041.md) separates provider arrival from ordered CPU0-first
 registration after0040's rapid reset. Fine-grained early registration/scheduler
 markers are added; six-core hardware proof remains pending.
+
+[Build0042](docs/build-0042.md) uses an EFI-allocated low physical secondary
+trampoline after0041 reaches CPU_ON with a high entry before resetting. The
+kernel stays in its existing high arena; reservation descriptors are unchanged.
+Hardware CPU_ON acceptance and six-core proof remain pending.

@@ -16,4 +16,8 @@ int b2l_choose_arena(const void *map, b2l_size map_size, b2l_size descriptor_siz
 /* Validate final allocated span in an unsorted EFI map (type2 LoaderData). */
 int b2l_validate_arena(const void *map,b2l_size map_size,b2l_size descriptor_size,
                        b2l_u64 start,b2l_u64 size,b2l_u32 expected_type);
+/* Firmware-owned 16KiB secondary trampoline, selected only from real low
+ * EFI conventional pages; validate ownership again before ExitBootServices. */
+int b2l_choose_secondary(const void *,b2l_size,b2l_size,b2l_u64 *);
+int b2l_validate_secondary(const void *,b2l_size,b2l_size,b2l_u64,b2l_u32);
 #endif

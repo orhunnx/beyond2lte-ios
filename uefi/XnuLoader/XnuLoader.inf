@@ -1,5 +1,5 @@
 ## @file
-# Single-CPU plain ARM64 XNU loader for beyond2lte UEFI.
+# Six-CPU plain ARM64 XNU loader for beyond2lte UEFI.
 # SPDX-License-Identifier: BSD-2-Clause
 ##
 [Defines]
@@ -13,6 +13,7 @@
 [Sources]
   XnuLoader.c
   XnuHandoff.S
+  SecondaryEntry.S
   MachO.c
   DeviceTree.c
   Progress.c

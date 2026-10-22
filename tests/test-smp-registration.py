@@ -38,6 +38,7 @@ static void b2l_early_trace(const char *, ...) {}
 static unsigned cpu_number() { return current_cpu; }
 static void ml_set_max_cpus(unsigned n) { assert(n==6 && order.empty()); ++announced; }
 static void thread_deallocate(thread_t) {}
+static void prepareSecondaryPage() { assert(announced==1 && order.empty()); }
 static int kernel_thread_start(void(*fn)(void*,wait_result_t),void*,thread_t *out) {
  if(fail_launch) return 5;
  assert(!scheduled);scheduled=fn;*out=1;++launched;return 0;

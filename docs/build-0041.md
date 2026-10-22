@@ -44,3 +44,11 @@ Known single-core0039 remains the rollback package. No recovery filesystem
 mount, raw USERDATA mutation, reservation change or cache clearing occurred.
 Six-core timer/xcall proof and sustained runtime remain unverified. The cache
 worker remains single-threaded until that hardware gate is met.
+
+## Hardware frame result
+
+The next frames confirm CPU0 registration/initCPU returns, followed by CPU1 SMR
+and PRNG completion, processor_boot, idle-thread and IPC preparation. CPU_ON is
+reached with target1, context0 and high entry0x900506000. No returned result or
+secondary-stage proof is visible before reset. The ordering change allows more
+precise localization but six-core operation is still not established.

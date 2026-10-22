@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: BSD-2-Clause */
 #include "DeviceTree.h"
+#include "b2l_secondary.h"
 struct writer { unsigned char *buf; b2l_size size, pos; int error; };
 struct node { b2l_size offset; b2l_u32 properties, children; };
 static void bytes(struct writer *w, const void *data, b2l_size length)
@@ -57,6 +58,8 @@ int b2l_build_device_tree(void *buffer, b2l_size capacity,
     cpu_reg = (b2l_u32)(c->mpidr & 0x0000ffffULL);
     /* This isolated SMP target only supports the proven boot MPIDR 0. */
     if (cpu_reg != 0) return -1;
+    if ((c->secondary_base || c->secondary_size) &&
+        (!b2l_secondary_address(c->secondary_base) || c->secondary_size!=B2L_SECONDARY_BYTES))return -1;
     mem_regs[0] = c->memory_base; mem_regs[1] = c->memory_size;
     root = begin(&w, 0, "device-tree");
     text_prop(&w, &root, "model", "Samsung Galaxy S10+ (beyond2lte)");
@@ -83,6 +86,10 @@ int b2l_build_device_tree(void *buffer, b2l_size capacity,
     if(c->native_cache_size){
         b2l_u64 cache_range[2]={c->native_cache_base,c->native_cache_size};
         prop(&w,&chosen,"b2l,native-cache",cache_range,sizeof(cache_range));
+    }
+    if(c->secondary_size){
+        b2l_u64 range[2]={c->secondary_base,c->secondary_size};
+        prop(&w,&chosen,"b2l,secondary-trampoline",range,sizeof(range));
     }
     text_prop(&w, &chosen, "firmware-version", "beyond2lte-ios EFI loader");
     text_prop(&w, &chosen, "stdout-path", "/framebuffer");

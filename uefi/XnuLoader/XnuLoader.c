@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-2-Clause
- * Single-CPU, non-SPTM XNU ARM64 handoff for the existing beyond2lte UEFI.
+ * Six-CPU A55/A75, non-SPTM XNU ARM64 handoff for the existing beyond2lte UEFI.
  * No partition writes, persistent variables, synthetic entropy, or PAC emulation.
  */
 #include <Uefi.h>
@@ -19,6 +19,8 @@
 #include "BootPayload.h"
 #include "Progress.h"
 #include "Arena.h"
+#include "b2l_secondary.h"
+extern const UINT8 B2LSecondaryTemplate[], B2LSecondaryTemplateEnd[];
 #include "b2l_cache_core.h"
 UINTN B2lStageNativeCache(VOID*,UINTN);
 STATIC_ASSERT(B2L_SEED_BYTES == B2L_BOOT_SEED_SIZE, "BOOT payload and XNU seed sizes must match");
@@ -203,6 +205,47 @@ static EFI_STATUS AllocateArena(VOID *Map, EFI_PHYSICAL_ADDRESS *Base,
     return Status;
 }
 
+/* The kernel remains in its existing high arena. Only this firmware-owned
+ * executable page is below4GiB. No fixed reserved-memory address is reused. */
+static EFI_STATUS AllocateSecondary(VOID *Map, EFI_PHYSICAL_ADDRESS *Page)
+{
+    for (UINTN Retry=0;Retry<4;++Retry) {
+        UINTN Size=B2L_MAP_SPACE,Key,Stride;UINT32 Version;UINT64 Candidate=0;
+        EFI_STATUS Status=gBS->GetMemoryMap(&Size,Map,&Key,&Stride,&Version);
+        if(EFI_ERROR(Status))return Status;
+        int Choice=b2l_choose_secondary(Map,Size,Stride,&Candidate);
+        if(Choice)return Choice==-2?EFI_OUT_OF_RESOURCES:EFI_COMPROMISED_DATA;
+        EFI_PHYSICAL_ADDRESS Actual=Candidate;
+        Status=gBS->AllocatePages(AllocateAddress,EfiLoaderCode,4,&Actual);
+        if(EFI_ERROR(Status))continue;
+        if(Actual!=Candidate){gBS->FreePages(Actual,4);return EFI_COMPROMISED_DATA;}
+        Size=B2L_MAP_SPACE;Status=gBS->GetMemoryMap(&Size,Map,&Key,&Stride,&Version);
+        if(EFI_ERROR(Status) || b2l_validate_secondary(Map,Size,Stride,Actual,EfiLoaderCode)){
+            gBS->FreePages(Actual,4);return EFI_COMPROMISED_DATA;
+        }
+        if((UINTN)B2LSecondaryTemplateEnd-(UINTN)B2LSecondaryTemplate!=64 ||
+            !IdentityRange(Actual,B2L_SECONDARY_BYTES)){
+            gBS->FreePages(Actual,4);return EFI_UNSUPPORTED;
+        }
+        ZeroMem((VOID*)(UINTN)Actual,B2L_SECONDARY_BYTES);
+        CopyMem((VOID*)(UINTN)Actual,B2LSecondaryTemplate,64);
+        if(!b2l_secondary_template((const volatile unsigned long long*)(UINTN)Actual)){
+            gBS->FreePages(Actual,4);return EFI_COMPROMISED_DATA;
+        }
+        /* No global set/way cache operations or EL2 writes. */
+        UINT64 Ctr;__asm__ volatile("mrs %0, ctr_el0":"=r"(Ctr));
+        UINT64 DLine=4ULL<<((Ctr>>16)&15),ILine=4ULL<<(Ctr&15);
+        for(UINT64 At=Actual;At<Actual+B2L_SECONDARY_BYTES;At+=DLine)
+            __asm__ volatile("dc civac, %0"::"r"(At):"memory");
+        __asm__ volatile("dsb sy":::"memory");
+        for(UINT64 At=Actual;At<Actual+B2L_SECONDARY_BYTES;At+=ILine)
+            __asm__ volatile("ic ivau, %0"::"r"(At):"memory");
+        __asm__ volatile("dsb sy; isb":::"memory");
+        *Page=Actual;return EFI_SUCCESS;
+    }
+    return EFI_OUT_OF_RESOURCES;
+}
+
 EFI_STATUS EFIAPI UefiMain(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
 {
     EFI_STATUS Status;
@@ -211,7 +254,7 @@ EFI_STATUS EFIAPI UefiMain(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
     VOID *Kernel = NULL, *MemoryMap = NULL;
     UINTN KernelSize = 0, Pages = 0, DtSize, MapSize, MapKey, DescSize, Attempt;
     UINT32 DescVersion;
-    EFI_PHYSICAL_ADDRESS Allocation = 0;
+    EFI_PHYSICAL_ADDRESS Allocation = 0, SecondaryAllocation = 0;
     UINT64 Base, ArenaSize=0, DtPhysical, ArgsPhysical, Used, Entry, Stack;
     struct b2l_handoff_info Handoff;
     BOOLEAN PayloadSeed = FALSE;
@@ -221,7 +264,7 @@ EFI_STATUS EFIAPI UefiMain(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
     int ParseResult;
     (VOID)SystemTable;
     ZeroMem(&Dt, sizeof(Dt));
-    Print(L"beyond2lte XNU ARM64 loader (single CPU)\r\n");
+    Print(L"beyond2lte XNU ARM64 loader (six CPU, low entry)\r\n");
     if (ReadCurrentEl() != 1) {
         Print(L"Unsupported CurrentEL: EL1 is required.\r\n");
         return EFI_UNSUPPORTED;
@@ -260,6 +303,10 @@ EFI_STATUS EFIAPI UefiMain(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
     if (!Dt.counter_frequency) { Status = EFI_UNSUPPORTED; goto Fail; }
     MemoryMap = AllocatePool(B2L_MAP_SPACE);
     if (!MemoryMap) { Status=EFI_OUT_OF_RESOURCES; goto Fail; }
+    Status=AllocateSecondary(MemoryMap,&SecondaryAllocation);
+    if(EFI_ERROR(Status)){Print(L"No safe low secondary page: %r\r\n",Status);goto Fail;}
+    Dt.secondary_base=SecondaryAllocation;Dt.secondary_size=B2L_SECONDARY_BYTES;
+    Print(L"B2L: firmware-owned secondary page PA 0x%lx (16 KiB)\r\n",SecondaryAllocation);
     Status = AllocateArena(MemoryMap, &Allocation, &ArenaSize, &Pages);
     if (EFI_ERROR(Status)) { Print(L"No contiguous EFI conventional-memory arena of at least 1 GiB: %r\r\n",Status); goto Fail; }
     Base = Allocation;
@@ -332,7 +379,8 @@ EFI_STATUS EFIAPI UefiMain(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
         MapSize = B2L_MAP_SPACE;
         Status = gBS->GetMemoryMap(&MapSize, MemoryMap, &MapKey, &DescSize, &DescVersion);
         if (EFI_ERROR(Status)) { B2lProgressSet(&Handoff,0,0x00ff0000); CpuDeadLoop(); }
-        if(b2l_validate_arena(MemoryMap,MapSize,DescSize,Base,ArenaSize,2)) {
+        if(b2l_validate_arena(MemoryMap,MapSize,DescSize,Base,ArenaSize,2) ||
+            b2l_validate_secondary(MemoryMap,MapSize,DescSize,SecondaryAllocation,EfiLoaderCode)) {
             B2lProgressSet(&Handoff,0,0x00ff0000); CpuDeadLoop();
         }
         B2lProgressSet(&Handoff,0,0x0000ff00);
@@ -354,5 +402,6 @@ Fail:
     if (Kernel) FreePool(Kernel);
     if (MemoryMap) FreePool(MemoryMap);
     if (Allocation) gBS->FreePages(Allocation, Pages);
+    if (SecondaryAllocation) gBS->FreePages(SecondaryAllocation, 4);
     return Status;
 }
