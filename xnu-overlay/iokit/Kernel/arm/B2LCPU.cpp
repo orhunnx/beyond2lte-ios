@@ -88,8 +88,12 @@ static int32_t b2l_cpu_on(uint64_t target, uint64_t entry, uint64_t context)
 }
 static void xcall_proof(void *arg)
 {
-    unsigned expected = (unsigned)(uintptr_t)arg;
-    if ((unsigned)cpu_number() != expected || expected >= MAX_CPUS)
+    /* XNU uses a non-NULL parameter as the xcall publication sentinel. */
+    uintptr_t encoded = (uintptr_t)arg;
+    if (!encoded || encoded > MAX_CPUS)
+        panic("B2L CPU: invalid xcall proof parameter");
+    unsigned expected = (unsigned)(encoded - 1);
+    if ((unsigned)cpu_number() != expected)
         panic("B2L CPU: xcall ran on unexpected CPU");
     __atomic_store_n(&xcall_observed[expected], 1, __ATOMIC_RELEASE);
 }
@@ -283,7 +287,7 @@ void B2LCPU::finishStartup(void *, wait_result_t)
         for (unsigned target = first; target < end; ++target) {
             __atomic_store_n(&xcall_observed[target], 0, __ATOMIC_RELEASE);
             kern_return_t kr = cpu_xcall((int)target, (broadcastFunc)xcall_proof,
-                (void *)(uintptr_t)target);
+                (void *)(uintptr_t)(target + 1));
             if (kr != KERN_SUCCESS) panic("B2L CPU: remote xcall rejected (%d)", kr);
             nanoseconds_to_deadline(NSEC_PER_SEC, &deadline);
             while (!__atomic_load_n(&xcall_observed[target], __ATOMIC_ACQUIRE)) {
