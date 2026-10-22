@@ -25,6 +25,7 @@ struct b2l_io {int (*read)(void*,uint64_t,void*,size_t);int (*write)(void*,uint6
 struct b2l_fork {uint64_t size;uint32_t start[8],count[8];};
 struct b2l_hfs {struct b2l_io io;uint64_t bytes;uint32_t block_size,blocks,create_date,jib;uint8_t uuid[8];struct b2l_fork catalog;uint8_t node[B2L_HFS_NODE_MAX];};
 struct b2l_hfs_file {struct b2l_fork data;uint32_t id;};
+struct b2l_cache_fork {struct b2l_io volume;struct b2l_fork data;uint32_t block_size;};
 struct b2l_sha {uint32_t h[8];uint64_t bytes;uint8_t block[64];unsigned used;};
 void b2l_sha_init(struct b2l_sha*);
 void b2l_sha_update(struct b2l_sha*,const void*,size_t);
@@ -34,5 +35,6 @@ int b2l_hfs_open(struct b2l_hfs*,const struct b2l_io*);
 int b2l_hfs_journal_empty(struct b2l_hfs*);
 int b2l_hfs_find(struct b2l_hfs*,const char*,struct b2l_hfs_file*);
 int b2l_hfs_read(struct b2l_hfs*,const struct b2l_hfs_file*,uint64_t,void*,size_t);
+int b2l_hfs_cache_view(struct b2l_hfs*,const struct b2l_hfs_file*,struct b2l_cache_fork*,struct b2l_io*);
 int b2l_hfs_cache_extent(struct b2l_hfs*,const struct b2l_hfs_file*,uint64_t*);
 #endif

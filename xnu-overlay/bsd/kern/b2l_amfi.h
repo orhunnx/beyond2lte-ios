@@ -3,6 +3,7 @@
 #define B2L_AMFI_H
 #include <stddef.h>
 #include <stdbool.h>
+#include <stdint.h>
 struct proc;
 struct vnode;
 #ifdef __cplusplus
@@ -11,6 +12,9 @@ extern "C" {
 bool b2l_amfi_active(void);
 bool b2l_amfi_is_platform(struct proc *);
 bool b2l_amfi_vnode_is_platform(struct vnode *);
+int b2l_amfi_proc_copy_cdhash(struct proc *, uint8_t[20], uint8_t*);
+bool b2l_ent_attach_cdhash(void *, const uint8_t[20], uint8_t);
+int b2l_ent_copy_cdhash(const void *, uint8_t[20], uint8_t*);
 int b2l_amfi_proc_copy_der(struct proc *, void **, size_t *);
 int b2l_amfi_proc_copy_xml(struct proc *, void **, size_t *);
 int b2l_amfi_proc_copy_identity(struct proc *, void **, size_t *);

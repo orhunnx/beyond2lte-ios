@@ -1,0 +1,66 @@
+--- a/bsd/kern/kern_exit.c
++++ b/bsd/kern/kern_exit.c
+@@ -79,6 +79,7 @@
+ #include <sys/param.h>
+ #if defined(ARM64_BOARD_CONFIG_B2L)
+ #include <arm64/b2l_early.h>
++#include <arm/thread.h>
+ #endif
+ #include <sys/systm.h>
+ #include <sys/ioctl.h>
+@@ -2028,18 +2029,30 @@
+ /* Existing diagnostic boot parameter, bounded per process class. Keep this
+  * separate from the 96-byte system-event payload and the first-eight-exits
+  * sample budget. backtrace_user is already used below for crash processing. */
++/* Only a few pointers from selected crashing processes, never a heap scan. */
++static void
++b2l_trace_crash_text(int pid, const char *label, uint64_t address)
++{
++	char text[256]; size_t length = 0;
++	if (!address || copyinstr((user_addr_t)address, text, sizeof(text), &length) || length < 5) return;
++	for (size_t i = 0; i + 1 < length; i++)
++		if ((unsigned char)text[i] < 32 || (unsigned char)text[i] > 126) return;
++	b2l_early_trace("B2L FAULTMSG: pid=%d %s=%.255s\n", pid, label, text);
++}
++
+ static void
+ b2l_trace_crash(proc_t p, int rv, struct uthread *ut)
+ {
+-	static unsigned samples[7];
++	static unsigned samples[10];
+ 	const char *names[] = { "SpringBoard", "usermanagerd", "UserEventAgent",
+-	    "securityd", "ManagedSettings", "mobileactivat", "lsd" };
++	    "securityd", "ManagedSettings", "mobileactivat", "lsd",
++	    "cryptexd", "appprotectiond", "passd" };
+ 	unsigned slot;
+ 	if (!exception_log_max_pid || proc_getpid(p) > exception_log_max_pid ||
+ 	    p != current_proc() || (!rv && !ut->uu_exception)) return;
+-	for (slot = 0; slot < 7; slot++)
++	for (slot = 0; slot < 10; slot++)
+ 		if (!strncmp(p->p_comm, names[slot], strlen(names[slot]))) break;
+-	if (slot == 7 || __atomic_fetch_add(&samples[slot], 1, __ATOMIC_RELAXED) >= 4) return;
++	if (slot == 10 || __atomic_fetch_add(&samples[slot], 1, __ATOMIC_RELAXED) >= 4) return;
+ 	const char *desc = exit_reason_get_string_desc(p->p_exit_reason);
+ 	b2l_early_trace("B2L CRASH: %s[%d] status=0x%x exception=%u code=0x%llx sub=0x%llx\n",
+ 	    p->p_comm, proc_getpid(p), rv, ut->uu_exception,
+@@ -2048,6 +2061,20 @@
+ 		b2l_early_trace("B2L REASON: pid=%d ns=%u code=0x%llx desc=%.256s\n",
+ 		    proc_getpid(p), p->p_exit_reason->osr_namespace,
+ 		    p->p_exit_reason->osr_code, desc ? desc : "none");
++	arm_saved_state_t *state = get_user_regs(current_thread());
++	if (state && is_saved_state64(state)) {
++		uint64_t fp = get_saved_state_fp(state), arg = 0;
++		b2l_early_trace("B2L FAULTREG: pid=%d pc=0x%llx sp=0x%llx fp=0x%llx x0=0x%llx x19=0x%llx\n",
++		    proc_getpid(p), (uint64_t)get_saved_state_pc(state),
++		    (uint64_t)get_saved_state_sp(state), fp,
++		    (uint64_t)get_saved_state_reg(state, 0), (uint64_t)get_saved_state_reg(state, 19));
++		b2l_trace_crash_text(proc_getpid(p), "x0", get_saved_state_reg(state, 0));
++		b2l_trace_crash_text(proc_getpid(p), "x19", get_saved_state_reg(state, 19));
++		/* AArch64 variadic fatal helpers put their first stack argument here.
++		 * Failed copyin is expected for other frames; never dereference directly. */
++		if (fp && fp <= UINT64_MAX - 16 && !copyin((user_addr_t)(fp + 16), &arg, sizeof(arg)))
++			b2l_trace_crash_text(proc_getpid(p), "frame_arg", arg);
++	}
+ 	uintptr_t bt[12];
+ 	struct backtrace_user_info info = BTUINFO_INIT;
+ 	unsigned frames = backtrace_user(bt, 12, NULL, &info);

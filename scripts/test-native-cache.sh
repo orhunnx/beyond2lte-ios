@@ -15,3 +15,11 @@ fi
 
 "$cc" "${flags[@]}" -I"$repo/xnu-overlay/bsd/kern" "$repo/tests/native_cache_exclusion_test.c" "$repo/common/cache/b2l_cache_core.c" "$repo/common/cache/CacheSha.c" -o "$tmp/exclusion"
 "$tmp/exclusion"
+
+"$cc" "${flags[@]}" "$repo/tests/native_cache_store_test.c" "$repo/common/cache/b2l_cache_core.c" "$repo/common/cache/CacheSha.c" -o "$tmp/store"
+"$tmp/store"
+# Expanded local SYSTEM image and saved v1 file are optional private fixtures.
+if [[ $# == 2 ]]; then
+ "$cc" "${flags[@]}" "$repo/tests/native_cache_layout_test.c" "$repo/common/cache/b2l_cache_core.c" "$repo/common/cache/CacheHfs.c" "$repo/common/cache/CacheSha.c" -o "$tmp/layout"
+ "$tmp/layout" "$1" "$2"
+fi

@@ -39,8 +39,8 @@ static EFI_STATUS partition(const CHAR16*upper,const CHAR16*lower,struct disk_re
  FreePool(handles);return found==1?EFI_SUCCESS:EFI_NOT_FOUND;
 }
 UINTN B2lStageNativeCache(VOID*destination,UINTN capacity){
- struct disk_reader system,root;uint8_t vh[512],id[12],headers[8192];uint64_t extent;
- if(capacity<B2L_NC_BYTES||EFI_ERROR(partition(L"SYSTEM",L"system",&system))||
+ struct disk_reader system,root;uint8_t vh[512],id[12],headers[8192];struct b2l_cache_fork fork;struct b2l_io view;
+ if(capacity<B2L_NC_HEADER||EFI_ERROR(partition(L"SYSTEM",L"system",&system))||
     EFI_ERROR(partition(L"USERDATA",L"userdata",&root)))return 0;
  if(read_disk(&root,1024,vh,sizeof(vh))||vh[0]!='H'||(vh[1]!='+'&&vh[1]!='X'))return 0;
  CopyMem(id,vh+104,8);CopyMem(id+8,vh+16,4);
@@ -49,12 +49,13 @@ UINTN B2lStageNativeCache(VOID*destination,UINTN capacity){
  struct b2l_io io={read_disk,NULL,NULL,&system,system.bytes};
  int error=b2l_hfs_open(h,&io);
  if(!error)error=b2l_hfs_find(h,"b2l-cache.bin",&file);
- if(!error)error=b2l_hfs_cache_extent(h,&file,&extent);
- if(!error)error=read_disk(&system,extent,headers,sizeof(headers));
- if(!error&&(b2l_nc_header(headers,id)||b2l_nc_header(headers+4096,id)||memcmp(headers,headers+4096,4096)))error=-1;
- if(!error)error=read_disk(&system,extent,destination,B2L_NC_BYTES);
+ if(!error)error=b2l_hfs_cache_view(h,&file,&fork,&view);
+ if(!error)error=view.read(view.ctx,0,headers,sizeof(headers));
+ const uint8_t*selected=NULL;
+ if(!error)error=b2l_nc_headers(headers,id,file.data.size,&selected);
+ if(!error)error=view.read(view.ctx,0,destination,B2L_NC_HEADER);
  FreePool(h);
  if(error){Print(L"B2L cache: absent or invalid; normal emulation retained.\r\n");return 0;}
- Print(L"B2L cache: staged %u MiB read-only; HFS replay/apply belongs to XNU.\r\n",B2L_NC_BYTES/(1024*1024));
- return B2L_NC_BYTES;
+ Print(L"B2L cache: staged 8 KiB headers; disk capacity %lu MiB; XNU streams records.\r\n",file.data.size/(1024*1024));
+ return B2L_NC_HEADER;
 }

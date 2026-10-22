@@ -8,11 +8,12 @@ claim PAC hardware, or translate arbitrary binaries statically.
 
 1. Firmware locates unique SYSTEM and USERDATA partitions on the BOOT UFS LUN.
    It reads the clean journaled SYSTEM HFS cache file and validates its format,
-   root identity, contiguous allocation and separation from HFS metadata and
+   root identity, up to eight fully allocated inline extents and separation from HFS metadata and
    journal. EFI never writes either volume.
-2. The 128 MiB snapshot is placed inside the allocated EFI conventional-memory
-   arena, after the Mach-O image and before the Apple device tree/boot arguments.
-   `topOfKernelData` reserves it; `/chosen/b2l,native-cache` describes its range.
+2. Only the 8 KiB A/B headers are staged in the EFI conventional-memory arena.
+   `topOfKernelData` reserves them; `/chosen/b2l,native-cache` describes the range.
+   XNU compares them with disk headers and keeps a bounded1.5MiB hot window
+   plus a disk-sized key/hash index (about6MiB for the0049 SYSTEM layout).
    Existing framebuffer, firmware, DMA and EL2 reservations remain excluded.
 3. XNU independently validates the SYSTEM file geometry and its private bounded
    writer. No writable whole-disk or SYSTEM BSD node is introduced. The existing
@@ -24,7 +25,7 @@ claim PAC hardware, or translate arbitrary binaries statically.
    Already translated pages are skipped; unrelated edits are never overwritten.
 5. Only after successful emulation does the EL0 trap path enqueue a bounded
    observation. It performs no filesystem I/O, allocation or waiting for storage.
-   A background kernel thread resolves the referenced VM map through constant
+   One of four background kernel workers resolves the referenced VM map through constant
    submaps, shadows and backing pagers to the exact vnode/file offset. The file
    word must still match the observed instruction. It then persists a new record.
 
@@ -37,15 +38,24 @@ stronger LDAR). No scan of literal pools or unexecuted text is performed.
 
 ## Persistence and interrupted power
 
-The fixed file contains two identical 4 KiB format/root headers, followed by
-5461 dual-copy cells. Each 12 KiB copy contains a sequence number, root CNID,
+The preallocated file contains two4KiB format/root headers followed by dual-copy
+cells. V1 retains its original128MiB geometry. V2 uses64-bit file size, a header
+generation and a committed record high-water mark;0049 has241271 cells in
+5929500672 bytes. The disk limit follows the validated file allocation rather
+than the RAM window. Original/native records remain on disk after RAM eviction. Each 12 KiB copy contains a sequence number, root CNID,
 file length, aligned page offset, Mach-O/cache UUID, original and translated
 4 KiB pages, SHA-256 hashes and CRC32. Every changed word is independently
 checked against the allowlisted native converter. PACGA cannot become a NOP.
 
 The worker writes the alternate copy, flushes storage, reads it back and only
 then publishes it to the in-memory index. The previous valid copy is retained.
-Any persistence error disables learning for the rest of that boot. Equal
+For a new cell beyond the high-water mark, the worker next writes, flushes and
+reads back an alternate header before publishing the cell to the RAM index.
+A torn new header keeps the previous committed range usable. A torn record
+falls back to its previous valid copy. Length alone is not corruption detection;
+CRC, SHA256, sequence and exact readback are retained. Hot-window eviction never
+removes a durable undo record. Any persistence error disables learning for the
+rest of that boot. Equal
 sequence numbers with unequal valid records and duplicate source-page keys
 reject the cache before root-file writes.
 
@@ -68,10 +78,11 @@ new pages; it never evicts the only retained original of an applied page.
 `scripts/init-native-cache.py` creates a new local `b2l-cache.bin` from a saved
 4096-byte root volume header. It never accesses a device. Allocate the complete
 file on the otherwise-unused SYSTEM HFS volume and cleanly unmount it. The
-loader rejects sparse/fragmented/overflow extents and a pending SYSTEM journal;
+loader rejects sparse/overflow extents and more than eight inline extents and a pending SYSTEM journal;
 USERDATA can retain its pending journal because only XNU writes it after replay.
 
-Run `scripts/test-native-cache.sh [local-system-image]` for format/conversion,
+Run `scripts/test-native-cache.sh [local-system-image]` or
+`scripts/test-native-cache.sh expanded-system-image saved-v1-cache` for format/conversion,
 SHA-256, stale-page, every torn-record prefix, every interrupted root-page prefix
 and optional real-HFS placement checks. `scripts/test-loader.sh` verifies DT and
 RAM constraints; `scripts/test-arm64e.sh <prepared-xnu>` preserves emulator and
@@ -83,7 +94,7 @@ proof of the first learned record and the subsequent pre-init application.
 
 Runtime lines:
 
-- `B2L cache: staged 128 MiB read-only` (EFI).
+- `B2L cache: staged headers read-only` (EFI).
 - `B2L NCACHE: bounded SYSTEM file storage ready` (native transport).
 - `B2L NCACHE: pre-init apply applied=... already=... skipped=...`.
 - `B2L NCACHE: automatic learning enabled`.
@@ -122,3 +133,15 @@ selective-restoration prefix. An optional private-cache run accepts main-cache,
 owning-subcache and saved-native-cache paths as its three arguments. It verifies
 that every restored byte equals the pristine measured code, while every byte
 outside that range retains its cached native value.
+
+## Expanding an existing cache (0049)
+
+Read and retain the entire unmounted SYSTEM partition first, including the log
+tail. Work on a local clone only. `scripts/grow-native-cache.py` backs up and
+recreates the local mounted cache file, fully allocates available space, copies
+all old cells byte-for-byte, writes V2 headers and zeroes the new range. If local
+allocation fails, recreate the stage from the original partition image; never
+flash the failed stage. Cleanly detach it before using the actual HFS reader to
+validate file extents and compare preserved cells. The private log tail stays
+outside the HFS volume. No recovery mount, journal replay or raw write to the
+USERDATA HFS root is part of this workflow.

@@ -324,8 +324,8 @@ EFI_STATUS EFIAPI UefiMain(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
     UINT64 CachePhysical=ALIGN_VALUE(Base+Used,4096);
     UINTN CacheSize=0;
     if(CachePhysical>=Base && CachePhysical-Base<=ArenaSize &&
-       B2L_NC_BYTES+B2L_DT_SPACE+sizeof(*Args)+8192<=ArenaSize-(CachePhysical-Base))
-        CacheSize=B2lStageNativeCache((VOID*)(UINTN)CachePhysical,B2L_NC_BYTES);
+       B2L_NC_HEADER+B2L_DT_SPACE+sizeof(*Args)+8192<=ArenaSize-(CachePhysical-Base))
+        CacheSize=B2lStageNativeCache((VOID*)(UINTN)CachePhysical,B2L_NC_HEADER);
     if(CacheSize){Dt.native_cache_base=CachePhysical;Dt.native_cache_size=CacheSize;}
     DtPhysical = ALIGN_VALUE(CachePhysical+CacheSize, 4096);
     Status = b2l_build_device_tree((VOID *)(UINTN)DtPhysical, B2L_DT_SPACE, &Dt, &DtSize) == 0

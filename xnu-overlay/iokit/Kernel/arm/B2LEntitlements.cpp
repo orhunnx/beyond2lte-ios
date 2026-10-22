@@ -22,6 +22,7 @@ public:
     void *der;
     size_t der_len;
     bool platform;
+    uint8_t cdhash[20],cdhash_type;
     char *identity;
     size_t identity_len;
     bool init(void) APPLE_KEXT_OVERRIDE;
@@ -31,6 +32,7 @@ OSDefineMetaClassAndStructors(B2LMetadataEntitlements, OSObject);
 bool B2LMetadataEntitlements::init(void)
 {
     dict=nullptr;xml=nullptr;xml_len=0;der=nullptr;der_len=0;platform=false;identity=nullptr;identity_len=0;
+    memset(cdhash,0,sizeof(cdhash));cdhash_type=0;
     return OSObject::init();
 }
 void B2LMetadataEntitlements::free(void)
@@ -146,6 +148,17 @@ int b2l_ent_copy_identity(const void*p,void**out,size_t*length)
     auto e=ent(p);if(!e||!e->identity)return ENOENT;
     void*copy=kalloc_data(e->identity_len,Z_WAITOK);if(!copy)return ENOMEM;
     memcpy(copy,e->identity,e->identity_len);*out=copy;*length=e->identity_len;return 0;
+}
+bool b2l_ent_attach_cdhash(void*p,const uint8_t hash[20],uint8_t type)
+{
+ auto e=ent(p);if(!e||!hash||e->cdhash_type||(type!=2&&type!=3))return false;
+ memcpy(e->cdhash,hash,20);e->cdhash_type=type;return true;
+}
+int b2l_ent_copy_cdhash(const void*p,uint8_t out[20],uint8_t*type)
+{
+ if(out)memset(out,0,20);if(type)*type=0;if(!out||!type)return EINVAL;
+ auto e=ent(p);if(!e||!e->cdhash_type)return ENOENT;
+ memcpy(out,e->cdhash,20);*type=e->cdhash_type;return 0;
 }
 /* Called only while constructing an unpublished, exclusively owned label. */
 bool b2l_ent_attach_der(void*p,const void*blob,size_t length)

@@ -71,6 +71,12 @@ bool b2l_amfi_is_platform(proc_t process)
     void*e=proc_copy_ent(process);bool result=b2l_ent_platform(e);
     b2l_ent_release(e);return result;
 }
+int b2l_amfi_proc_copy_cdhash(proc_t process,uint8_t out[20],uint8_t*type)
+{
+ if(out)memset(out,0,20);if(type)*type=0;if(!out||!type)return EINVAL;
+ void*e=proc_copy_ent(process);int error=b2l_ent_copy_cdhash(e,out,type);
+ b2l_ent_release(e);return error;
+}
 int b2l_amfi_proc_copy_xml(proc_t process,void**out,size_t*length)
 {
     if(out)*out=NULL;if(length)*length=0;
@@ -129,6 +135,9 @@ static void *vnode_copy_ent(struct vnode*vp,off_t offset)
        !b2l_ent_attach_der(e,xml,der_length)){
         b2l_ent_release(e);e=NULL;
     }
+    uint8_t hash[20],hash_type=0;
+    if(e&&b2l_amfi_read_cdhash(&reader,(uint64_t)offset,hash,&hash_type)==B2L_AMFI_XML_PRESENT)
+        (void)b2l_ent_attach_cdhash(e,hash,hash_type);
     kfree_data(xml,B2L_AMFI_XML_MAX);
     /* Malformed/absent/DER-only XML grants no entitlements. Rootfs platform
      * classification is the separate, explicitly enabled development policy. */

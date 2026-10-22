@@ -2,6 +2,7 @@
  * Bounded unsigned Mach-O XML metadata reader. Independent of cs_blob and
  * CodeDirectory validation; no input byte is treated as authenticated. */
 #include "b2l_amfi_metadata.h"
+#include "b2l_cache_core.h"
 static uint32_t be32(const uint8_t *p){return (uint32_t)p[0]<<24|(uint32_t)p[1]<<16|(uint32_t)p[2]<<8|p[3];}
 static uint32_t le32(const uint8_t *p){return (uint32_t)p[3]<<24|(uint32_t)p[2]<<16|(uint32_t)p[1]<<8|p[0];}
 static uint64_t be64(const uint8_t *p){return (uint64_t)be32(p)<<32|be32(p+4);}
@@ -136,4 +137,34 @@ b2l_amfi_read_der(const struct b2l_amfi_reader*r,uint64_t base,void*out,size_t c
     if(where.der_size>capacity)return B2L_AMFI_XML_INVALID;
     if(read_at(r,where.signature+where.der_at,out,where.der_size))return B2L_AMFI_XML_IO;
     *length=where.der_size;return B2L_AMFI_XML_PRESENT;
+}
+
+/* Hash original primary CodeDirectory bytes for identity metadata only. This
+ * neither validates its page hashes nor authenticates its CMS signature. */
+enum b2l_amfi_metadata_result
+b2l_amfi_read_cdhash(const struct b2l_amfi_reader*r,uint64_t base,uint8_t out[20],uint8_t*type)
+{
+ if(out)memset(out,0,20);if(type)*type=0;if(!out||!type)return B2L_AMFI_XML_INVALID;
+ struct b2l_amfi_locations where;enum b2l_amfi_metadata_result result=find_metadata(r,base,&where);
+ if(result!=B2L_AMFI_XML_PRESENT)return result;if(!where.cd_at)return B2L_AMFI_XML_ABSENT;
+ uint8_t header[44],chunk[512],digest[32];
+ if(where.cd_size<44)return B2L_AMFI_XML_INVALID;
+ uint64_t at=where.signature+where.cd_at;
+ if(read_at(r,at,header,sizeof(header)))return B2L_AMFI_XML_IO;
+ uint32_t version=be32(header+8),minimum=44;
+ if(version<0x20000u||version>0x20600u||be32(header)!=0xfade0c02u)return B2L_AMFI_XML_INVALID;
+ if(version>=0x20100u)minimum=48;if(version>=0x20200u)minimum=52;if(version>=0x20300u)minimum=64;
+ if(version>=0x20400u)minimum=88;if(version>=0x20500u)minimum=96;if(version>=0x20600u)minimum=108;
+ uint32_t ident=be32(header+20);
+ if(where.cd_size<minimum||ident<minimum||ident>=where.cd_size)return B2L_AMFI_XML_INVALID;
+ /* Current rootfs uses SHA256. Unsupported hashes remain unavailable rather
+  * than returning a made-up digest or silently switching hash algorithms. */
+ if(!((header[37]==2&&header[36]==32)||(header[37]==3&&header[36]==20)))return B2L_AMFI_XML_ABSENT;
+ struct b2l_sha hash;b2l_sha_init(&hash);
+ for(uint32_t done=0;done<where.cd_size;){
+  size_t take=where.cd_size-done;if(take>sizeof(chunk))take=sizeof(chunk);
+  if(read_at(r,at+done,chunk,take))return B2L_AMFI_XML_IO;
+  b2l_sha_update(&hash,chunk,take);done+=(uint32_t)take;
+ }
+ b2l_sha_final(&hash,digest);memcpy(out,digest,20);*type=header[37];return B2L_AMFI_XML_PRESENT;
 }

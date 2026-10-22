@@ -1,0 +1,30 @@
+--- a/bsd/kern/kern_proc.c
++++ b/bsd/kern/kern_proc.c
+@@ -3912,7 +3912,12 @@
+ 			return EINVAL;
+ 		}
+ 
+-		error = vn_getcdhash(tvp, toff, cdhash_info.hash, &cdhash_info.type);
++#if defined(ARM64_BOARD_CONFIG_B2L)
++		if (b2l_amfi_active())
++			error = b2l_amfi_proc_copy_cdhash(pt, cdhash_info.hash, &cdhash_info.type);
++		else
++#endif
++			error = vn_getcdhash(tvp, toff, cdhash_info.hash, &cdhash_info.type);
+ 		proc_rele(pt);
+ 
+ 		if (error == 0) {
+@@ -3932,7 +3937,12 @@
+ 			return EINVAL;
+ 		}
+ 
+-		error = vn_getcdhash(tvp, toff, cdhash_info.hash, &cdhash_info.type);
++#if defined(ARM64_BOARD_CONFIG_B2L)
++		if (b2l_amfi_active())
++			error = b2l_amfi_proc_copy_cdhash(pt, cdhash_info.hash, &cdhash_info.type);
++		else
++#endif
++			error = vn_getcdhash(tvp, toff, cdhash_info.hash, &cdhash_info.type);
+ 		proc_rele(pt);
+ 
+ 		if (error == 0) {

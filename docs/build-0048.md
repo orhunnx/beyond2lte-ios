@@ -47,4 +47,11 @@ Then only BOOT was updated after matching0047's complete prefix; full0048
 readback matched `2bf65ad9665df342e3c66826c4e58cf0a3100a6be151b843510bea414a11d0f5` and reboot was requested.
 Firmware/loader were reused. No recovery USERDATA writes were made. Known0039
 and the device-proven0047 package remain available for rollback.
-0048 runtime worker activity/performance remains to be observed on the device.
+The next recovery capture (epoch14,199 valid records,330720 text bytes,
+zero missing positions/producer drops) proves four workers active: peak=4,
+visited CPU mask=0x3f, and all four per-worker completion counters advance.
+Errors and flush_errors remain zero. At the last sample learned=4015,
+queued=422069, skipped=37089, dropped=1264560. queued is cumulative accepted
+requests, not pending depth. The full5461-slot disk file remains the capacity
+limit. Recurring userspace container/Image4 crashes are separate from SMP and
+storage correctness; SpringBoard/UI operation is not proven.

@@ -30,4 +30,7 @@ enum b2l_amfi_metadata_result b2l_amfi_read_der(
 enum b2l_amfi_metadata_result b2l_amfi_read_identity(
     const struct b2l_amfi_reader *, uint64_t slice_offset,
     void *identity, size_t capacity, size_t *length);
+/* Original primary SHA256 CodeDirectory identity, not signature verification. */
+enum b2l_amfi_metadata_result b2l_amfi_read_cdhash(
+    const struct b2l_amfi_reader *, uint64_t, uint8_t[20], uint8_t*);
 #endif

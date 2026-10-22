@@ -17,6 +17,12 @@ void b2l_nc_p64(uint8_t*,uint64_t);
 uint32_t b2l_nc_crc(const void*,size_t);
 int b2l_nc_native(uint32_t,uint32_t*);
 int b2l_nc_header(const uint8_t*,const uint8_t root_id[12]);
+/* V2 separates uint64_t disk capacity from RAM; v1 remains readable. */
+uint64_t b2l_nc_header_bytes(const uint8_t*);
+uint32_t b2l_nc_header_used(const uint8_t*);
+uint64_t b2l_nc_header_generation(const uint8_t*);
+int b2l_nc_headers(const uint8_t*,const uint8_t[12],uint64_t,const uint8_t**);
+int b2l_nc_header_v2(uint8_t*,const uint8_t[12],uint64_t,uint32_t,uint64_t);
 int b2l_nc_record(const uint8_t*);
 /* Returns selected copy, NULL for an unused/torn cell, -1 on ambiguous copies. */
 int b2l_nc_select(const uint8_t*,const uint8_t**);

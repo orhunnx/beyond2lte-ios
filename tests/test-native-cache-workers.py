@@ -17,7 +17,7 @@ bodies = section('static int identity(', 'static int same_file(')
 bodies += section('static int persist(', '\nvoid b2l_native_cache_observe')
 worker_struct = section('struct cache_worker {', '\nstatic struct cache_worker workers')
 pre = r'''
-#include "b2l_cache_core.h"
+#include "b2l_nc_store.h"
 #include <assert.h>
 #include <pthread.h>
 #include <stdatomic.h>
@@ -63,7 +63,10 @@ static int b2l_cache_resolve(vm_map_t map,uint64_t pc,vnode_t *vp,uint64_t *off)
 static uint8_t *snapshot,*disk;
 static uint32_t ready;
 static uint64_t skipped,dropped,failures,learned;
-struct slot_key {uint64_t inode,offset;};static struct slot_key keys[B2L_NC_SLOTS];
+static struct b2l_nc_key keys[B2L_NC_SLOTS];
+static struct b2l_nc_store store;
+#define SLOT_COUNT store.slots
+static uint32_t buckets[16384],tags[8];
 struct integrity_file {int result;struct {uint64_t offset,bytes;} range;};
 static struct integrity_file exclusion={1,{4096,4096}};
 static struct integrity_file *integrity_file(vnode_t vp,uint64_t size,const uint8_t uuid[16]){
@@ -82,11 +85,16 @@ static int io_read(void *ctx,uint64_t off,void *out,size_t n){
 static struct b2l_io cache_io={.read=io_read,.write=io_write,.sync=io_sync,.bytes=B2L_NC_BYTES};
 '''
 post = r'''
+static const uint8_t*slot(unsigned i){const uint8_t*r;assert(!b2l_ncs_read(&store,i,&r));return r;}
+
 static struct cache_worker contexts[4];
 struct job {struct request q;struct cache_worker *w;};
 static void *run(void *arg){struct job *j=arg;learn(&j->q,j->w);return NULL;}
 static void reset(void){
  memset(keys,0,sizeof(keys));memset(snapshot,0,MAX_DISK);memset(disk,0,MAX_DISK);
+ memset(&store,0,sizeof(store));memset(buckets,0,sizeof(buckets));memset(tags,0,sizeof(tags));
+ store.io=cache_io;store.keys=keys;store.slots=store.used=B2L_NC_SLOTS;
+ store.buckets=buckets;store.bucket_count=16384;store.hot=snapshot+B2L_NC_HEADER;store.tags=tags;store.hot_count=8;
  memset(contexts,0,sizeof(contexts));skipped=dropped=failures=learned=0;ready=1;writes=fail_stage=use_barrier=0;
  for(unsigned i=0;i<4;i++){
   memset(&files[i],0,sizeof(files[i]));files[i].ino=42+i;
@@ -124,7 +132,7 @@ int main(void){
   assert(!ready&&failures==1&&learned==1&&writes==2);
   assert(!memcmp(slot(0),old,sizeof(old)));assert(!memcmp(disk+B2L_NC_HEADER,old,sizeof(old)));
  }
- reset();for(unsigned i=0;i<B2L_NC_SLOTS;i++)keys[i].inode=1000+i;
+ reset();for(unsigned i=0;i<B2L_NC_SLOTS;i++)keys[i].inode=1000+i;store.next_free=B2L_NC_SLOTS;
  batch(0,0);assert(dropped==4&&!writes);
  reset();memcpy(files[0].bytes,"dyld_v1",7);memset(files[0].bytes+88,7,16);
  batch(0,0);assert(skipped==4&&!writes); // corecrypto exclusion still enforced

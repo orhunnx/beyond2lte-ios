@@ -26,13 +26,45 @@ int b2l_nc_native(uint32_t i,uint32_t*out){
  if((i&0x3ffffc00u)==0x38bfc000u){*out=(i&0xc00003ffu)|0x08dffc00u;return 1;}
  return 0;
 }
+uint64_t b2l_nc_header_bytes(const uint8_t*h){return b2l_nc_u32(h+8)==1?b2l_nc_u32(h+12):b2l_nc_u64(h+36);}
+uint32_t b2l_nc_header_used(const uint8_t*h){return b2l_nc_u32(h+8)==1?b2l_nc_u32(h+20):b2l_nc_u32(h+52);}
+uint64_t b2l_nc_header_generation(const uint8_t*h){return b2l_nc_u32(h+8)==1?0:b2l_nc_u64(h+44);}
 int b2l_nc_header(const uint8_t*h,const uint8_t id[12]){
- if(memcmp(h,"B2LNC001",8)||b2l_nc_u32(h+8)!=1||b2l_nc_u32(h+12)!=B2L_NC_BYTES||
- b2l_nc_u32(h+16)!=B2L_NC_COPY||b2l_nc_u32(h+20)!=B2L_NC_SLOTS||memcmp(h+24,id,12))return -1;
- if(b2l_nc_u32(h+60)!=b2l_nc_crc(h,60))return -1;
- for(unsigned i=36;i<60;i++)if(h[i])return -1;
+ unsigned version=b2l_nc_u32(h+8);
+ if(b2l_nc_u32(h+16)!=B2L_NC_COPY||memcmp(h+24,id,12)||
+    b2l_nc_u32(h+60)!=b2l_nc_crc(h,60))return -1;
+ if(version==1){
+  if(memcmp(h,"B2LNC001",8)||b2l_nc_u32(h+12)!=B2L_NC_BYTES||b2l_nc_u32(h+20)!=B2L_NC_SLOTS)return -1;
+  for(unsigned i=36;i<60;i++)if(h[i])return -1;
+ }else if(version==2){
+  uint64_t bytes=b2l_nc_u64(h+36);
+  if(memcmp(h,"B2LNC002",8)||b2l_nc_u32(h+12)||bytes<B2L_NC_HEADER+B2L_NC_CELL||
+     (bytes&4095)||((bytes-B2L_NC_HEADER)/B2L_NC_CELL)>0xffffffffULL||
+     b2l_nc_u32(h+20)!=(bytes-B2L_NC_HEADER)/B2L_NC_CELL||
+     b2l_nc_u32(h+52)>b2l_nc_u32(h+20)||!b2l_nc_u64(h+44)||b2l_nc_u32(h+56))return -1;
+ }else return -1;
  for(unsigned i=64;i<4096;i++)if(h[i])return -1;
  return 0;
+}
+int b2l_nc_headers(const uint8_t*h,const uint8_t id[12],uint64_t bytes,const uint8_t**out){
+ *out=NULL;int a=!b2l_nc_header(h,id)&&b2l_nc_header_bytes(h)==bytes;
+ int b=!b2l_nc_header(h+4096,id)&&b2l_nc_header_bytes(h+4096)==bytes;
+ if(!a&&!b)return -1;
+ if(a&&b){
+  if(b2l_nc_u32(h+8)!=b2l_nc_u32(h+4096+8))return -1;
+  uint64_t ga=b2l_nc_header_generation(h),gb=b2l_nc_header_generation(h+4096);
+  if(ga==gb&&memcmp(h,h+4096,4096))return -1;
+  *out=ga>=gb?h:h+4096;
+ }else *out=a?h:h+4096;
+ return 0;
+}
+int b2l_nc_header_v2(uint8_t*h,const uint8_t id[12],uint64_t bytes,uint32_t used,uint64_t generation){
+ if(bytes<B2L_NC_HEADER+B2L_NC_CELL||(bytes&4095)||(bytes-B2L_NC_HEADER)/B2L_NC_CELL>0xffffffffULL||
+    used>(bytes-B2L_NC_HEADER)/B2L_NC_CELL||!generation)return -1;
+ memset(h,0,4096);memcpy(h,"B2LNC002",8);b2l_nc_p32(h+8,2);b2l_nc_p32(h+16,B2L_NC_COPY);
+ b2l_nc_p32(h+20,(uint32_t)((bytes-B2L_NC_HEADER)/B2L_NC_CELL));memcpy(h+24,id,12);
+ b2l_nc_p64(h+36,bytes);b2l_nc_p64(h+44,generation);b2l_nc_p32(h+52,used);
+ b2l_nc_p32(h+60,b2l_nc_crc(h,60));return b2l_nc_header(h,id);
 }
 static int zeros(const uint8_t*p,unsigned n){while(n--)if(*p++)return 0;return 1;}
 int b2l_nc_record(const uint8_t*r){

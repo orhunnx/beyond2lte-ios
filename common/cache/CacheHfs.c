@@ -3,6 +3,7 @@
  * Overflow extents, compressed/sparse forks and non-ASCII paths fail closed.
  */
 #include "CacheCore.h"
+#include "b2l_cache_core.h"
 static uint16_t b16(const uint8_t*p){return (uint16_t)p[0]<<8|p[1];}
 static uint32_t b32(const uint8_t*p){return (uint32_t)b16(p)<<16|b16(p+2);}
 static uint64_t b64(const uint8_t*p){return (uint64_t)b32(p)<<32|b32(p+4);}
@@ -67,21 +68,56 @@ int b2l_hfs_find(struct b2l_hfs*h,const char*path,struct b2l_hfs_file*out){
  return -1;
 }
 
-/* Authorize one fully allocated contiguous cache data fork, excluding every
- * volume metadata fork, volume headers, JIB and internal journal. */
-int b2l_hfs_cache_extent(struct b2l_hfs*h,const struct b2l_hfs_file*f,uint64_t*out){
+/* Authorize only fully allocated cache data extents, never volume metadata,
+ * headers, internal journal or JIB. A fork may use its eight inline extents. */
+static int cache_fork_validate(struct b2l_hfs*h,const struct b2l_hfs_file*f){
  uint8_t vh[512],jib[512];
- if(!h||!f||!out||h->block_size!=4096||f->data.size!=128u*1024u*1024u||
-    !f->data.start[0]||f->data.count[0]!=f->data.size/h->block_size)return -1;
- for(unsigned i=1;i<8;i++)if(f->data.start[i]||f->data.count[i])return -1;
+ if(!h||!f||h->block_size!=4096||f->data.size<B2L_NC_HEADER+B2L_NC_CELL||(f->data.size&4095))return -1;
  if(h->io.read(h->io.ctx,1024,vh,512)||h->io.read(h->io.ctx,(uint64_t)h->jib*h->block_size,jib,512))return -3;
  if(!(b32(vh+4)&(1u<<8))||(b32(vh+4)&(1u<<11))||b2l_hfs_journal_empty(h))return -1;
- uint64_t a=(uint64_t)f->data.start[0]*h->block_size,n=f->data.size,b=b64(jib+36),z=b64(jib+44);
- if(a<4096||a>h->bytes||n>h->bytes-a||a+n>h->bytes-4096||
-    !(a+n<=b||b+z<=a)||!((uint64_t)(h->jib+1)*h->block_size<=a||a+n<=(uint64_t)h->jib*h->block_size))return -1;
- for(unsigned k=0;k<5;k++){struct b2l_fork meta;
-  if(fork_decode(h,vh+112+k*80,&meta))return -1;
-  for(unsigned i=0;i<8;i++){b=(uint64_t)meta.start[i]*h->block_size;z=(uint64_t)meta.count[i]*h->block_size;
-   if(z&&!(a+n<=b||b+z<=a))return -1;}}
- *out=a;return 0;
+ uint64_t total=0;int ended=0;
+ for(unsigned k=0;k<8;k++){
+  uint32_t start=f->data.start[k],count=f->data.count[k];
+  if(!count){if(start)return -1;ended=1;continue;}
+  if(ended||!start||start>=h->blocks||count>h->blocks-start)return -1;
+  uint64_t a=(uint64_t)start*h->block_size,n=(uint64_t)count*h->block_size,b=b64(jib+36),z=b64(jib+44);
+  if(a<4096||a+n>h->bytes-4096||!(a+n<=b||b+z<=a)||
+     !((uint64_t)(h->jib+1)*h->block_size<=a||a+n<=(uint64_t)h->jib*h->block_size))return -1;
+  for(unsigned j=0;j<k;j++){
+   b=(uint64_t)f->data.start[j]*h->block_size;z=(uint64_t)f->data.count[j]*h->block_size;
+   if(z&&!(a+n<=b||b+z<=a))return -1;
+  }
+  for(unsigned j=0;j<5;j++){
+   struct b2l_fork meta;if(fork_decode(h,vh+112+j*80,&meta))return -1;
+   for(unsigned i=0;i<8;i++){
+    b=(uint64_t)meta.start[i]*h->block_size;z=(uint64_t)meta.count[i]*h->block_size;
+    if(z&&!(a+n<=b||b+z<=a))return -1;
+   }
+  }
+  total+=n;
+ }
+ return total==f->data.size?0:-1;
+}
+static int cache_fork_rw(struct b2l_cache_fork*f,uint64_t off,void*p,size_t n,int write){
+ if(off>f->data.size||n>f->data.size-off||(write&&!f->volume.write))return -1;
+ for(unsigned i=0;i<8&&n;i++){
+  uint64_t len=(uint64_t)f->data.count[i]*f->block_size;if(off>=len){off-=len;continue;}
+  size_t take=n;if((uint64_t)take>len-off)take=(size_t)(len-off);
+  uint64_t at=(uint64_t)f->data.start[i]*f->block_size+off;
+  int e=write?f->volume.write(f->volume.ctx,at,p,take):f->volume.read(f->volume.ctx,at,p,take);
+  if(e)return e;p=(uint8_t*)p+take;n-=take;off=0;
+ }return n?-1:0;
+}
+static int cache_fork_read(void*v,uint64_t off,void*p,size_t n){return cache_fork_rw(v,off,p,n,0);}
+static int cache_fork_write(void*v,uint64_t off,const void*p,size_t n){return cache_fork_rw(v,off,(void*)p,n,1);}
+static int cache_fork_sync(void*v){struct b2l_cache_fork*f=v;return f->volume.sync?f->volume.sync(f->volume.ctx):-1;}
+int b2l_hfs_cache_view(struct b2l_hfs*h,const struct b2l_hfs_file*f,struct b2l_cache_fork*out,struct b2l_io*io){
+ if(!out||!io)return -1;int e=cache_fork_validate(h,f);if(e)return e;
+ memcpy(&out->volume,&h->io,sizeof(out->volume));memcpy(&out->data,&f->data,sizeof(out->data));out->block_size=h->block_size;
+ *io=(struct b2l_io){cache_fork_read,h->io.write?cache_fork_write:NULL,h->io.sync?cache_fork_sync:NULL,out,f->data.size};return 0;
+}
+int b2l_hfs_cache_extent(struct b2l_hfs*h,const struct b2l_hfs_file*f,uint64_t*out){
+ if(!out)return -1;int e=cache_fork_validate(h,f);if(e)return e;
+ for(unsigned i=1;i<8;i++)if(f->data.start[i]||f->data.count[i])return -1;
+ *out=(uint64_t)f->data.start[0]*h->block_size;return 0;
 }
