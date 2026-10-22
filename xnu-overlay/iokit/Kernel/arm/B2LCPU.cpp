@@ -28,7 +28,7 @@ extern "C" processor_t b2l_bind_cpu(processor_t processor);
 static_assert(MAX_CPUS == 6, "CPU0..5 A55/A75 experiment only");
 class B2LCPU;
 static B2LCPU *b2l_cpus[MAX_CPUS];
-static unsigned registered_cpus;
+static unsigned providers_ready, registered_cpus;
 static uint32_t xcall_observed[MAX_CPUS];
 
 /* SMCCC v1.0 permits x0..x17 to change. No version/feature probe is needed:
@@ -63,6 +63,7 @@ class B2LCPU : public IOCPU {
     unsigned cpuInitialized = 0;
 public:
     bool start(IOService *) APPLE_KEXT_OVERRIDE;
+    void registerProcessor(void);
     void free(void) APPLE_KEXT_OVERRIDE;
     void initCPU(bool) APPLE_KEXT_OVERRIDE;
     kern_return_t startCPU(vm_offset_t, vm_offset_t) APPLE_KEXT_OVERRIDE;
@@ -91,6 +92,27 @@ bool B2LCPU::start(IOService *provider)
     cpuName = OSSymbol::withCStringNoCopy(id < 4 ? "Exynos 9820 Cortex-A55" : "Exynos 9820 Cortex-A75");
     if (!cpuName) return false;
     setCPUNumber(id);
+    /* IOService matching is asynchronous. Collect all providers before a
+     * single coordinator registers CPU0 first, then the secondaries. */
+    B2LCPU *expected = nullptr;
+    if (!__atomic_compare_exchange_n(&b2l_cpus[id], &expected, this, false,
+            __ATOMIC_RELEASE, __ATOMIC_RELAXED))
+        panic("B2L SMP: duplicate CPU provider %u", id);
+    unsigned count = __atomic_add_fetch(&providers_ready, 1, __ATOMIC_ACQ_REL);
+    b2l_early_trace("B2L SMP: provider CPU%u ready (%u/6)\n", id, count);
+    if (count == 6) {
+        thread_t coordinator;
+        kern_return_t kr = kernel_thread_start(&B2LCPU::finishStartup, nullptr, &coordinator);
+        if (kr != KERN_SUCCESS) panic("B2L CPU: coordinator failed (%d)", kr);
+        thread_deallocate(coordinator);
+    }
+    return true;
+}
+
+void B2LCPU::registerProcessor(void)
+{
+    unsigned id = getCPUNumber();
+    const ml_topology_cpu_t *cpu = &ml_get_topology_info()->cpus[id];
     ml_processor_info_t info = {};
     info.cpu_id = reinterpret_cast<cpu_id_t>(this);
     info.phys_id = cpu->phys_id;
@@ -109,16 +131,8 @@ bool B2LCPU::start(IOService *provider)
     if (kr != KERN_SUCCESS || pmi)
         panic("B2L CPU: registration failed (%d), PMI=%p", kr, pmi);
     b2l_early_trace("B2L SMP: register CPU%u returned\n", id);
-    __atomic_store_n(&b2l_cpus[id], this, __ATOMIC_RELEASE);
     __atomic_add_fetch(&registered_cpus, 1, __ATOMIC_ACQ_REL);
     registerService();
-    if (id == 0) {
-        thread_t reporter;
-        kr = kernel_thread_start(&B2LCPU::finishStartup, nullptr, &reporter);
-        if (kr != KERN_SUCCESS) panic("B2L CPU: startup observer failed (%d)", kr);
-        thread_deallocate(reporter);
-    }
-    return true;
 }
 
 void B2LCPU::initCPU(bool boot)
@@ -165,6 +179,15 @@ void B2LCPU::signalCPU(IOCPU *target)
 
 void B2LCPU::finishStartup(void *, wait_result_t)
 {
+    if (cpu_number() != 0 || __atomic_load_n(&providers_ready, __ATOMIC_ACQUIRE) != 6)
+        panic("B2L SMP: coordinator before complete CPU provider topology");
+    /* Announce known topology, without claiming any secondary is online. */
+    ml_set_max_cpus(6);
+    for (unsigned id = 0; id < 6; ++id) {
+        B2LCPU *c = __atomic_load_n(&b2l_cpus[id], __ATOMIC_ACQUIRE);
+        if (!c) panic("B2L SMP: missing provider %u", id);
+        c->registerProcessor();
+    }
     uint64_t deadline, last_stage[6];
     for (unsigned i = 0; i < 6; ++i) last_stage[i] = UINT64_MAX;
     nanoseconds_to_deadline(20 * NSEC_PER_SEC, &deadline);
@@ -214,7 +237,6 @@ void B2LCPU::finishStartup(void *, wait_result_t)
         b2l_early_trace("B2L SMP: CPU%u timer and remote xcall verified\n", sender);
         b2l_bind_cpu(previous);
     }
-    ml_set_max_cpus(6);
     ml_cpu_init_completed();
     b2l_cpus[0]->cpusRunning();
     IOService::publishResource(gIOAllCPUInitializedKey, kOSBooleanTrue);

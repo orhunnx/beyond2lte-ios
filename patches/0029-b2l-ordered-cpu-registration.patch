@@ -1,0 +1,113 @@
+--- a/osfmk/arm64/machine_routines.c
++++ b/osfmk/arm64/machine_routines.c
+@@ -1650,6 +1650,10 @@
+     processor_t *processor_out, ipi_handler_t *ipi_handler_out,
+     perfmon_interrupt_handler_func *pmi_handler_out)
+ {
++#if defined(B2L)
++    extern void b2l_early_trace(const char *, ...);
++    b2l_early_trace("B2L REG: cpu=%u enter\n", in_processor_info->log_id);
++#endif
+ 	cpu_data_t *this_cpu_datap = cpu_datap(in_processor_info->log_id);
+ 	assert3u(this_cpu_datap->cpu_number, ==, in_processor_info->log_id); /* from ml_bootstrap_processors() */
+ 
+@@ -1706,7 +1710,13 @@
+ 	processor_t processor = PERCPU_GET_WITH_BASE(other_percpu_base(this_cpu_datap->cpu_number), processor);
+ 	*processor_out = processor;
+ 	if (!is_boot_cpu) {
++#if defined(B2L)
++        b2l_early_trace("B2L REG: cpu=%u smr begin\n", in_processor_info->log_id);
++#endif
+ 		smr_cpu_init(*processor_out);
++#if defined(B2L)
++        b2l_early_trace("B2L REG: cpu=%u smr done\n", in_processor_info->log_id);
++#endif
+ 	}
+ 	*ipi_handler_out = cpu_signal_handler;
+ #if CONFIG_CPU_COUNTERS
+@@ -1751,7 +1761,13 @@
+ #endif
+ 
+ 	if (!is_boot_cpu) {
++#if defined(B2L)
++        b2l_early_trace("B2L REG: cpu=%u random begin\n", in_processor_info->log_id);
++#endif
+ 		random_cpu_init(this_cpu_datap->cpu_number);
++#if defined(B2L)
++        b2l_early_trace("B2L REG: cpu=%u random done\n", in_processor_info->log_id);
++#endif
+ 		// now let next CPU register itself
+ 		OSIncrementAtomic((SInt32*)&real_ncpus);
+ 	}
+@@ -1766,7 +1782,13 @@
+ 	 * It needs to be booted here for the boot processor to finish the
+ 	 * subsequent registerInterrupt operations and unblock the other cores.
+ 	 */
++#if defined(B2L)
++    b2l_early_trace("B2L REG: cpu=%u processor_boot begin\n", in_processor_info->log_id);
++#endif
+ 	processor_boot(processor);
++#if defined(B2L)
++    b2l_early_trace("B2L REG: cpu=%u processor_boot done\n", in_processor_info->log_id);
++#endif
+ #endif /* !USE_APPLEARMSMP */
+ 
+ 	return KERN_SUCCESS;
+--- a/osfmk/kern/processor.c
++++ b/osfmk/kern/processor.c
+@@ -1304,8 +1304,15 @@
+ processor_boot(
+ 	processor_t                     processor)
+ {
++#if defined(B2L)
++    extern void b2l_early_trace(const char *, ...);
++    b2l_early_trace("B2L BOOT: cpu=%d lock begin\n", processor->cpu_id);
++#endif
+ 	lck_mtx_lock(&cluster_powerdown_lock);
+ 	lck_mtx_lock(&processor_updown_lock);
++#if defined(B2L)
++    b2l_early_trace("B2L BOOT: cpu=%d locks held\n", processor->cpu_id);
++#endif
+ 
+ 	assert(!sched_is_in_sleep());
+ 	assert(!sched_is_cpu_init_completed());
+@@ -1324,11 +1331,23 @@
+ 	 *	Create the idle processor thread.
+ 	 */
+ 	if (processor->idle_thread == THREAD_NULL) {
++#if defined(B2L)
++        b2l_early_trace("B2L BOOT: cpu=%d idle thread begin\n", processor->cpu_id);
++#endif
+ 		idle_thread_create(processor, processor_start_thread);
++#if defined(B2L)
++        b2l_early_trace("B2L BOOT: cpu=%d idle thread done\n", processor->cpu_id);
++#endif
+ 	}
+ 
+ 	if (processor->processor_self == IP_NULL) {
++#if defined(B2L)
++        b2l_early_trace("B2L BOOT: cpu=%d IPC begin\n", processor->cpu_id);
++#endif
+ 		ipc_processor_init(processor);
++#if defined(B2L)
++        b2l_early_trace("B2L BOOT: cpu=%d IPC done\n", processor->cpu_id);
++#endif
+ 	}
+ 
+ 	if (processor == master_processor) {
+@@ -1336,9 +1355,15 @@
+ 
+ 		ml_cpu_power_enable(processor->cpu_id);
+ 
++#if defined(B2L)
++        b2l_early_trace("B2L BOOT: cpu=%d bind begin\n", processor->cpu_id);
++#endif
+ 		processor_t prev = thread_bind(processor);
+ 		thread_block(THREAD_CONTINUE_NULL);
+ 
++#if defined(B2L)
++        b2l_early_trace("B2L BOOT: cpu=%d cpu_start begin\n", processor->cpu_id);
++#endif
+ 		cpu_start(processor->cpu_id);
+ 
+ 		assert(processor->state == PROCESSOR_RUNNING);

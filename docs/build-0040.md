@@ -109,3 +109,13 @@ local package. Reboot was requested. No recovery filesystem mount, journal
 replay, raw USERDATA write, cache clearing or partition-layout change occurred.
 The cache worker is unchanged. Hardware6/6 proof and sustained runtime remain
 pending the device screen or a subsequent saved log; no speedup is claimed.
+
+## Hardware result: rapid reset
+
+The user reports a rapid restart loop. A video frame shows all six register
+begin markers but no returned marker, CPU_ON result or6/6 proof in that frame.
+It does not establish that no later marker was emitted before reset.
+Recovery extraction is byte-identical to the previous0039 epoch12 capture:
+no0040 persistent epoch exists. The reset therefore has no new disk log;
+its precise cause is still unknown. Build0041 makes provider arrival separate
+from ordered CPU registration and adds finer native registration diagnostics.

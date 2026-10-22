@@ -181,3 +181,7 @@ lsd aborts, so that failure remains unresolved.
 cores, using a fresh MAX_CPUS6 build and per-core early startup diagnostics.
 M4 cores remain absent. The single cache worker is retained until real per-core
 timer/IPI proof and sustained runtime have been confirmed on the device.
+
+[Build0041](docs/build-0041.md) separates provider arrival from ordered CPU0-first
+registration after0040's rapid reset. Fine-grained early registration/scheduler
+markers are added; six-core hardware proof remains pending.
