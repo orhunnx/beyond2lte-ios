@@ -58,6 +58,7 @@ static struct cred*cred_new(void*owned){struct cred*c=calloc(1,sizeof(*c));asser
 static void*next_ent;
 static void*vnode_copy_ent(struct vnode*v,off_t o){(void)v;(void)o;void*e=next_ent;next_ent=NULL;return e;}
 static bool b2l_ent_copy_xml(const void*e,void**out,size_t*n){if(out)*out=NULL;if(n)*n=0;if(!e||!out||!n)return false;*out=malloc(4);memcpy(*out,"XML",4);*n=4;return true;}
+static bool b2l_ent_copy_der(const void*e,void**out,size_t*n){return b2l_ent_copy_xml(e,out,n);}
 static int b2l_ent_copy_identity(const void*e,void**out,size_t*n){if(out)*out=NULL;if(n)*n=0;if(!out||!n)return EINVAL;if(!e)return ENOENT;const char id[]="example.fixture";*out=malloc(sizeof(id));memcpy(*out,id,sizeof(id));*n=sizeof(id);return 0;}
 typedef struct{int identifier;}amfi_t;
 static const amfi_t b2l_amfi={1},other_amfi={2};
@@ -65,7 +66,7 @@ static const amfi_t*amfi;
 static void amfi_interface_register(const amfi_t*t){assert(!amfi);amfi=t;++register_calls;}
 static void b2l_early_trace(const char*s){assert(s);++earlylogs;}
 '''
-names=['b2l_amfi_requested','b2l_amfi_active','b2l_amfi_vnode_is_platform','label_ent','label_replace','label_init','label_destroy','label_associate','proc_copy_ent','b2l_amfi_is_platform','b2l_amfi_proc_copy_xml','b2l_amfi_proc_copy_identity','label_exec','register_interface']
+names=['b2l_amfi_requested','b2l_amfi_active','b2l_amfi_vnode_is_platform','label_ent','label_replace','label_init','label_destroy','label_associate','proc_copy_ent','b2l_amfi_is_platform','b2l_amfi_proc_copy_xml','b2l_amfi_proc_copy_der','b2l_amfi_proc_copy_identity','label_exec','register_interface']
 main=r'''
 int main(void){
  amfi=&other_amfi;register_interface();assert(!register_calls&&!b2l_amfi_registered);
@@ -77,6 +78,7 @@ int main(void){
  struct cred*a=cred_new(b2l_ent_create(true)),*b=cred_new(NULL);label_init(&b->label);label_associate(a,b);assert(((struct ent*)a->label.value)->refs==2);cred_drop(a);assert(((struct ent*)b->label.value)->refs==1);
  struct proc p={b,CS_PLATFORM_BINARY};assert(b2l_amfi_is_platform(&p));p.flags=0;assert(!b2l_amfi_is_platform(&p));p.flags=CS_PLATFORM_BINARY;
  void*out=(void*)1;size_t n=9;assert(!b2l_amfi_proc_copy_xml(&p,&out,&n)&&n==4);free(out);
+ out=(void*)1;n=9;assert(!b2l_amfi_proc_copy_der(&p,&out,&n)&&n==4);free(out);
  out=(void*)1;n=9;assert(!b2l_amfi_proc_copy_identity(&p,&out,&n)&&n==sizeof("example.fixture"));free(out);
  struct cred*replacement=cred_new(b2l_ent_create(false));swap_cred=replacement;void*held=proc_copy_ent(&p);assert(b2l_ent_platform(held)&&p.cred==replacement&&((struct ent*)held)->refs==1);b2l_ent_release(held);assert(!b2l_amfi_is_platform(&p));
  struct cred*c=cred_new(NULL);label_associate(p.cred,c);next_ent=b2l_ent_create(true);unsigned flags=0x100;int disjoint=1;

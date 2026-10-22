@@ -18,7 +18,7 @@ int main(void){struct b2l_amfi_reader r={sizeof(data),rd,NULL};valid(0);assert(r
  valid(0);le(data+40,4090);assert(run(&r,0)==B2L_AMFI_XML_INVALID);
  valid(0);be(data+256+16,19);assert(run(&r,0)==B2L_AMFI_XML_INVALID);
  valid(0);be(data+256+24,65537);assert(run(&r,0)==B2L_AMFI_XML_INVALID);
- valid(0);be(data+256+12,7);assert(run(&r,0)==B2L_AMFI_XML_ABSENT);
+ valid(0);be(data+256+12,6);assert(run(&r,0)==B2L_AMFI_XML_ABSENT);
  valid(0);be(data+256+8,65);assert(run(&r,0)==B2L_AMFI_XML_INVALID);
  /* Two slots sharing/overlapping the XML payload are rejected. */
  valid(0);be(data+264,2);be(data+272,28);be(data+276,7);be(data+280,28);be(data+284,0xfade7171);be(data+288,20);assert(run(&r,0)==B2L_AMFI_XML_INVALID);

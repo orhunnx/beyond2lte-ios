@@ -78,6 +78,13 @@ int b2l_amfi_proc_copy_xml(proc_t process,void**out,size_t*length)
     void*e=proc_copy_ent(process);bool ok=b2l_ent_copy_xml(e,out,length);
     b2l_ent_release(e);return ok?0:ENOENT;
 }
+int b2l_amfi_proc_copy_der(proc_t process,void**out,size_t*length)
+{
+    if(out)*out=NULL;if(length)*length=0;
+    if(!out||!length)return EINVAL;
+    void*e=proc_copy_ent(process);bool ok=b2l_ent_copy_der(e,out,length);
+    b2l_ent_release(e);return ok?0:ENOENT;
+}
 int b2l_amfi_proc_copy_identity(proc_t process,void**out,size_t*length)
 {
     if(out)*out=NULL;if(length)*length=0;
@@ -114,6 +121,14 @@ static void *vnode_copy_ent(struct vnode*vp,off_t offset)
         result==B2L_AMFI_XML_PRESENT?length:0,true,id,identifier_len);
     /* Malformed XML must not discard a separately well-formed identifier. */
     if(!e&&id)e=b2l_ent_create_metadata(NULL,0,true,id,identifier_len);
+    /* Read the original DER slot while this credential object is unpublished.
+     * The opaque bytes are copied, never converted into a fabricated CE context. */
+    if(!e)e=b2l_ent_create(NULL,0,true);
+    size_t der_length=0;
+    if(e&&b2l_amfi_read_der(&reader,(uint64_t)offset,xml,B2L_AMFI_XML_MAX,&der_length)==B2L_AMFI_XML_PRESENT&&
+       !b2l_ent_attach_der(e,xml,der_length)){
+        b2l_ent_release(e);e=NULL;
+    }
     kfree_data(xml,B2L_AMFI_XML_MAX);
     /* Malformed/absent/DER-only XML grants no entitlements. Rootfs platform
      * classification is the separate, explicitly enabled development policy. */

@@ -15,6 +15,11 @@ clangxx_path="$(xcrun --find clang++)"
  -fsanitize=address,undefined -I"$repo_root/xnu-overlay/bsd/kern" \
  "$repo_root/tests/test-identity.c" "$repo_root/xnu-overlay/bsd/kern/b2l_amfi_metadata.c" \
  -o "$task_test_dir/identity"
+"$clang_path" -isysroot "$sdk_path" -std=c11 -Wall -Wextra -Werror \
+ -fsanitize=address,undefined -I"$repo_root/xnu-overlay/bsd/kern" \
+ "$repo_root/tests/test-der-metadata.c" "$repo_root/xnu-overlay/bsd/kern/b2l_amfi_metadata.c" \
+ -o "$task_test_dir/der"
+"$task_test_dir/der"
 "$task_test_dir/identity"
 "$task_test_dir/metadata"
 "$clangxx_path" -isysroot "$sdk_path" -std=c++17 -Wall -Wextra -Werror \

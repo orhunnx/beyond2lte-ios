@@ -19,6 +19,8 @@ public:
     OSDictionary *dict;
     void *xml;
     size_t xml_len;
+    void *der;
+    size_t der_len;
     bool platform;
     char *identity;
     size_t identity_len;
@@ -28,13 +30,14 @@ public:
 OSDefineMetaClassAndStructors(B2LMetadataEntitlements, OSObject);
 bool B2LMetadataEntitlements::init(void)
 {
-    dict=nullptr;xml=nullptr;xml_len=0;platform=false;identity=nullptr;identity_len=0;
+    dict=nullptr;xml=nullptr;xml_len=0;der=nullptr;der_len=0;platform=false;identity=nullptr;identity_len=0;
     return OSObject::init();
 }
 void B2LMetadataEntitlements::free(void)
 {
     OSSafeReleaseNULL(dict);
     if(xml)kfree_data(xml,xml_len);
+    if(der)kfree_data(der,der_len);
     if(identity)kfree_data(identity,identity_len);
     OSObject::free();
 }
@@ -143,6 +146,21 @@ int b2l_ent_copy_identity(const void*p,void**out,size_t*length)
     auto e=ent(p);if(!e||!e->identity)return ENOENT;
     void*copy=kalloc_data(e->identity_len,Z_WAITOK);if(!copy)return ENOMEM;
     memcpy(copy,e->identity,e->identity_len);*out=copy;*length=e->identity_len;return 0;
+}
+/* Called only while constructing an unpublished, exclusively owned label. */
+bool b2l_ent_attach_der(void*p,const void*blob,size_t length)
+{
+    auto e=ent(p);if(!e||e->der||!blob||length<=8||length>B2L_AMFI_DER_MAX)return false;
+    if(OSReadBigInt32(blob,0)!=0xfade7172u||OSReadBigInt32(blob,4)!=length)return false;
+    void*copy=kalloc_data(length,Z_WAITOK);if(!copy)return false;
+    memcpy(copy,blob,length);e->der=copy;e->der_len=length;return true;
+}
+bool b2l_ent_copy_der(const void*p,void**out,size_t*length)
+{
+    if(out)*out=nullptr;if(length)*length=0;
+    auto e=ent(p);if(!out||!length||!e||!e->der)return false;
+    void*copy=kalloc_data(e->der_len,Z_WAITOK);if(!copy)return false;
+    memcpy(copy,e->der,e->der_len);*out=copy;*length=e->der_len;return true;
 }
 void b2l_ent_retain(void*p){if(p)((OSObject*)p)->retain();}
 void b2l_ent_release(void*p){if(p)((OSObject*)p)->release();}

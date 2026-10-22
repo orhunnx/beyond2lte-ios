@@ -11,12 +11,15 @@ extern "C" {
 bool b2l_amfi_active(void);
 bool b2l_amfi_is_platform(struct proc *);
 bool b2l_amfi_vnode_is_platform(struct vnode *);
+int b2l_amfi_proc_copy_der(struct proc *, void **, size_t *);
 int b2l_amfi_proc_copy_xml(struct proc *, void **, size_t *);
 int b2l_amfi_proc_copy_identity(struct proc *, void **, size_t *);
 void b2l_amfi_policy_register(void);
 void *b2l_ent_create(const void *, size_t, bool);
 void *b2l_ent_create_metadata(const void *, size_t, bool, const void *, size_t);
 int b2l_ent_copy_identity(const void *, void **, size_t *);
+bool b2l_ent_attach_der(void *, const void *, size_t);
+bool b2l_ent_copy_der(const void *, void **, size_t *);
 void b2l_ent_retain(void *);
 void b2l_ent_release(void *);
 bool b2l_ent_platform(const void *);

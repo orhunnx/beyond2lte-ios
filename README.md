@@ -171,3 +171,7 @@ BOOT readback and reboot are verified; runtime confirmation is pending.
 [Build 0038](docs/build-0038.md) adds missing-only persona metadata initialization
 after the recovered daemon log identifies ENOENT for its manifest. BOOT readback
 and reboot are verified; daemon startup and UI remain runtime tests.
+
+[Build 0039](docs/build-0039.md) supplies original DER entitlement metadata
+through the iOS 26 SecTask query interface, targeting shared-container and lsd
+failures. BOOT readback and reboot are verified; runtime results are pending.

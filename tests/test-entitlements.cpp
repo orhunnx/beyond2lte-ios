@@ -46,4 +46,16 @@ int main(){int base=live_objects;auto b=blob("<?xml version=\"1.0\"?><plist vers
  assert(!b2l_ent_create_metadata(nullptr,0,true,"",1));assert(!b2l_ent_create_metadata(nullptr,0,true,"a\0b",4));
  p=b2l_ent_create_metadata(nullptr,0,true,identity,sizeof(identity));allocation_fail=true;copy=(void*)1;n=1;assert(b2l_ent_copy_identity(p,&copy,&n)==ENOMEM&&!copy&&!n);allocation_fail=false;b2l_ent_release(p);
  assert(live_objects==base&&live_buffers==0);
+ uint8_t der[]={0xfa,0xde,0x71,0x72,0,0,0,10,0x30,0};
+ p=b2l_ent_create(nullptr,0,true);assert(p&&b2l_ent_attach_der(p,der,sizeof(der)));
+ assert(!b2l_ent_attach_der(p,der,sizeof(der)));der[8]=0x31;
+ copy=(void*)1;n=9;assert(b2l_ent_copy_der(p,&copy,&n)&&n==10&&((uint8_t*)copy)[8]==0x30);
+ b2l_ent_release(p);assert(((uint8_t*)copy)[8]==0x30);kfree_data(copy,n);
+ p=b2l_ent_create(nullptr,0,true);copy=(void*)1;n=9;assert(!b2l_ent_copy_der(p,&copy,&n)&&!copy&&!n);
+ der[3]=0x71;assert(!b2l_ent_attach_der(p,der,sizeof(der)));der[3]=0x72;
+ der[7]=11;assert(!b2l_ent_attach_der(p,der,sizeof(der)));der[7]=10;
+ allocation_fail=true;assert(!b2l_ent_attach_der(p,der,sizeof(der)));allocation_fail=false;
+ assert(b2l_ent_attach_der(p,der,sizeof(der)));allocation_fail=true;copy=(void*)1;n=9;
+ assert(!b2l_ent_copy_der(p,&copy,&n)&&!copy&&!n);allocation_fail=false;b2l_ent_release(p);
+ assert(live_objects==base&&live_buffers==0);
  puts("Actual C++ metadata adapter: typed queries, retained copies, immutable nesting, bounded XML, failure cleanup PASS");return 0;}

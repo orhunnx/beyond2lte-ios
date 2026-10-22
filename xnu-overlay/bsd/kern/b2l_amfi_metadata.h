@@ -4,6 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #define B2L_AMFI_XML_MAX 65536u
+#define B2L_AMFI_DER_MAX 65536u
 #define B2L_AMFI_IDENTITY_MAX 1024u
 #define B2L_AMFI_SIGNATURE_MAX (2u * 1024u * 1024u)
 struct b2l_amfi_reader {
@@ -20,6 +21,10 @@ enum b2l_amfi_metadata_result {
 enum b2l_amfi_metadata_result b2l_amfi_read_xml(
     const struct b2l_amfi_reader *, uint64_t slice_offset,
     void *xml, size_t capacity, size_t *length);
+/* Opaque DER GenericBlob metadata; userspace validates its DER contents. */
+enum b2l_amfi_metadata_result b2l_amfi_read_der(
+    const struct b2l_amfi_reader *, uint64_t slice_offset,
+    void *der, size_t capacity, size_t *length);
 /* Owned metadata string producer; includes its terminating NUL. Only the
  * primary CodeDirectory slot is considered. No signature/hash validation. */
 enum b2l_amfi_metadata_result b2l_amfi_read_identity(

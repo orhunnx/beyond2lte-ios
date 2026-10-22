@@ -69,3 +69,10 @@ bootstrap metadata through mounted HFS. Expected marker:
 
 No daemon launch success or graphical startup is claimed before the next log.
 Private logs, catalogs, firmware and binaries remain ignored local artifacts.
+
+## Recovered device result
+
+The next capture contains no prior persona-manifest abort. The native persona
+and user-session files are present, with one persona user. The helper itself
+returns EINVAL, so full staging/publication is not marked verified. ManagedSettings
+container lookup and repeated lsd aborts motivate [0039](build-0039.md).

@@ -1,0 +1,44 @@
+--- a/bsd/kern/kern_proc.c
++++ b/bsd/kern/kern_proc.c
+@@ -3995,6 +3995,19 @@
+ 		goto out;
+ 	}
+ 	case CS_OPS_DER_ENTITLEMENTS_BLOB: {
++#if defined(ARM64_BOARD_CONFIG_B2L)
++		if (b2l_amfi_active()) {
++			/* Existing target/audit-token checks ran before this switch.
++			 * Original opaque metadata, no signature or trust claim. */
++			void *der = NULL; size_t der_length = 0;
++			error = b2l_amfi_proc_copy_der(pt, &der, &der_length);
++			if (!error) {
++				error = csops_copy_token(der, der_length, usize, uaddr);
++				kfree_data(der, der_length);
++			}
++			goto out;
++		}
++#endif
+ 		const void *start;
+ 		size_t length;
+ 		struct cs_blob* blob;
+--- a/bsd/kern/kern_exit.c
++++ b/bsd/kern/kern_exit.c
+@@ -2031,15 +2031,15 @@
+ static void
+ b2l_trace_crash(proc_t p, int rv, struct uthread *ut)
+ {
+-	static unsigned samples[6];
++	static unsigned samples[7];
+ 	const char *names[] = { "SpringBoard", "usermanagerd", "UserEventAgent",
+-	    "securityd", "ManagedSettings", "mobileactivat" };
++	    "securityd", "ManagedSettings", "mobileactivat", "lsd" };
+ 	unsigned slot;
+ 	if (!exception_log_max_pid || proc_getpid(p) > exception_log_max_pid ||
+ 	    p != current_proc() || (!rv && !ut->uu_exception)) return;
+-	for (slot = 0; slot < 6; slot++)
++	for (slot = 0; slot < 7; slot++)
+ 		if (!strncmp(p->p_comm, names[slot], strlen(names[slot]))) break;
+-	if (slot == 6 || __atomic_fetch_add(&samples[slot], 1, __ATOMIC_RELAXED) >= 4) return;
++	if (slot == 7 || __atomic_fetch_add(&samples[slot], 1, __ATOMIC_RELAXED) >= 4) return;
+ 	const char *desc = exit_reason_get_string_desc(p->p_exit_reason);
+ 	b2l_early_trace("B2L CRASH: %s[%d] status=0x%x exception=%u code=0x%llx sub=0x%llx\n",
+ 	    p->p_comm, proc_getpid(p), rv, ut->uu_exception,
