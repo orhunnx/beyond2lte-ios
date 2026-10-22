@@ -13,6 +13,8 @@ static volatile uint32_t *b2l_fb;
 static uint64_t b2l_fb_physical, b2l_fb_length;
 static unsigned b2l_width, b2l_height, b2l_stride, b2l_scale;
 static unsigned b2l_cols, b2l_rows, b2l_row, b2l_col;
+static unsigned b2l_gui;
+void b2l_early_gui_present(void){__atomic_store_n(&b2l_gui,1,__ATOMIC_RELEASE);}
 static unsigned b2l_active, b2l_panic_owner, b2l_panic_floor;
 static unsigned b2l_console_cpu(void)
 {
@@ -46,7 +48,7 @@ b2l_early_putc(char c)
 	unsigned owner = __atomic_load_n(&b2l_panic_owner, __ATOMIC_ACQUIRE);
 	if (owner && owner != b2l_console_cpu()) return;
 	b2l_log_append(c);
-	if (!b2l_active) return;
+	if (!b2l_active || (__atomic_load_n(&b2l_gui,__ATOMIC_ACQUIRE) && !owner)) return;
 	if (c == '\r') { b2l_col = 0; return; }
 	if (c == '\n') { b2l_newline(); return; }
 	if (b2l_col >= b2l_cols) b2l_newline();

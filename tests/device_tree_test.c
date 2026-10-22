@@ -32,6 +32,8 @@ static size_t decode(const unsigned char *buf, size_t size, size_t off,
         if (!strcmp(name,"reg") && node_name && !strcmp(node_name,"framebuffer")) {
             uint64_t pa; memcpy(&pa,buf+off,8); assert(depth==1 && len==16 && pa==0xca000000);
         }
+        if (!strcmp(name,"crypto-hash-method")) assert(len==9 && !memcmp(buf+off,"sha2-384",9));
+        if (!strcmp(name,"display-scale")) assert(len==4 && read32(buf+off)==3);
         if (!strcmp(name,"random-seed")) { ++seed_properties; assert(len==256); for(unsigned j=0;j<256;++j)assert(buf[off+j]==(unsigned char)(j+1)); }
         if (!strcmp(name,"kernel-ctrr-to-be-enabled")) {
             ++ctrr_properties;
@@ -107,7 +109,7 @@ int main(void)
     assert(b2l_build_device_tree(buf,sizeof(buf),&c,&used)==0);
     unsigned nodes=0, props=0;
     assert(decode(buf,used,0,0,&nodes,&props,"")==used);
-    assert(nodes==18 && props>42 && seed_properties==1);
+    assert(nodes==19 && props>42 && seed_properties==1);
     assert(memory_map_nodes==1 && defaults_nodes==1 && ctrr_properties==1);
     assert(boot_lun_properties==1 && secondary_properties==1);
     assert(development_security_properties==4);

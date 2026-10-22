@@ -1,0 +1,42 @@
+--- a/iokit/conf/files
++++ b/iokit/conf/files
+@@ -171,3 +171,10 @@
+ iokit/Kernel/arm/b2l_aks_core.c optional b2l
+ 
+ iokit/Kernel/arm/B2LWatchdog.cpp optional iokitcpp b2l
++
++iokit/Kernel/arm/B2LSurface.cpp optional iokitcpp b2l
++iokit/Kernel/arm/B2LFramebuffer.cpp optional iokitcpp b2l
++iokit/Kernel/arm/hid/B2LHID.cpp optional iokitcpp b2l
++iokit/Kernel/arm/hid/IOHIDEvent.cpp optional iokitcpp b2l
++iokit/Kernel/arm/hid/IOHIDEventServiceQueue.cpp optional iokitcpp b2l
++iokit/Kernel/arm/hid/IOHIDEventServiceUserClient.cpp optional iokitcpp b2l
+--- a/iokit/KernelConfigTables.cpp
++++ b/iokit/KernelConfigTables.cpp
+@@ -54,6 +54,26 @@
+     "     'IOMatchCategory' = AppleKeyStore;"
+     "   },"
+     "   {"
++    "     'IOClass' = IOCoreSurfaceRoot;"
++    "     'IOProviderClass' = IOResources;"
++    "     'IOMatchCategory' = IOCoreSurfaceRoot;"
++    "   },"
++    "   {"
++    "     'IOClass' = AppleCLCD;"
++    "     'IOProviderClass' = IOPlatformDevice;"
++    "     'IONameMatch' = 'samsung,beyond2lte-display';"
++    "   },"
++    "   {"
++    "     'IOClass' = B2LHIDButtons;"
++    "     'IOProviderClass' = IOResources;"
++    "     'IOMatchCategory' = B2LHIDButtons;"
++    "   },"
++    "   {"
++    "     'IOClass' = B2LHIDTouch;"
++    "     'IOProviderClass' = IOResources;"
++    "     'IOMatchCategory' = B2LHIDTouch;"
++    "   },"
++    "   {"
+     "     'IOClass' = IOWatchdog;"
+     "     'IOProviderClass' = IOResources;"
+     "     'IOMatchCategory' = IOWatchdog;"

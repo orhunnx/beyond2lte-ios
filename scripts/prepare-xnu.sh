@@ -43,7 +43,12 @@ python3 "$repo_root/scripts/apply-board-patches.py" "$xnu_path" \
   "$repo_root/patches/0033-b2l-el1-affinity-translation.patch" \
   "$repo_root/patches/0034-b2l-cdhash-metadata-query.patch" \
   "$repo_root/patches/0035-b2l-service-fault-detail.patch" \
-  "$repo_root/patches/0036-b2l-signature-presence-status.patch"
+  "$repo_root/patches/0036-b2l-signature-presence-status.patch" \
+  "$repo_root/patches/0037-b2l-hfs-regular-file-swap.patch" \
+  "$repo_root/patches/0038-b2l-owned-entitlement-query-bridges.patch" \
+  "$repo_root/patches/0039-b2l-surface-framebuffer-hid-services.patch" \
+  "$repo_root/patches/0040-b2l-physical-gpio-touch-input.patch" \
+  "$repo_root/patches/0041-b2l-container-query-diagnostics.patch"
 # New files have separate provenance and are kept as an overlay.
 while IFS= read -r -d '' source_file; do
   relative="${source_file#"$repo_root/xnu-overlay/"}"

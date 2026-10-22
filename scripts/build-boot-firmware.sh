@@ -5,9 +5,11 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 : "${WORKSPACE:?Set WORKSPACE to the disposable prepared Mu-Silicium tree}"
 "$repo_root/scripts/build-efi.sh"
 loader="$WORKSPACE/Build/B2LXnu/RELEASE_CLANGPDB/AARCH64/XnuLoader.efi"
+touch_options=()
+if [[ "${B2L_ENABLE_TOUCH:-0}" == 1 ]]; then touch_options+=(--enable-touch); fi
 "${PYTHON_COMMAND:-python3}" "$repo_root/scripts/prepare-boot-firmware.py" \
   --mu "$WORKSPACE" --loader "$loader" \
-  --loader-guid 92742D9E-1A4F-42F8-9DC9-53895297B2F4
+  --loader-guid 92742D9E-1A4F-42F8-9DC9-53895297B2F4 "${touch_options[@]}"
 export PACKAGES_PATH="$WORKSPACE/Platforms/Samsung:$WORKSPACE/Common/Mu:$WORKSPACE/Common/Mu_OEM_Sample:$WORKSPACE/Silicon/Samsung:$WORKSPACE/Silicon/Silicium${PACKAGES_PATH:+:$PACKAGES_PATH}"
 # DSC build-time ACPI declarations remain external. Their firmware-volume
 # inclusion is disabled by the XNU profile; XNU uses an Apple device tree.

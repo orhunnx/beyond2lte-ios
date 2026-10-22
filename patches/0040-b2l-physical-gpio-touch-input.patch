@@ -1,0 +1,19 @@
+--- a/iokit/conf/files
++++ b/iokit/conf/files
+@@ -178,3 +178,6 @@
+ iokit/Kernel/arm/hid/IOHIDEvent.cpp optional iokitcpp b2l
+ iokit/Kernel/arm/hid/IOHIDEventServiceQueue.cpp optional iokitcpp b2l
+ iokit/Kernel/arm/hid/IOHIDEventServiceUserClient.cpp optional iokitcpp b2l
++
++iokit/Kernel/arm/B2LInput.cpp optional iokitcpp b2l
++iokit/Kernel/arm/B2LSecTsParser.c optional b2l
+--- a/iokit/KernelConfigTables.cpp
++++ b/iokit/KernelConfigTables.cpp
+@@ -78,6 +78,7 @@
+     "     'IOProviderClass' = IOResources;"
+     "     'IOMatchCategory' = IOWatchdog;"
+     "   },"
++    "   {'IOClass'=B2LInput;'IOProviderClass'=IOResources;'IOMatchCategory'=B2LInput;},"
+ #endif
+     "   {"
+     "     'IOClass'         = IOPanicPlatform;"

@@ -12,6 +12,9 @@ extern "C" {
 bool b2l_amfi_active(void);
 bool b2l_amfi_is_platform(struct proc *);
 bool b2l_amfi_vnode_is_platform(struct vnode *);
+int b2l_amfi_proc_copy_dict(struct proc *, void **);
+int b2l_amfi_vnode_copy_dict(struct vnode *, int64_t, void **);
+bool b2l_amfi_vnode_has_cdhash(struct vnode *, int64_t);
 int b2l_amfi_proc_copy_cdhash(struct proc *, uint8_t[20], uint8_t*);
 bool b2l_ent_attach_cdhash(void *, const uint8_t[20], uint8_t);
 int b2l_ent_copy_cdhash(const void *, uint8_t[20], uint8_t*);

@@ -1,0 +1,35 @@
+--- a/bsd/vfs/kpi_vfs.c
++++ b/bsd/vfs/kpi_vfs.c
+@@ -77,6 +77,10 @@
+  */
+ 
+ 
++#if defined(ARM64_BOARD_CONFIG_B2L)
++#include "../kern/b2l_amfi.h"
++#include <arm64/b2l_early.h>
++#endif
+ #include <sys/param.h>
+ #include <sys/systm.h>
+ #include <sys/proc_internal.h>
+@@ -4660,6 +4664,21 @@
+ 					_err = VNOP_RENAME(fdvp, *fvpp, fcnp, tdvp, *tvpp, tcnp, ctx);
+ 				}
+ 			}
++
++#if defined(ARM64_BOARD_CONFIG_B2L)
++            /* A5 0052/0117: data exchange is restricted to two regular files.
++             * Preserve errors for directories, other flags and other mounts. */
++            if (_err == ENOTSUP && flags == VFS_RENAME_SWAP &&
++                *fvpp != NULLVP && *tvpp != NULLVP &&
++                b2l_amfi_vnode_is_platform(*fvpp) && vnode_isreg(*tvpp) &&
++                vnode_mount(*fvpp) == vnode_mount(*tvpp) &&
++                !strcmp(vfs_statfs(vnode_mount(*fvpp))->f_fstypename, "hfs")) {
++                _err = VNOP_EXCHANGE(*fvpp, *tvpp, 0, ctx);
++                static unsigned samples;
++                if (__atomic_fetch_add(&samples, 1, __ATOMIC_RELAXED) < 16)
++                    b2l_early_trace("B2L HFS: regular-file swap exchange result=%d\n", _err);
++            }
++#endif
+ 		} else {
+ 			_err = VNOP_RENAME(fdvp, *fvpp, fcnp, tdvp, *tvpp, tcnp, ctx);
+ 		}

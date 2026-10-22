@@ -39,6 +39,7 @@ def main():
     p.add_argument("--mu", type=Path, required=True, help="Disposable Mu-Silicium build tree")
     p.add_argument("--loader", type=Path, required=True)
     p.add_argument("--loader-guid", required=True)
+    p.add_argument("--enable-touch", action="store_true", help="Initialize existing beyond2lte sec_ts driver before XNU handoff")
     a = p.parse_args()
     root = a.mu.resolve()
     guid = uuid.UUID(a.loader_guid)
@@ -46,6 +47,15 @@ def main():
     if root.name == "UEFI_beyond2lte" or not (root / "Mu_Basecore").is_dir():
         p.error("--mu must be a disposable Mu-Silicium build tree, not the reference repository")
     platform = root / "Platforms/Samsung/beyond2ltePkg"
+    if a.enable_touch:
+        dxe = platform / "Include/DXE.inc"
+        text = dxe.read_text()
+        marker = "  # INF beyond2ltePkg/Drivers/B2LTouchDxe/B2LTouchDxe.inf"
+        enabled = "  INF beyond2ltePkg/Drivers/B2LTouchDxe/B2LTouchDxe.inf"
+        if marker not in text and enabled not in text:
+            p.error("expected beyond2lte touch entry is absent")
+        dxe.write_text(text.replace(marker, enabled))
+
     dsc_path = platform / "beyond2lte.dsc"
     fdf_path = platform / "beyond2lte.fdf"
     library_root = root / "Silicon/Silicium/SiliciumPkg"

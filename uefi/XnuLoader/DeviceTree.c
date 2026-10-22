@@ -71,6 +71,9 @@ int b2l_build_device_tree(void *buffer, b2l_size capacity,
     prop(&w, &chosen, "dram-base", &c->memory_base, 8);
     prop(&w, &chosen, "dram-size", &c->memory_size, 8);
     prop(&w, &chosen, "debug-enabled", &one, 4);
+    text_prop(&w, &chosen, "crypto-hash-method", "sha2-384");
+    b2l_u32 display_scale = 3;
+    prop(&w, &chosen, "display-scale", &display_scale, 4);
     /* Development-board tuple consumed by mobileactivationd's native local
      * Hactivation path. No activation record or device identity is supplied.
      * Verified against the iOS 26.6.2 DeviceType initializer. */
@@ -145,6 +148,14 @@ int b2l_build_device_tree(void *buffer, b2l_size capacity,
     text_prop(&w, &gic, "interrupt-controller", "master");
     prop(&w, &gic, "reg", gic_regs, sizeof(gic_regs));
     end(&w, &gic);
+    if (c->video.base) {
+        struct node display = begin(&w, &arm_io, "disp0");
+        text_prop(&w, &display, "compatible", "samsung,beyond2lte-display");
+        text_prop(&w, &display, "device_type", "display");
+        b2l_u64 display_regs[] = {c->video.base, c->video.row_bytes * c->video.height};
+        prop(&w, &display, "reg", display_regs, sizeof(display_regs));
+        end(&w, &display);
+    }
     end(&w, &arm_io);
     if (c->video.base) {
         struct node fb = begin(&w, &root, "framebuffer");

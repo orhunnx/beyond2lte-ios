@@ -18,6 +18,8 @@ header=r'''
 #include <string.h>
 #include <stdio.h>
 #include <errno.h>
+#include <stdarg.h>
+#define strnstr(s,n,l) strstr(s,n)
 #ifndef __unused
 #define __unused __attribute__((unused))
 #endif
@@ -64,9 +66,13 @@ typedef struct{int identifier;}amfi_t;
 static const amfi_t b2l_amfi={1},other_amfi={2};
 static const amfi_t*amfi;
 static void amfi_interface_register(const amfi_t*t){assert(!amfi);amfi=t;++register_calls;}
-static void b2l_early_trace(const char*s){assert(s);++earlylogs;}
+static void b2l_early_trace(const char*s,...){assert(s);++earlylogs;}
+static bool b2l_ent_bool(const void*e,const char*n){(void)e;(void)n;return false;}
+static int b2l_ent_copy_cdhash(const void*e,uint8_t h[20],uint8_t*t){(void)e;(void)h;(void)t;return ENOENT;}
+static void kfree_data(void*p,size_t n){assert(n);free(p);}
+static void*b2l_ent_copy_dict(const void*e){if(e)b2l_ent_retain((void*)e);return (void*)e;}
 '''
-names=['b2l_amfi_requested','b2l_amfi_active','b2l_amfi_vnode_is_platform','label_ent','label_replace','label_init','label_destroy','label_associate','proc_copy_ent','b2l_amfi_is_platform','b2l_amfi_proc_copy_xml','b2l_amfi_proc_copy_der','b2l_amfi_proc_copy_identity','label_exec','register_interface']
+names=['b2l_amfi_requested','b2l_amfi_active','b2l_amfi_vnode_is_platform','label_ent','label_replace','label_init','label_destroy','label_associate','proc_copy_ent','b2l_amfi_is_platform','b2l_amfi_proc_copy_xml','b2l_amfi_proc_copy_der','b2l_amfi_proc_copy_identity','b2l_amfi_proc_copy_dict','label_exec','register_interface']
 main=r'''
 int main(void){
  amfi=&other_amfi;register_interface();assert(!register_calls&&!b2l_amfi_registered);
@@ -76,7 +82,7 @@ int main(void){
  struct mount m={MNT_ROOTFS};struct vnode v={VREG,&m};
  assert(b2l_amfi_vnode_is_platform(&v));v.kind=2;assert(!b2l_amfi_vnode_is_platform(&v));v.kind=VREG;m.flags=0;assert(!b2l_amfi_vnode_is_platform(&v));m.flags=MNT_ROOTFS;
  struct cred*a=cred_new(b2l_ent_create(true)),*b=cred_new(NULL);label_init(&b->label);label_associate(a,b);assert(((struct ent*)a->label.value)->refs==2);cred_drop(a);assert(((struct ent*)b->label.value)->refs==1);
- struct proc p={b,CS_PLATFORM_BINARY};assert(b2l_amfi_is_platform(&p));p.flags=0;assert(!b2l_amfi_is_platform(&p));p.flags=CS_PLATFORM_BINARY;
+ struct proc p={b,CS_PLATFORM_BINARY};void*copied_dict=NULL;assert(!b2l_amfi_proc_copy_dict(&p,&copied_dict)&&copied_dict==b->label.value);b2l_ent_release(copied_dict);assert(b2l_amfi_is_platform(&p));p.flags=0;assert(!b2l_amfi_is_platform(&p));p.flags=CS_PLATFORM_BINARY;
  void*out=(void*)1;size_t n=9;assert(!b2l_amfi_proc_copy_xml(&p,&out,&n)&&n==4);free(out);
  out=(void*)1;n=9;assert(!b2l_amfi_proc_copy_der(&p,&out,&n)&&n==4);free(out);
  out=(void*)1;n=9;assert(!b2l_amfi_proc_copy_identity(&p,&out,&n)&&n==sizeof("example.fixture"));free(out);

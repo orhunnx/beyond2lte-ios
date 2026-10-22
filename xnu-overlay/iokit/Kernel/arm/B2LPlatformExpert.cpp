@@ -46,5 +46,8 @@ B2LPlatformExpert::processTopLevel(IORegistryEntry *root)
 		cpus->release();
 	}
 	createNubs(this, IODTFindMatchingEntries(root, kIODTExclusive, excludeList()));
+    IORegistryEntry *armio=root->childFromPath("arm-io",gIODTPlane);
+    if(armio){createNubs(this,IODTFindMatchingEntries(armio,kIODTExclusive,"('gic')"));armio->release();}
+
 }
 #endif

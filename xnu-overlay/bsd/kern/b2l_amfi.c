@@ -98,6 +98,12 @@ int b2l_amfi_proc_copy_identity(proc_t process,void**out,size_t*length)
     void*e=proc_copy_ent(process);int error=b2l_ent_copy_identity(e,out,length);
     b2l_ent_release(e);return error;
 }
+int b2l_amfi_proc_copy_dict(proc_t process,void **out)
+{
+    if(!out)return EINVAL;*out=NULL;
+    void*e=proc_copy_ent(process);*out=b2l_ent_copy_dict(e);
+    b2l_ent_release(e);return 0;
+}
 struct vnode_reader {struct vnode*vp;};
 static int vnode_read_metadata(void*opaque,uint64_t at,void*out,size_t length)
 {
@@ -143,6 +149,19 @@ static void *vnode_copy_ent(struct vnode*vp,off_t offset)
      * classification is the separate, explicitly enabled development policy. */
     return e?e:b2l_ent_create(NULL,0,true);
 }
+int b2l_amfi_vnode_copy_dict(struct vnode *vp,off_t offset,void **out)
+{
+    if(!out||!vp||offset<0)return EINVAL;*out=NULL;
+    void*e=vnode_copy_ent(vp,offset);*out=b2l_ent_copy_dict(e);
+    b2l_ent_release(e);return 0;
+}
+bool b2l_amfi_vnode_has_cdhash(struct vnode *vp,off_t offset)
+{
+    if(!vp||offset<0||!b2l_amfi_vnode_is_platform(vp))return false;
+    void*e=vnode_copy_ent(vp,offset);uint8_t hash[20],type=0;
+    bool present=e&&b2l_ent_copy_cdhash(e,hash,&type)==0;
+    b2l_ent_release(e);return present;
+}
 static int label_will_exec(kauth_cred_t old __unused,struct vnode*vp __unused,
     off_t offset __unused,struct vnode*script __unused,struct label*vl __unused,
     struct label*sl __unused,struct label*el __unused,struct proc*p __unused,
@@ -157,6 +176,22 @@ static int label_exec(kauth_cred_t old __unused,kauth_cred_t new,
      * executables and scripts. Do not trust metadata from the script itself. */
     bool platform=b2l_amfi_vnode_is_platform(vp);
     void*e=vnode_copy_ent(vp,offset);
+    if(e){
+        void*identity=NULL;size_t identity_len=0;
+        if(!b2l_ent_copy_identity(e,&identity,&identity_len)){
+            const char *id=identity;
+            if(strnstr(id,"containermanager",identity_len)||strnstr(id,"backboard",identity_len)||strnstr(id,"lsd",identity_len)||strnstr(id,"ManagedSettings",identity_len)||strnstr(id,"appprotection",identity_len)){
+                static unsigned samples;
+                if(__atomic_fetch_add(&samples,1,__ATOMIC_RELAXED)<32){
+                    uint8_t hash[20],type=0;
+                    b2l_early_trace("B2L EXECMETA: id=%s system_container=%d manager=%d cdhash_error=%d\n",
+                        id,b2l_ent_bool(e,"com.apple.security.system-container"),
+                        b2l_ent_bool(e,"com.apple.private.security.container-manager"),b2l_ent_copy_cdhash(e,hash,&type));
+                }
+            }
+            kfree_data(identity,identity_len);
+        }
+    }
     label_replace(mac_cred_label(new),e);
     if(platform&&!e){
         if(csflags)*csflags&=~CS_PLATFORM_BINARY;

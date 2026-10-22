@@ -1,0 +1,56 @@
+--- a/bsd/kern/kern_cs.c
++++ b/bsd/kern/kern_cs.c
+@@ -1846,6 +1846,9 @@
+ 	}
+ 
+ 	if ((csblob = ubc_cs_blob_get(vnode, -1, -1, offset)) == NULL) {
++#if defined(ARM64_BOARD_CONFIG_B2L)
++        if (b2l_amfi_active()) return b2l_amfi_vnode_copy_dict(vnode, offset, entitlements);
++#endif
+ 		return 0;
+ 	}
+ 
+@@ -1892,6 +1895,9 @@
+ 	*entitlements = NULL;
+ 
+ 	if ((proc_getcsflags(p) & CS_SIGNED) == 0) {
++#if defined(ARM64_BOARD_CONFIG_B2L)
++        if (b2l_amfi_active()) return b2l_amfi_proc_copy_dict(p, entitlements);
++#endif
+ 		return 0;
+ 	}
+ 
+--- a/bsd/kern/kern_descrip.c
++++ b/bsd/kern/kern_descrip.c
+@@ -72,6 +72,9 @@
+  * Version 2.0.
+  */
+ 
++#if defined(ARM64_BOARD_CONFIG_B2L)
++#include "b2l_amfi.h"
++#endif
+ #include <sys/param.h>
+ #include <sys/systm.h>
+ #include <sys/filedesc.h>
+@@ -4487,8 +4490,19 @@
+ 		}
+ 
+ 		blob = ubc_cs_blob_get(vp, CPU_TYPE_ANY, CPU_SUBTYPE_ANY, sigsinfo.fg_file_start);
+-		if (blob == NULL) {
+-			error = ENOENT;
++        if (blob == NULL) {
++#if defined(ARM64_BOARD_CONFIG_B2L)
++            if (sigsinfo.fg_info_request == GETSIGSINFO_PLATFORM_BINARY &&
++                b2l_amfi_vnode_has_cdhash(vp, sigsinfo.fg_file_start)) {
++                sigsinfo.fg_sig_is_platform = 1;
++                error = copyout(&sigsinfo.fg_sig_is_platform,
++                    (vm_address_t)argp + offsetof(struct fgetsigsinfo, fg_sig_is_platform),
++                    sizeof(sigsinfo.fg_sig_is_platform));
++                vnode_put(vp);
++                goto outdrop;
++            }
++#endif
++            error = ENOENT;
+ 			vnode_put(vp);
+ 			goto outdrop;
+ 		}

@@ -1,0 +1,17 @@
+--- a/bsd/kern/kern_proc.c
++++ b/bsd/kern/kern_proc.c
+@@ -4303,6 +4303,14 @@
+ 		break;
+ 	}
+ out:
++#if defined(ARM64_BOARD_CONFIG_B2L)
++    if(b2l_amfi_active()&&!strncmp(current_proc()->p_comm,"containermanager",15)){
++        static unsigned queries;
++        if(__atomic_fetch_add(&queries,1,__ATOMIC_RELAXED)<96)
++            b2l_early_trace("B2L MCM-CSOPS: caller=%d target=%d op=%d size=%llu error=%d\n",
++                proc_getpid(current_proc()),proc_getpid(pt),ops,(uint64_t)usize,error);
++    }
++#endif
+ 	proc_rele(pt);
+ 	return error;
+ }
