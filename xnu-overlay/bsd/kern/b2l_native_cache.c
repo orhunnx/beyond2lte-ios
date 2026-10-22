@@ -13,6 +13,7 @@
 #include <kern/thread.h>
 #include <kern/sched_prim.h>
 #include <kern/clock.h>
+#include <kern/locks.h>
 #include <kern/cpu_data.h>
 #include <vm/vm_map.h>
 #include <vm/vm_map_internal.h>
@@ -32,14 +33,25 @@ extern int b2l_cache_resolve(vm_map_t,uint64_t,struct vnode**,uint64_t*);
 extern vnode_t rootvnode;
 #define QSIZE 128u
 #define HINTS 32768u
+#define CACHE_WORKERS 4u
 static struct b2l_io cache_io;
 static uint8_t root_identity[12],*snapshot;
-static uint32_t storage_ready,ready,queue_lock;
+static uint32_t storage_ready,ready,queue_lock,pending,active,peak_active;
+static unsigned worker_count;
+static LCK_GRP_DECLARE(cache_lck_grp,"B2L native cache");
+static LCK_MTX_DECLARE(commit_lock,&cache_lck_grp);
 struct request {vm_map_t map;uint64_t pc;uint32_t instruction;};
 static struct request queue[QSIZE];static unsigned head,tail;
 static uint64_t hints[HINTS];
 static uint64_t queued,dropped,learned,applied,already,skipped,failures;
-static uint8_t record[B2L_NC_COPY],verify[B2L_NC_COPY],page[4096];
+/* Pre-init buffers have no concurrent users. Each runtime worker owns its I/O
+ * scratch; only the slot index, snapshot and generation commit are shared. */
+static uint8_t verify[B2L_NC_COPY],page[4096];
+struct cache_worker {
+ uint8_t record[B2L_NC_COPY],verify[B2L_NC_COPY],page[4096];
+ uint64_t processed;uint32_t cpu_mask;unsigned id;
+};
+static struct cache_worker workers[CACHE_WORKERS];
 struct slot_key {uint64_t inode,offset;};
 static struct slot_key keys[B2L_NC_SLOTS];
 static struct b2l_nc_image integrity_image;
@@ -78,7 +90,7 @@ static struct integrity_file*integrity_file(vnode_t vp,uint64_t size,const uint8
  struct b2l_io io={.read=integrity_read,.ctx=vp,.bytes=size};
  f->result=b2l_xresolve(&io,&integrity_image,&f->range);return f;
 }
-static int identity(vnode_t vp,uint64_t*ino,uint64_t*bytes,uint8_t uuid[16],unsigned*kind){
+static int identity(vnode_t vp,uint64_t*ino,uint64_t*bytes,uint8_t uuid[16],unsigned*kind,uint8_t*verify){
  struct vnode_attr va;VATTR_INIT(&va);VATTR_WANTED(&va,va_fileid);VATTR_WANTED(&va,va_data_size);
  if(!vp||vnode_vtype(vp)!=VREG||vnode_mount(vp)!=vnode_mount(rootvnode)||vnode_getattr(vp,&va,vfs_context_current())||
     !VATTR_IS_SUPPORTED(&va,va_fileid)||!VATTR_IS_SUPPORTED(&va,va_data_size)||!va.va_fileid||va.va_data_size<4096)return -1;
@@ -98,9 +110,9 @@ static int identity(vnode_t vp,uint64_t*ino,uint64_t*bytes,uint8_t uuid[16],unsi
 static const uint8_t*slot(unsigned i){const uint8_t*out=NULL;
  if(b2l_nc_select(snapshot+B2L_NC_HEADER+(uint64_t)i*B2L_NC_CELL,&out))return NULL;return out;}
 static int same_file(vnode_t vp,const uint8_t*r){uint64_t ino,size;uint8_t uuid[16];unsigned kind;
- return identity(vp,&ino,&size,uuid,&kind)||ino!=b2l_nc_u64(r+16)||size!=b2l_nc_u64(r+24)||
+ return identity(vp,&ino,&size,uuid,&kind,verify)||ino!=b2l_nc_u64(r+16)||size!=b2l_nc_u64(r+24)||
  kind!=b2l_nc_u32(r+56)||memcmp(uuid,r+40,16)?-1:0;}
-static int persist(unsigned index,uint8_t*r,const uint8_t*old){
+static int persist(unsigned index,uint8_t*r,const uint8_t*old,uint8_t*verify){
  uint64_t seq=old?b2l_nc_u64(old+8):0;if(seq==UINT64_MAX)return -1;
  b2l_nc_p64(r+8,seq+1);b2l_nc_seal(r);if(b2l_nc_record(r))return -1;
  uint8_t*cell=snapshot+B2L_NC_HEADER+(uint64_t)index*B2L_NC_CELL;
@@ -111,37 +123,47 @@ static int persist(unsigned index,uint8_t*r,const uint8_t*old){
     cache_io.read(cache_io.ctx,at,verify,B2L_NC_COPY)||memcmp(r,verify,B2L_NC_COPY))return -1;
  memcpy(cell+which*B2L_NC_COPY,r,B2L_NC_COPY);keys[index].inode=b2l_nc_u64(r+16);keys[index].offset=b2l_nc_u64(r+32);return 0;
 }
-static void learn(struct request*q){
+static void learn(struct request*q,struct cache_worker*w){
  vnode_t vp=NULL;uint64_t off=0,ino=0,size=0;uint8_t uuid[16];unsigned kind=0;uint32_t native;
- if(!b2l_nc_native(q->instruction,&native)||b2l_cache_resolve(q->map,q->pc,&vp,&off)||!vp){skipped++;return;}
- if(identity(vp,&ino,&size,uuid,&kind)||off>size||size-off<4||(off&3)){skipped++;goto out;}
+ uint8_t*record=w->record,*page=w->page;
+ if(!b2l_nc_native(q->instruction,&native)||b2l_cache_resolve(q->map,q->pc,&vp,&off)||!vp){__atomic_fetch_add(&skipped,1,__ATOMIC_RELAXED);return;}
+ /* VM lookup, identity and source reads run concurrently without the commit
+  * mutex. Original files are changed only before userspace, never by workers. */
+ if(identity(vp,&ino,&size,uuid,&kind,w->verify)||off>size||size-off<4||(off&3)){__atomic_fetch_add(&skipped,1,__ATOMIC_RELAXED);goto out;}
+ uint64_t po=off&~4095ULL;unsigned len=size-po>=4096?4096:(unsigned)(size-po);
+ memset(page,0,4096);
+ if(rd(vp,po,page,len)||b2l_nc_u32(page+(off-po))!=q->instruction){__atomic_fetch_add(&skipped,1,__ATOMIC_RELAXED);goto out;}
+ lck_mtx_lock(&commit_lock);
+ /* A previous failed write disables every in-flight request, not just the
+  * worker that saw it. Re-read the latest generation under this same mutex. */
+ if(!__atomic_load_n(&ready,__ATOMIC_ACQUIRE))goto unlock;
  if(kind==2){
   struct integrity_file*f=integrity_file(vp,size,uuid);
-  if(!f||f->result<0){skipped++;goto out;}
-  if(f->result==1&&off<f->range.offset+f->range.bytes&&f->range.offset<off+4){skipped++;goto out;}
+  if(!f||f->result<0){__atomic_fetch_add(&skipped,1,__ATOMIC_RELAXED);goto unlock;}
+  if(f->result==1&&off<f->range.offset+f->range.bytes&&f->range.offset<off+4){__atomic_fetch_add(&skipped,1,__ATOMIC_RELAXED);goto unlock;}
  }
- unsigned index=B2L_NC_SLOTS;uint64_t po=off&~4095ULL;
+ unsigned index=B2L_NC_SLOTS;
  for(unsigned i=0;i<B2L_NC_SLOTS;i++)if(keys[i].inode==ino&&keys[i].offset==po){index=i;break;}
  if(index==B2L_NC_SLOTS)for(unsigned i=0;i<B2L_NC_SLOTS;i++)if(!keys[i].inode){index=i;break;}
- if(index==B2L_NC_SLOTS){__atomic_fetch_add(&dropped,1,__ATOMIC_RELAXED);goto out;}
- unsigned len=size-po>=4096?4096:(unsigned)(size-po);memset(page,0,4096);
- if(rd(vp,po,page,len)||b2l_nc_u32(page+(off-po))!=q->instruction){skipped++;goto out;}
+ if(index==B2L_NC_SLOTS){__atomic_fetch_add(&dropped,1,__ATOMIC_RELAXED);goto unlock;}
  const uint8_t*old=slot(index);
  if(old){
-  if(b2l_nc_u64(old+16)!=ino||b2l_nc_u64(old+24)!=size||memcmp(old+40,uuid,16)||b2l_nc_u32(old+56)!=kind||b2l_nc_page_state(old,page,len)<0){skipped++;goto out;}
-  /* A new image page may match original or fully applied native; both are
-   * admissible. Preserve the first original bytes across all generations. */
+  if(b2l_nc_u64(old+16)!=ino||b2l_nc_u64(old+24)!=size||memcmp(old+40,uuid,16)||b2l_nc_u32(old+56)!=kind||b2l_nc_page_state(old,page,len)<0){__atomic_fetch_add(&skipped,1,__ATOMIC_RELAXED);goto unlock;}
   memcpy(record,old,B2L_NC_COPY);
  }else{
   memset(record,0,B2L_NC_COPY);memcpy(record,"B2LNCREC",8);b2l_nc_p64(record+16,ino);b2l_nc_p64(record+24,size);b2l_nc_p64(record+32,po);
   memcpy(record+40,uuid,16);b2l_nc_p32(record+56,kind);b2l_nc_p32(record+60,len);
   memcpy(record+B2L_NC_DATA,page,4096);memcpy(record+B2L_NC_DATA+4096,page,4096);
  }
- unsigned w=(unsigned)(off-po);uint32_t original=b2l_nc_u32(record+B2L_NC_DATA+w),expected;
- if(!b2l_nc_native(original,&expected)||expected!=native){skipped++;goto out;}
- if(b2l_nc_u32(record+B2L_NC_DATA+4096+w)==native)goto out;
- b2l_nc_p32(record+B2L_NC_DATA+4096+w,native);
- if(persist(index,record,old)){failures++;__atomic_store_n(&ready,0,__ATOMIC_RELEASE);}else learned++;
+ unsigned at=(unsigned)(off-po);uint32_t original=b2l_nc_u32(record+B2L_NC_DATA+at),expected;
+ if(!b2l_nc_native(original,&expected)||expected!=native){__atomic_fetch_add(&skipped,1,__ATOMIC_RELAXED);goto unlock;}
+ if(b2l_nc_u32(record+B2L_NC_DATA+4096+at)==native)goto unlock;
+ b2l_nc_p32(record+B2L_NC_DATA+4096+at,native);
+ /* A/B write + flush + readback stays serialized through RAM publication;
+  * workers cannot lose same-page updates or overwrite the last valid copy. */
+ if(persist(index,record,old,w->verify)){__atomic_fetch_add(&failures,1,__ATOMIC_RELAXED);__atomic_store_n(&ready,0,__ATOMIC_RELEASE);}
+ else __atomic_fetch_add(&learned,1,__ATOMIC_RELAXED);
+ unlock:lck_mtx_unlock(&commit_lock);
  out:vnode_put(vp);
 }
 void b2l_native_cache_observe(uint64_t pc,uint32_t insn){
@@ -149,22 +171,45 @@ void b2l_native_cache_observe(uint64_t pc,uint32_t insn){
  /* Try-lock: the exception path never waits for the worker or storage. */
  disable_preemption();
  if(__atomic_exchange_n(&queue_lock,1,__ATOMIC_ACQUIRE)){enable_preemption();__atomic_fetch_add(&dropped,1,__ATOMIC_RELAXED);return;}
- vm_map_t map=current_map();uint64_t tag=((uint64_t)(uintptr_t)map>>4)^pc^((uint64_t)insn<<17);if(!tag)tag=1;
+ unsigned notify=0;vm_map_t map=current_map();uint64_t tag=((uint64_t)(uintptr_t)map>>4)^pc^((uint64_t)insn<<17);if(!tag)tag=1;
  unsigned h=(unsigned)((tag^(tag>>19)^(tag>>37))&(HINTS-1));
- if(hints[h]!=tag){unsigned next=(head+1)%QSIZE;if(next!=tail){vm_map_reference(map);queue[head]=(struct request){map,pc,insn};head=next;hints[h]=tag;__atomic_fetch_add(&queued,1,__ATOMIC_RELAXED);}else __atomic_fetch_add(&dropped,1,__ATOMIC_RELAXED);}
+ if(hints[h]!=tag){unsigned next=(head+1)%QSIZE;if(next!=tail){vm_map_reference(map);queue[head]=(struct request){map,pc,insn};head=next;hints[h]=tag;notify=1;__atomic_store_n(&pending,(head+QSIZE-tail)%QSIZE,__ATOMIC_RELEASE);__atomic_fetch_add(&queued,1,__ATOMIC_RELAXED);}else __atomic_fetch_add(&dropped,1,__ATOMIC_RELAXED);}
  __atomic_store_n(&queue_lock,0,__ATOMIC_RELEASE);enable_preemption();
+ if(notify)thread_wakeup_one((event_t)&queue);
 }
 static int cache_dequeue(struct request*q){
  disable_preemption();
  if(__atomic_exchange_n(&queue_lock,1,__ATOMIC_ACQUIRE)){enable_preemption();return 0;}
- int found=head!=tail;if(found){*q=queue[tail];tail=(tail+1)%QSIZE;}
+ int found=head!=tail;if(found){*q=queue[tail];tail=(tail+1)%QSIZE;__atomic_store_n(&pending,(head+QSIZE-tail)%QSIZE,__ATOMIC_RELEASE);}
  __atomic_store_n(&queue_lock,0,__ATOMIC_RELEASE);enable_preemption();return found;
 }
-static void worker(void*arg __unused,wait_result_t why __unused){unsigned reports=0;
- for(;;){struct request q;unsigned budget=128;
-  while(budget--&&cache_dequeue(&q)){if(__atomic_load_n(&ready,__ATOMIC_ACQUIRE))learn(&q);vm_map_deallocate(q.map);}
-  if(++reports==30){reports=0;b2l_early_trace("B2L NCACHE: queued=%llu learned=%llu applied=%llu skipped=%llu dropped=%llu errors=%llu\n",__atomic_load_n(&queued,__ATOMIC_RELAXED),learned,applied,skipped,__atomic_load_n(&dropped,__ATOMIC_RELAXED),failures);}
-  assert_wait_timeout((event_t)&cache_io,THREAD_UNINT,1,NSEC_PER_SEC);thread_block(THREAD_CONTINUE_NULL);
+static void worker(void*arg,wait_result_t why __unused){
+ struct cache_worker*w=arg;uint64_t report_at;
+ nanoseconds_to_deadline(30*NSEC_PER_SEC,&report_at);
+ for(;;){struct request q;unsigned budget=32;
+  while(budget--&&cache_dequeue(&q)){
+   unsigned n=__atomic_add_fetch(&active,1,__ATOMIC_RELAXED),peak=__atomic_load_n(&peak_active,__ATOMIC_RELAXED);
+   while(n>peak&&!__atomic_compare_exchange_n(&peak_active,&peak,n,0,__ATOMIC_RELAXED,__ATOMIC_RELAXED)){}
+   unsigned cpu=(unsigned)cpu_number();if(cpu<32)__atomic_fetch_or(&w->cpu_mask,1u<<cpu,__ATOMIC_RELAXED);
+   if(__atomic_load_n(&ready,__ATOMIC_ACQUIRE))learn(&q,w);
+   vm_map_deallocate(q.map);__atomic_fetch_add(&w->processed,1,__ATOMIC_RELAXED);__atomic_fetch_sub(&active,1,__ATOMIC_RELAXED);
+  }
+  if(!w->id&&mach_absolute_time()>=report_at){
+   uint32_t cpus=0;for(unsigned i=0;i<CACHE_WORKERS;i++)cpus|=__atomic_load_n(&workers[i].cpu_mask,__ATOMIC_RELAXED);
+   b2l_early_trace("B2L NCACHE: queued=%llu learned=%llu applied=%llu skipped=%llu dropped=%llu errors=%llu pending=%u active=%u peak=%u workers=%u cpus=0x%x w0=%llu w1=%llu w2=%llu w3=%llu\n",
+    __atomic_load_n(&queued,__ATOMIC_RELAXED),__atomic_load_n(&learned,__ATOMIC_RELAXED),applied,
+    __atomic_load_n(&skipped,__ATOMIC_RELAXED),__atomic_load_n(&dropped,__ATOMIC_RELAXED),__atomic_load_n(&failures,__ATOMIC_RELAXED),
+    __atomic_load_n(&pending,__ATOMIC_RELAXED),__atomic_load_n(&active,__ATOMIC_RELAXED),__atomic_load_n(&peak_active,__ATOMIC_RELAXED),
+    __atomic_load_n(&worker_count,__ATOMIC_ACQUIRE),cpus,
+    __atomic_load_n(&workers[0].processed,__ATOMIC_RELAXED),__atomic_load_n(&workers[1].processed,__ATOMIC_RELAXED),
+    __atomic_load_n(&workers[2].processed,__ATOMIC_RELAXED),__atomic_load_n(&workers[3].processed,__ATOMIC_RELAXED));
+   nanoseconds_to_deadline(30*NSEC_PER_SEC,&report_at);
+  }
+  /* Register the wait before rechecking published queue depth: an enqueue
+   * either cancels this wait or is seen here. No one-second pause on backlog. */
+  assert_wait_timeout((event_t)&queue,THREAD_UNINT,1,NSEC_PER_SEC);
+  if(__atomic_load_n(&pending,__ATOMIC_ACQUIRE))clear_wait(current_thread(),THREAD_AWAKENED);
+  thread_block(THREAD_CONTINUE_NULL);
  }
 }
 void b2l_native_cache_before_init(void){
@@ -211,5 +256,13 @@ void b2l_native_cache_before_init(void){
  printf("B2L NCACHE: pre-init %s applied=%llu already=%llu skipped=%llu; journal replay completed by HFS\n",restore==1?"restore":"apply",applied,already,skipped);
  printf("B2L NCACHE: corecrypto measured text original; excluded=%llu restored=%llu words; other translations retained\n",integrity_excluded,integrity_restored);
  if(restore==1)return;
- thread_t t;if(kernel_thread_start(worker,NULL,&t)==KERN_SUCCESS){thread_deallocate(t);__atomic_store_n(&ready,1,__ATOMIC_RELEASE);printf("B2L NCACHE: automatic learning enabled; original files change on next boot\n");}
+ int count=CACHE_WORKERS;(void)PE_parse_boot_argn("b2l_cache_workers",&count,sizeof(count));
+ if(count<1||count>(int)CACHE_WORKERS)count=CACHE_WORKERS;
+ for(unsigned i=0;i<(unsigned)count;i++){
+  workers[i].id=i;thread_t t;if(kernel_thread_start(worker,&workers[i],&t)!=KERN_SUCCESS)break;
+  thread_deallocate(t);__atomic_add_fetch(&worker_count,1,__ATOMIC_RELEASE);
+ }
+ unsigned started=__atomic_load_n(&worker_count,__ATOMIC_ACQUIRE);
+ if(started){__atomic_store_n(&ready,1,__ATOMIC_RELEASE);printf("B2L NCACHE: automatic learning enabled; workers=%u; serialized durable commit; original files change on next boot\n",started);}
+ else printf("B2L NCACHE: no worker started; emulation retained\n");
 }

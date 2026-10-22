@@ -22,6 +22,11 @@ Complete0047 prefix readback matched `b8d27cf4d621996ec4982010505acd7521f083705e
 The existing firmware/loader were reused and0039 rollback remains available.
 No broad optional tests were repeated, as requested.
 
-Six-core timer and bidirectional SGI1 runtime proof is still pending. Only the
-on-device final success line establishes that checkpoint. Cache parallelism
-remains deferred until it is observed.
+## Device result
+
+The user supplied a0047 screen showing CPU0..CPU5 timer and remote xcall
+verification and the final `6/6 CPUs initialized, per-CPU timer and bidirectional
+SGI1 verified` line. This confirms the six-core startup checkpoint: four A55
+and two A75; Samsung M4 cores remain excluded. It does not establish full iOS
+UI operation or long-run SMP stability. The original screen is retained only
+in ignored local output. Cache preparation parallelism may now proceed.
