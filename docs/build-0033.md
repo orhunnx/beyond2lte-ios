@@ -51,3 +51,39 @@ sample. This does not reject their execution: the existing emulator remains
 active. USERDATA remains mounted as journaled HFS, and mount helpers exit zero.
 The next boot must show nonzero pre-init `applied`/`already` counts before the
 complete automatic reuse cycle can be called hardware-verified.
+
+## Second boot: apply verified, FIPS text-integrity failure
+
+Recovery extraction of the next boot produces epoch 4, 24308 text bytes, no
+missing positions and no producer drops. The last panic was still in the RAM
+log tail when the device was reset; its final text is available in the user's
+screen photograph rather than the final persisted frame.
+
+The persistent log confirms `pre-init apply applied=811 already=0 skipped=0`.
+The first specific FIPS failure is `fipspost_post_integrity: -74`; algorithm
+known-answer tests continue passing, but the aggregate result is false and the
+boot-critical cc_fips_test exits. Successful cache reuse is therefore verified;
+it is not a successful complete boot.
+
+Read-only analysis of both cache copies, pristine dyld mappings and actual
+USERDATA code identifies 589 native instruction replacements across 79 pages
+of libcorecrypto's __TEXT,__text section. Every sampled changed instruction in
+that region matches its native cached form on the physical device. The 847
+current cached pages have no invalid nonempty record copies.
+
+Offline HMAC-SHA256 of the pristine text using an all-zero key exactly matches
+the module's logged expected value. The same computation over the actual
+modified text exactly matches the logged failing MAC. This directly attributes
+the text-integrity failure to the native code rewrite, rather than merely
+inferring it from the restart timing. Raw hashes, cache contents, catalog data
+and photographs remain in ignored local artifacts.
+
+A proposed correction is to restore and exclude the self-measured corecrypto
+text range from persistent translation, leaving its unsupported instructions
+on the existing runtime emulator. No exclusion, restore or other device write
+has been performed during this read-only diagnosis. Other translated images
+need not be discarded. The integrity test must not be described as passing
+until a corrected device run actually completes it.
+
+Mapping layouts were checked against Apple's original
+[dyld cache format declarations](https://github.com/apple-oss-distributions/dyld/blob/main/include/mach-o/dyld_cache_format.h).
