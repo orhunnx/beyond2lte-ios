@@ -78,6 +78,32 @@ static void test_native_container_classes(void){
  setup();strcpy((char*)memory+0x2000,"com.apple.app-sandbox.read");assert(!issue(&processes[0]));assert(b2l_ext_tokens[0].class_id==1&&!b2l_ext_tokens[0].writable);
  b2l_extension_process_exit(&processes[0]);
 }
+static void test_tcc_native_file_class(void){
+ reset_registry();setup();strcpy((char*)memory+0x2000,"com.apple.tcc.kTCCServiceAddressBook");strcpy((char*)memory+0x3000,"/");
+ assert(!issue(&processes[0]));assert(b2l_ext_tokens[0].class_id==B2L_EXT_ADDRESSBOOK_CLASS);
+ assert(!strcmp(b2l_ext_tokens[0].path,"/"));uint64_t h;assert(!consume(&processes[1],&h));assert(!release(&processes[1],h));assert(!token_count());
+ assert(!issue(&processes[0]));assert(!consume(&processes[1],&h));
+ struct b2l_ext_release_args a={0,0,0x3000};putargs(&a,sizeof(a));assert(b2l_extension_syscall(&processes[2],7,0x1000)==ENOENT);
+ putargs(&a,sizeof(a));assert(!b2l_extension_syscall(&processes[1],7,0x1000));assert(!token_count()&&!handle_count());
+ const char*bad[]={"com.apple.tcc.kTCCServiceAddressBook.extra","com.apple.tcc.kTCCServicePhotos","com.apple.tcc."};
+ for(unsigned i=0;i<sizeof(bad)/sizeof(bad[0]);i++){setup();strcpy((char*)memory+0x2000,bad[i]);strcpy((char*)memory+0x3000,"/");assert(issue(&processes[0])==ENOTSUP);}
+ setup();strcpy((char*)memory+0x2000,"com.apple.tcc.kTCCServiceAddressBook");issueargs.type=3;assert(issue(&processes[0])==ENOTSUP);
+ setup();strcpy((char*)memory+0x2000,"com.apple.tcc.kTCCServiceAddressBook");strcpy((char*)memory+0x3000,"/../");assert(issue(&processes[0])==EINVAL);
+ setup();strcpy((char*)memory+0x3000,"/");assert(issue(&processes[0])==EINVAL);
+ /* Root path release cannot retire a different class, even for its owner. */
+ setup();assert(!issue(&processes[0]));assert(!consume(&processes[1],&h));strcpy((char*)memory+0x3000,"/");putargs(&a,sizeof(a));assert(b2l_extension_syscall(&processes[1],7,0x1000)==ENOENT);assert(handle_count()==1);assert(!release(&processes[1],h));
+}
+static unsigned occurrences(const char*text,const char*needle){unsigned n=0;while((text=strstr(text,needle))){n++;text+=strlen(needle);}return n;}
+static void test_issue_trace_budgets(void){
+ for(unsigned i=0;i<100;i++)b2l_ext_issue_trace(&processes[0],"com.apple.tcc.kTCCServiceAddressBook",0,0,EINVAL);
+ assert(occurrences(diag_output,"class=com.apple.tcc.kTCCServiceAddressBook ")==4);
+ b2l_ext_issue_trace(&processes[0],"com.apple.tcc.kTCCServicePhotos",0,0,ENOTSUP);
+ assert(strstr(diag_output,"class=com.apple.tcc.kTCCServicePhotos type=0 flags=0x0 error="));
+ size_t before=diag_used;
+ for(unsigned i=0;i<100;i++)b2l_ext_issue_trace(&processes[0],"forged.class",0,0,ENOTSUP);
+ assert(occurrences(diag_output,"class=forged.class ")==3&&diag_used-before<512);
+ b2l_ext_issue_trace(&processes[0],NULL,3,0,ENOTSUP);assert(strstr(diag_output,"class=- type=3"));
+}
 static void test_copy_rollback(void){
  reset_registry();setup();fail_write=true;assert(issue(&processes[0])==EFAULT&&!token_count());fail_write=false;assert(!issue(&processes[0]));
  uint64_t h;fail_write=true;assert(consume(&processes[1],&h)==EFAULT&&token_count()==1&&!handle_count());fail_write=false;
@@ -126,7 +152,7 @@ static void test_capacity_and_path_release(void){
 }
 static void *worker(void*arg){unsigned i=(unsigned)(uintptr_t)arg;for(unsigned n=0;n<300;n++){setup();struct b2l_ext_issue_args a=issueargs;putargs(&a,sizeof(a));assert(!b2l_extension_syscall(&processes[i],5,0x1000));uint64_t h;assert(!consume(&processes[i],&h));assert(!release(&processes[i],h));}return NULL;}
 static void test_concurrency(void){reset_registry();pthread_t ts[8];for(unsigned i=0;i<8;i++)assert(!pthread_create(&ts[i],NULL,worker,(void*)(uintptr_t)i));for(unsigned i=0;i<8;i++)assert(!pthread_join(ts[i],NULL));assert(!token_count()&&!handle_count());}
-int main(void){for(unsigned i=0;i<12;i++)processes[i]=(struct proc){10000+i,100+(int)i,20+i,true};test_native_container_classes();test_basic();test_copy_rollback();test_bindings_and_exit();test_publication_races();test_validation();test_capacity_and_path_release();test_concurrency();assert(!strstr(diag_output,"b2l-dev-"));assert(diag_used<8192);puts("B2L extension actual registry: native container classes, exact-name rejection, ABI, transfer/owner/refcount, copies/rollback, forged/stale/bound tokens, malformed input, capacity, exit cleanup and 8-thread concurrency passed");}
+int main(void){for(unsigned i=0;i<12;i++)processes[i]=(struct proc){10000+i,100+(int)i,20+i,true};test_issue_trace_budgets();test_native_container_classes();test_tcc_native_file_class();test_basic();test_copy_rollback();test_bindings_and_exit();test_publication_races();test_validation();test_capacity_and_path_release();test_concurrency();assert(!strstr(diag_output,"b2l-dev-"));assert(diag_used<16384);puts("B2L extension actual registry: native container and exact TCC file classes, bounded per-class diagnostics, exact-name rejection, ABI, transfer/owner/refcount, copies/rollback, forged/stale/bound tokens, malformed input, capacity, exit cleanup and 8-thread concurrency passed");}
 '''
 with tempfile.TemporaryDirectory(prefix='b2l-ext-test-') as td:
     d=pathlib.Path(td);(d/'test.c').write_text(body)

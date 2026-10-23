@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: BSD-2-Clause */
 #define B2L_DIAG_HOST_TEST 1
 #include <stdint.h>
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <stdarg.h>
@@ -46,7 +47,7 @@ static unsigned backtrace(uintptr_t *bt,unsigned n,void *ctl,void *info){(void)c
 #define SYS_renameat 465
 #define SYS_renameatx_np 489
 #include "../xnu-overlay/bsd/kern/b2l_diag.c"
-static void clear(void){used=0;output[0]=0;memset(ipc_samples,0,sizeof(ipc_samples));memset(ipc_seen,0,sizeof(ipc_seen));memset(process_samples,0,sizeof(process_samples));memset(tcc_samples,0,sizeof(tcc_samples));raw_budget=4*1024*1024;}
+static void clear(void){used=0;output[0]=0;memset(ipc_samples,0,sizeof(ipc_samples));memset(ipc_seen,0,sizeof(ipc_seen));memset(process_samples,0,sizeof(process_samples));memset(tcc_samples,0,sizeof(tcc_samples));raw_budget=4*1024*1024;memset(tcc_ipc_samples,0,sizeof(tcc_ipc_samples));tcc_raw_budget[0]=65536;tcc_raw_budget[1]=131072;memset(gui_bootstrap_ipc,0,sizeof(gui_bootstrap_ipc));}
 int main(void){
  uint32_t *h=(void*)region;uint64_t ptr=(uintptr_t)region;
  requested=0;b2l_diag_ipc(0,ptr,64,0,1,0,0,0);assert(!used);
@@ -122,7 +123,7 @@ int main(void){
  for(unsigned i=0;i<12;i++)b2l_diag_syscall(SYS___mac_syscall,45,macargs);
  assert(amfi_samples>=8);clear();b2l_diag_syscall(SYS___mac_syscall,45,macargs);assert(!strstr(output,"B2L AMFI:"));
  // TCC metadata diagnostics keep native responses unchanged and never enroll
- // these processes in the general role/raw IPC capture.
+ // these processes in the general role; their IPC uses independent budgets.
  clear();strcpy(process.p_comm,"assetsd");assert(role()==-1);
  memset(region,0,sizeof(region));region[0]=0xfa;region[1]=0xde;region[2]=0x71;region[3]=0x72;region[6]=0x12;region[7]=0x34;
  uint64_t tccargs[5]={555,16,ptr,8,0};memcpy(snapshot,region,sizeof(region));
@@ -140,9 +141,34 @@ int main(void){
  b2l_diag_syscall(SYS___mac_syscall,45,macargs);assert(!used);
  strcpy((char*)region,"AMFI");b2l_diag_syscall(SYS___mac_syscall,0,macargs);assert(!used);
  b2l_diag_syscall(SYS___mac_syscall,45,macargs);assert(strstr(output,"TCCMAC:")&&strstr(output,"policy=AMFI op=153 error=45"));clear();
- for(unsigned i=0;i<80;i++)b2l_diag_syscall(SYS_csops,0,tccargs);
- assert(tcc_samples[0]==80);old=used;b2l_diag_syscall(SYS_csops,0,tccargs);assert(old==used);
+ for(unsigned i=0;i<280;i++)b2l_diag_syscall(SYS_csops,0,tccargs);
+ assert(tcc_samples[0]==280);old=used;b2l_diag_syscall(SYS_csops,0,tccargs);assert(old==used);
  used=0;output[0]=0;strcpy(process.p_comm,"tccd");b2l_diag_syscall(SYS_csops,0,tccargs);
  assert(strstr(output,"caller=tccd")&&tcc_samples[1]==1);clear();
+ // Exact-name TCC payload capture has separate bounded budgets and read-only buffers.
+ clear();memset(region,0,sizeof(region));h[1]=64;h[5]=0x400000cf;
+ memcpy(region+24,"kTCCServicePhotos",18);memcpy(snapshot,region,sizeof(region));
+ strcpy(process.p_comm,"assetsd-other");b2l_diag_ipc(0,ptr,64,0,1,1,2,0);assert(!used);
+ strcpy(process.p_comm,"assetsd");requested=0;b2l_diag_ipc(0,ptr,64,0,1,1,2,0);assert(!used);requested=1;
+ process64=0;b2l_diag_ipc(0,ptr,64,0,1,1,2,0);assert(!used);process64=1;
+ raw_budget=0;b2l_diag_ipc(0,ptr,64,0,1,1,2,0);assert(strstr(output,"role=4")&&strstr(output,"captured=64"));
+ assert(!memcmp(snapshot,region,sizeof(region)));used=0;output[0]=0;
+ b2l_diag_receive(ptr,64,0,ptr,64,0);assert(strstr(output,"dir=rx role=4"));clear();
+ // Saturating tccd capture cannot starve assetsd's later reply.
+ strcpy(process.p_comm,"tccd");for(unsigned i=0;i<270;i++){used=0;output[0]=0;b2l_diag_ipc(0,ptr,64,0,1,1,2,0);}
+ used=0;output[0]=0;b2l_diag_ipc(0,ptr,64,0,1,1,2,0);assert(!used);
+ strcpy(process.p_comm,"assetsd");b2l_diag_ipc(1,ptr,64,0,0,0,0,0);assert(strstr(output,"dir=rx role=4"));clear();
+ // Bootstrap request/reply IDs also have an early quota after discovery noise.
+ clear();strcpy(process.p_comm,"SpringBoard");now=1000000000;
+ for(unsigned i=0;i<200;i++){used=0;output[0]=0;b2l_diag_ipc(0,ptr,64,0,1,1,2,0);}
+ used=0;output[0]=0;b2l_diag_ipc(0,ptr,64,0,0x400000cf,1,2,0);assert(strstr(output,"id=0x400000cf"));clear();
+ // Late GUI windows retain arbitrary actual IDs, ports and fresh stacks.
+ strcpy(process.p_comm,"SpringBoard");now=181000000000;
+ b2l_diag_ipc(0,ptr,64,0,0x400000cf,1,2,0);assert(strstr(output,"id=0x400000cf"));
+ for(unsigned i=0;i<40;i++){used=0;output[0]=0;b2l_diag_ipc(0,ptr,64,0,1,1,2,0);}assert(!used);
+ b2l_diag_ports(0,0x400000cf,0,1,2,3,4);assert(strstr(output,"IPCPORT"));clear();
+ b2l_diag_wait("mach-recv",2,3,4);assert(strstr(output,"window=1"));clear();
+ now=301000000000;b2l_diag_ipc(0,ptr,64,0,0x1234,1,2,0);assert(strstr(output,"id=0x1234"));
+ b2l_diag_wait("mach-recv",2,3,4);assert(strstr(output,"window=2"));clear();
  puts("PASS actual targeted diagnostics: gating, current-thread snapshots, limits, copy faults, OOL bounds, XPC admission and path errors");
 }

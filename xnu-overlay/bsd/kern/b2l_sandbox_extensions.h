@@ -8,12 +8,15 @@
 #define B2L_EXT_HANDLES 1024u
 #define B2L_EXT_PATH 1024u
 #define B2L_EXT_TOKEN 73u
-/* Exact file-extension classes from the shipped ContainerManagerCommon plists.
- * Preserve the requested class with the capability; these are not aliases. */
+/* Exact file-extension classes from shipped ContainerManagerCommon plists and
+ * the observed native tccd file request. Preserve each requested class; these
+ * are not aliases and do not grant a TCC authorization decision. */
+#define B2L_EXT_ADDRESSBOOK_CLASS 7u
 static const char *const b2l_ext_classes[] = {
     NULL, "com.apple.app-sandbox.read", "com.apple.app-sandbox.read-write",
     "com.apple.sandbox.container", "com.apple.sandbox.application-group",
-    "com.apple.sandbox.system-container", "com.apple.sandbox.system-group"
+    "com.apple.sandbox.system-container", "com.apple.sandbox.system-group",
+    "com.apple.tcc.kTCCServiceAddressBook"
 };
 static unsigned
 b2l_ext_class(const char *name)
@@ -25,8 +28,13 @@ b2l_ext_class(const char *name)
 static void
 b2l_ext_issue_trace(proc_t process, const char *name, uint64_t type, uint64_t flags, int error)
 {
-    static unsigned samples[2];
-    if (__atomic_fetch_add(&samples[error != 0], 1, __ATOMIC_RELAXED) >= 16) return;
+    /* Separate known classes and unknown file/other-type requests, so repeated
+     * AddressBook calls cannot hide a later Photos or unsupported-type error.
+     * At most72 issuance lines with this class table; no paths or tokens. */
+    enum { class_count = sizeof(b2l_ext_classes) / sizeof(b2l_ext_classes[0]) };
+    static unsigned samples[class_count + 1][2];
+    unsigned slot = type == 0 ? (name ? b2l_ext_class(name) : 0) : class_count;
+    if (__atomic_fetch_add(&samples[slot][error != 0], 1, __ATOMIC_RELAXED) >= 4) return;
     char text[96];
     size_t n = name ? strlen(name) : 0;
     if (n >= sizeof(text)) n = sizeof(text) - 1;
@@ -138,7 +146,10 @@ b2l_ext_issue(proc_t process, user_addr_t argument)
     }
     bool writable = class_id != 1;
     error = copyinstr(a.resource, path, sizeof(path), &n);
-    if (!error && !b2l_ext_canonical(path)) error = EINVAL;
+    /* Native tccd issues its exact AddressBook file capability for "/".
+     * Keep the root resource limited to that verified class. */
+    if (!error && !b2l_ext_canonical(path) &&
+        !(class_id == B2L_EXT_ADDRESSBOOK_CLASS && !strcmp(path, "/"))) error = EINVAL;
     if (error) {
         b2l_ext_issue_trace(process, class_name, a.type, a.flags, error);
         return error;
@@ -271,7 +282,7 @@ b2l_ext_release(proc_t process, int operation, user_addr_t argument)
     if (a.path) {
         error = copyinstr(a.path, path, sizeof(path), &n);
         if (error) return error;
-        if (!b2l_ext_canonical(path)) return EINVAL;
+        if (!b2l_ext_canonical(path) && strcmp(path, "/")) return EINVAL;
     }
     uint64_t owner = proc_uniqueid(process);
     error = ENOENT;
@@ -280,6 +291,7 @@ b2l_ext_release(proc_t process, int operation, user_addr_t argument)
         struct b2l_ext_handle_entry *h = &b2l_ext_handles[i];
         if (!h->used || !h->ready || h->owner != owner) continue;
         struct b2l_ext_token_entry *t = &b2l_ext_tokens[h->token_index];
+        if (a.path && !strcmp(path, "/") && t->class_id != B2L_EXT_ADDRESSBOOK_CLASS) continue;
         if ((a.handle && h->handle == a.handle) || (a.path && !strcmp(t->path, path))) {
             b2l_ext_drop_handle(i, true); error = 0;
             if (a.handle) break;

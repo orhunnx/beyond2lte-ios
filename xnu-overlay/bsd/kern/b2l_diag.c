@@ -37,7 +37,7 @@ static int role(void)
     int requested=0;PE_parse_boot_argn("b2l_diag",&requested,sizeof(requested));
     return requested==1?r:-1;
 }
-struct sample_slot {uint64_t tid,last;unsigned count;};
+struct sample_slot {uint64_t tid,last;unsigned count,window;};
 static struct sample_slot slots[4][16];
 /* Current thread only, before potentially blocking native calls. A thread
  * which never returns still leaves its entry PC/stack in the persistent log. */
@@ -53,12 +53,16 @@ void b2l_diag_wait(const char *kind,uint64_t a,uint64_t b,uint64_t c)
         if(old==tid){slot=&slots[r][i];break;}
         if(!old&&__atomic_compare_exchange_n(&slots[r][i].tid,&old,tid,1,__ATOMIC_RELAXED,__ATOMIC_RELAXED)){slot=&slots[r][i];break;}
     }
-    if(!slot||slot->count>=8||(slot->last&&sec-slot->last<5))return;
+    if(!slot)return;
+    /* Preserve fresh GUI stacks after early startup samples are exhausted. */
+    unsigned window=r<2?(sec>=600?3:sec>=300?2:sec>=180?1:0):0;
+    if(slot->window!=window){slot->window=window;slot->count=0;slot->last=0;}
+    if(slot->count>=8||(slot->last&&sec-slot->last<5))return;
     /* Each tid owns its slot. No remote stack reads or shared sample buffer. */
     slot->last=sec;unsigned sample=++slot->count;int pid=proc_selfpid();
     arm_saved_state_t *regs=get_user_regs(current_thread());
-    b2l_diag_record("B2L WAIT: pid=%d tid=%llu sample=%u sec=%llu kind=%s a=0x%llx b=0x%llx c=0x%llx pc=0x%llx\n",
-        pid,tid,sample,sec,kind,a,b,c,regs?(uint64_t)get_saved_state_pc(regs):0);
+    b2l_diag_record("B2L WAIT: pid=%d tid=%llu sample=%u sec=%llu window=%u kind=%s a=0x%llx b=0x%llx c=0x%llx pc=0x%llx\n",
+        pid,tid,sample,sec,window,kind,a,b,c,regs?(uint64_t)get_saved_state_pc(regs):0);
     uintptr_t bt[12];struct backtrace_user_info bi=BTUINFO_INIT;
     unsigned n=backtrace_user(bt,12,NULL,&bi);
     b2l_diag_record("B2L WAITBT: pid=%d tid=%llu sample=%u frames=%u error=%d\n",pid,tid,sample,n,bi.btui_error);
@@ -86,18 +90,18 @@ static struct process_sample *container_sample(int r)
 
 static uint64_t message_sequence;
 static unsigned raw_budget=4*1024*1024;
-static unsigned raw_reserve(unsigned n)
+static unsigned raw_reserve_from(unsigned *budget,unsigned n)
 {
-    unsigned old=__atomic_load_n(&raw_budget,__ATOMIC_RELAXED);
+    unsigned old=__atomic_load_n(budget,__ATOMIC_RELAXED);
     for(unsigned i=0;i<4;i++){
         unsigned take=n<old?n:old;if(!take)return 0;
-        if(__atomic_compare_exchange_n(&raw_budget,&old,old-take,1,__ATOMIC_RELAXED,__ATOMIC_RELAXED))return take;
+        if(__atomic_compare_exchange_n(budget,&old,old-take,1,__ATOMIC_RELAXED,__ATOMIC_RELAXED))return take;
     }return 0;
 }
-static void bytes(uint64_t seq,const char *part,uint64_t addr,unsigned n)
+static void bytes_from(uint64_t seq,const char *part,uint64_t addr,unsigned n,unsigned *budget)
 {
     if(!addr||addr>UINT64_MAX-n)return;
-    n=raw_reserve(n);
+    n=raw_reserve_from(budget,n);
     b2l_diag_record("B2L IPCDATA: seq=%llu part=%s captured=%u\n",seq,part,n);
     for(unsigned off=0;off<n;off+=64){
         uint8_t buf[64];char hex[129];unsigned take=n-off<64?n-off:64;
@@ -109,12 +113,67 @@ static void bytes(uint64_t seq,const char *part,uint64_t addr,unsigned n)
         b2l_diag_record("B2L IPCDATA: seq=%llu part=%s off=%u hex=%s\n",seq,part,off,hex);
     }
 }
+static void bytes(uint64_t seq,const char *part,uint64_t addr,unsigned n)
+{
+    bytes_from(seq,part,addr,n,&raw_budget);
+}
+/* Separate exact-name TCC windows: early tccd traffic cannot consume the later
+ * assetsd request/reply budget. Observe native user buffers only; no IPC changes. */
+static unsigned tcc_ipc_samples[2][2],tcc_raw_budget[2]={65536,131072};
+static void tcc_ipc(int rx,uint64_t addr,uint32_t n,uint32_t bits,int32_t id,
+    uint32_t remote,uint32_t local,uint32_t count)
+{
+    if(rx<0||rx>1||n<24||!addr||addr>UINT64_MAX-n)return;
+    proc_t p=current_proc();if(!p||!proc_is64bit(p))return;
+    int slot=!strcmp(p->p_comm,"assetsd")?0:!strcmp(p->p_comm,"tccd")?1:-1;
+    if(slot<0)return;
+    int requested=0;PE_parse_boot_argn("b2l_diag",&requested,sizeof(requested));
+    if(requested!=1)return;
+    uint32_t h[7]={0};
+    if(rx){
+        if(copyin(addr,h,24)||h[1]<24||h[1]>n)return;
+        bits=h[0];n=h[1];remote=h[2];local=h[3];id=(int32_t)h[5];
+        if((bits&0x80000000u)&&n>=28&&!copyin(addr+24,h,4))count=h[0];
+    }
+    if(__atomic_fetch_add(&tcc_ipc_samples[slot][rx],1,__ATOMIC_RELAXED)>=(slot?256u:128u))return;
+    uint64_t seq=__atomic_add_fetch(&message_sequence,1,__ATOMIC_RELAXED);
+    b2l_diag_record("B2L IPC: seq=%llu dir=%s role=%d pid=%d tid=%llu id=0x%x bits=0x%x remote=0x%x local=0x%x bytes=%u descriptors=%u\n",
+        seq,rx?"rx":"tx",slot+4,proc_selfpid(),thread_tid(current_thread()),id,bits,remote,local,n,count);
+    bytes_from(seq,"inline",addr,n<1024?n:1024,&tcc_raw_budget[slot]);
+    if(!(bits&0x80000000u)||n<28||count>16)return;
+    uint32_t off=28;
+    for(unsigned i=0;i<count;i++){
+        uint8_t d[16]={0};if(off>n||n-off<12||copyin(addr+off,d,12))break;
+        uint8_t type=d[11];uint32_t len=type==0?12:16;
+        if(n-off<len||(len==16&&copyin(addr+off,d,16)))break;
+        if(type==1||type==3){
+            uint64_t ptr=0;uint32_t size=0;memcpy(&ptr,d,8);memcpy(&size,d+12,4);
+            b2l_diag_record("B2L IPCOOL: seq=%llu descriptor=%u type=%u bytes=%u captured_max=2048\n",seq,i,type,size);
+            bytes_from(seq,"ool",ptr,size<2048?size:2048,&tcc_raw_budget[slot]);break;
+        }
+        if(type!=0&&type!=2&&type!=4)break;
+        off+=len;
+    }
+}
+/* Keep independent late GUI windows. Numeric Mach IDs are not a protocol
+ * allowlist; startup chatter must not hide render-server requests and replies. */
+static unsigned gui_ipc_samples[2][4][2],gui_port_samples[2][4][2],gui_receive_samples[2][4];
+static unsigned gui_bootstrap_ipc[2][2],gui_bootstrap_ports[2][2],gui_bootstrap_receive[2];
+static bool gui_bootstrap_id(int32_t id){return id==0x400000cf||id==0x20000000;}
+static unsigned gui_raw_budget[2]={262144,262144};
+static int gui_window(void)
+{
+    uint64_t ns=0;absolutetime_to_nanoseconds(mach_absolute_time(),&ns);
+    uint64_t sec=ns/1000000000;
+    return sec<90?-1:sec<180?0:sec<300?1:sec<600?2:3;
+}
 /* Send arguments describe the current user wire ABI, including vector calls.
  * On receive, header/descriptor count are re-read only after native copyout.
  * Copy failures and truncated payloads are diagnostics, never new IPC errors. */
 void b2l_diag_ipc(int rx,uint64_t addr,uint32_t n,uint32_t bits,int32_t id,
     uint32_t remote,uint32_t local,uint32_t count)
 {
+    tcc_ipc(rx,addr,n,bits,id,remote,local,count);
     int r=role();if(r<0||rx<0||rx>1||n<24||!addr||addr>UINT64_MAX-n)return;
     uint32_t h[7]={0};
     if(rx){
@@ -126,10 +185,15 @@ void b2l_diag_ipc(int rx,uint64_t addr,uint32_t n,uint32_t bits,int32_t id,
      * For MCM/lsd retain every numeric ID within a bounded per-process window;
      * do not infer request semantics from an ID or miss errors via an ID filter.
      * GUI admission stays at its existing small discovery/XPC limit. */
+    int window=r<2?gui_window():-1;
     if(r>=2){
         struct process_sample *p=container_sample(r);if(!p)return;
         unsigned sample=__atomic_fetch_add(&p->ipc[rx],1,__ATOMIC_RELAXED);
         if(sample>=(r==2?512u:256u))return;
+    }else if(gui_bootstrap_id(id)){
+        if(__atomic_fetch_add(&gui_bootstrap_ipc[r][rx],1,__ATOMIC_RELAXED)>=32)return;
+    }else if(window>=0){
+        if(__atomic_fetch_add(&gui_ipc_samples[r][window][rx],1,__ATOMIC_RELAXED)>=32)return;
     }else{
         unsigned seen=__atomic_fetch_add(&ipc_seen[r][rx],1,__ATOMIC_RELAXED);
         if(seen>=24&&id!=0x10000000&&id!=0x10000001)return;
@@ -140,7 +204,8 @@ void b2l_diag_ipc(int rx,uint64_t addr,uint32_t n,uint32_t bits,int32_t id,
     b2l_diag_record("B2L IPC: seq=%llu dir=%s role=%d pid=%d tid=%llu id=0x%x bits=0x%x remote=0x%x local=0x%x bytes=%u descriptors=%u\n",
         seq,rx?"rx":"tx",r,proc_selfpid(),thread_tid(current_thread()),id,bits,remote,local,n,count);
     unsigned inline_max=r>=2?3072u:1024u;
-    bytes(seq,"inline",addr,n<inline_max?n:inline_max);
+    unsigned *budget=r<2?&gui_raw_budget[r]:&raw_budget;
+    bytes_from(seq,"inline",addr,n<inline_max?n:inline_max,budget);
     if(!(bits&0x80000000u)||n<28||count>16)return;
     uint32_t off=28;
     for(unsigned i=0;i<count;i++){
@@ -150,7 +215,7 @@ void b2l_diag_ipc(int rx,uint64_t addr,uint32_t n,uint32_t bits,int32_t id,
         if(type==1||type==3){
             uint64_t ptr=0;uint32_t size=0;memcpy(&ptr,d,8);memcpy(&size,d+12,4);
             b2l_diag_record("B2L IPCOOL: seq=%llu descriptor=%u type=%u bytes=%u captured_max=2048\n",seq,i,type,size);
-            bytes(seq,"ool",ptr,size<2048?size:2048);
+            bytes_from(seq,"ool",ptr,size<2048?size:2048,budget);
             break; /* at most one OOL region per message */
         }
         if(type!=0&&type!=2&&type!=4)break;
@@ -162,11 +227,17 @@ void b2l_diag_ipc(int rx,uint64_t addr,uint32_t n,uint32_t bits,int32_t id,
 void b2l_diag_receive(uint64_t addr,uint32_t n,uint32_t trailer,
     uint64_t base,uint32_t capacity,uint64_t options)
 {
-    int r=role();if(r<0)return;
     b2l_diag_ipc(1,addr,n,0,0,0,0,0);
-    if(r<2)return;
+    int r=role();if(r<0)return;
     static unsigned samples[2];
-    if(__atomic_fetch_add(&samples[r-2],1,__ATOMIC_RELAXED)>=1024)return;
+    if(r<2){
+        uint32_t header[6];if(n<24||copyin(addr,header,sizeof(header)))return;
+        if(gui_bootstrap_id((int32_t)header[5])){
+            if(__atomic_fetch_add(&gui_bootstrap_receive[r],1,__ATOMIC_RELAXED)>=32)return;
+        }else{
+            int w=gui_window();if(w<0||__atomic_fetch_add(&gui_receive_samples[r][w],1,__ATOMIC_RELAXED)>=32)return;
+        }
+    }else if(__atomic_fetch_add(&samples[r-2],1,__ATOMIC_RELAXED)>=1024)return;
     uint32_t h[6]={0},t[13]={0};
     if(n<24||addr>UINT64_MAX-n||copyin(addr,h,sizeof(h)))return;
     unsigned take=trailer<sizeof(t)?trailer:sizeof(t);int error=-1;
@@ -187,7 +258,14 @@ static unsigned pending_sonce_count;
 void b2l_diag_ports(int rx,int32_t id,uint32_t bits,uint64_t remote,
     uint64_t local,uint32_t user_remote,uint32_t user_local)
 {
-    int r=role();if(r<2||rx<0||rx>1)return;
+    int r=role();if(r<0||rx<0||rx>1)return;
+    if(r<2){
+        if(gui_bootstrap_id(id)){
+            if(__atomic_fetch_add(&gui_bootstrap_ports[r][rx],1,__ATOMIC_RELAXED)>=32)return;
+        }else{
+            int w=gui_window();if(w<0||__atomic_fetch_add(&gui_port_samples[r][w][rx],1,__ATOMIC_RELAXED)>=32)return;
+        }
+    }
     if(!rx&&r==3&&local&&((bits>>8)&0xff)==18){
         for(unsigned i=0;i<128;i++){
             uint64_t old=__atomic_load_n(&reply_tokens[i],__ATOMIC_RELAXED);
@@ -195,7 +273,7 @@ void b2l_diag_ports(int rx,int32_t id,uint32_t bits,uint64_t remote,
             if(!old&&__atomic_compare_exchange_n(&reply_tokens[i],&old,local,0,__ATOMIC_RELAXED,__ATOMIC_RELAXED))break;
         }
     }
-    if(__atomic_fetch_add(&port_samples[r][rx],1,__ATOMIC_RELAXED)>=512)return;
+    if(r>=2&&__atomic_fetch_add(&port_samples[r][rx],1,__ATOMIC_RELAXED)>=512)return;
     b2l_diag_record("B2L IPCPORT: dir=%s pid=%d tid=%llu id=0x%x bits=0x%x dest=0x%llx reply=0x%llx user_dest=0x%x user_reply=0x%x\n",
         rx?"deliver":"send",proc_selfpid(),thread_tid(current_thread()),id,bits,remote,local,user_remote,user_local);
 }
@@ -274,12 +352,12 @@ static void tcc_result(unsigned code,int error,const uint64_t *args)
     if(code==SYS___mac_syscall){
         char policy[8];size_t n=0;
         if(copyinstr(args[0],policy,sizeof(policy),&n)||n!=5||strcmp(policy,"AMFI"))return;
-        if(__atomic_fetch_add(&tcc_samples[slot],1,__ATOMIC_RELAXED)>=64)return;
+        if(__atomic_fetch_add(&tcc_samples[slot],1,__ATOMIC_RELAXED)>=256)return;
         b2l_diag_record("B2L TCCMAC: caller=%s pid=%d tid=%llu policy=AMFI op=%u error=%d\n",
             p->p_comm,proc_selfpid(),thread_tid(current_thread()),(unsigned)args[1],error);
         return;
     }
-    if(__atomic_fetch_add(&tcc_samples[slot],1,__ATOMIC_RELAXED)>=64)return;
+    if(__atomic_fetch_add(&tcc_samples[slot],1,__ATOMIC_RELAXED)>=256)return;
     uint32_t status=0,magic=0,length=0;int copied=-1;
     if(!error&&args[1]==0&&args[2]&&args[3]>=sizeof(status))
         copied=copyin(args[2],&status,sizeof(status));
