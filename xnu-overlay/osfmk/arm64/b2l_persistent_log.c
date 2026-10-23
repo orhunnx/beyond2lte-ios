@@ -12,6 +12,7 @@ static uint32_t start_state;
 static uint64_t flush_failures;
 static int last_error;
 void b2l_log_append(char c){b2l_log_ring_append(&console_ring,(uint8_t)c);}
+void b2l_log_append_bytes(const void*p,size_t n){b2l_log_ring_append_bytes(&console_ring,p,n);}
 static void b2l_log_worker(void*argument __unused,wait_result_t result __unused)
 {
     unsigned reports=0;

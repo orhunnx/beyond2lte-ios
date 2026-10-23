@@ -29,6 +29,7 @@
 
 #if defined(B2L)
 #include <IOKit/IOService.h>
+#include <arm64/b2l_diag.h>
 #include <IOKit/IOUserClient.h>
 #include <IOKit/IOKitKeys.h>
 #include <IOKit/IOLib.h>
@@ -446,6 +447,7 @@ b2l_surf_log_once(const char *what, uint32_t n)
 bool
 IOSurfaceRootUserClient::initWithTask(task_t owningTask, void *securityID, UInt32 type)
 {
+    b2l_diag_record("B2L SURF OPEN: pid=%d type=%u\n",proc_selfpid(),type);
 	if (!IOUserClient::initWithTask(owningTask, securityID, type)) {
 		return false;
 	}
@@ -700,6 +702,12 @@ IOSurfaceRootUserClient::externalMethod(uint32_t selector, IOExternalMethodArgum
     __unused IOExternalMethodDispatch *dispatch, __unused OSObject *target,
     __unused void *reference)
 {
+    static unsigned samples;
+    if(__atomic_fetch_add(&samples,1,__ATOMIC_RELAXED)<64)
+        b2l_diag_record("B2L SURF CALL: pid=%d selector=%u scalar_in=%u struct_in=%llu struct_out=%llu\n",
+            proc_selfpid(),selector,args?args->scalarInputCount:0,
+            args?(uint64_t)args->structureInputSize:0,args?(uint64_t)args->structureOutputSize:0);
+
 	if(!args || (args->scalarInputCount && !args->scalarInput))return kIOReturnBadArgument;
     uint64_t arg0 = args->scalarInputCount > 0 ? args->scalarInput[0] : 0;
 

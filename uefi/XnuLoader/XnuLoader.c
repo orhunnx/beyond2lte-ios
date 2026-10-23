@@ -23,6 +23,7 @@
 extern const UINT8 B2LSecondaryTemplate[], B2LSecondaryTemplateEnd[];
 #include "b2l_cache_core.h"
 UINTN B2lStageNativeCache(VOID*,UINTN);
+VOID B2lTouchHandoff(UINT64[24]);
 STATIC_ASSERT(B2L_SEED_BYTES == B2L_BOOT_SEED_SIZE, "BOOT payload and XNU seed sizes must match");
 
 #define B2L_DT_SPACE (64 * 1024)
@@ -328,6 +329,7 @@ EFI_STATUS EFIAPI UefiMain(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
         CacheSize=B2lStageNativeCache((VOID*)(UINTN)CachePhysical,B2L_NC_HEADER);
     if(CacheSize){Dt.native_cache_base=CachePhysical;Dt.native_cache_size=CacheSize;}
     DtPhysical = ALIGN_VALUE(CachePhysical+CacheSize, 4096);
+    B2lTouchHandoff(Dt.touch_status);
     Status = b2l_build_device_tree((VOID *)(UINTN)DtPhysical, B2L_DT_SPACE, &Dt, &DtSize) == 0
              ? EFI_SUCCESS : EFI_BAD_BUFFER_SIZE;
     ZeroMem(Dt.random_seed, sizeof(Dt.random_seed));
@@ -347,7 +349,7 @@ EFI_STATUS EFIAPI UefiMain(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
     AsciiStrCpyS(Args->command_line, sizeof(Args->command_line),
                 "-v debug=0x14e serial=3 cpus=6 keepsyms=1 -enable_kprintf_spam "
                 "rd=b2l-userdata b2l_root_rw=1 b2l_unsealed_root=1 b2l_arm64e_compat=1 cs_enforcement_disable=1 "
-                "launchd_unsecure_cache=1 b2l_system_log=1 b2l_native_cache=1 exception_log_max_pid=4096");
+                "launchd_unsecure_cache=1 b2l_system_log=1 b2l_native_cache=1 b2l_diag=1 exception_log_max_pid=4096");
     Entry = Base + Mach.entry - Mach.virtual_base;
     FreePool(Kernel); Kernel = NULL;
     if (Root) { Root->Close(Root); Root = NULL; }

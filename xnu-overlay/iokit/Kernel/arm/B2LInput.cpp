@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: BSD-2-Clause
  * Pins and HSI2C transfer sequence from the user's UEFI_beyond2lte sources.
  * GPIO is read-only. Touch does not update firmware, voltages or power-cycle.
+ * Implements touch-branch reset-before-transfer / clear / functions / sense-on.
  */
 #include <IOKit/IOService.h>
 #include <IOKit/IOLib.h>
@@ -9,6 +10,8 @@
 #include <IOKit/IOMemoryDescriptor.h>
 #include <kern/clock.h>
 #include <arm64/b2l_early.h>
+#include <arm64/b2l_diag.h>
+#include <pexpert/device_tree.h>
 extern "C" {
 #include "B2LSecTsParser.h"
 }
@@ -22,12 +25,18 @@ class B2LInput : public IOService {
     IOTimerEventSource *timer;
     volatile uint8_t *gpio,*i2c;
     bool stable[4],candidate[4],touch;
-    unsigned debounce[4],failures,keyLogs;
+    unsigned debounce[4],failures,keyLogs,transferLogs,timeoutUS;
+    uint8_t lastCommand;
     B2L_SEC_TS_POINTER pointer;
     static void poll(OSObject*,IOTimerEventSource*);
     uint32_t r(unsigned off){uint32_t v=*(volatile uint32_t*)(i2c+off);__asm__ volatile("dmb oshld":::"memory");return v;}
     void w(unsigned off,uint32_t v){*(volatile uint32_t*)(i2c+off)=v;__asm__ volatile("dsb oshst":::"memory");}
     void quiesce(){w(0x20,0);w(0x24,r(0x24));w(0x44,r(0x44)&~(1u<<31));w(0,r(0)&~0xc0u);}
+    void resetController(){w(0,r(0)|(1u<<31));w(0,r(0)&~(1u<<31));w(0,8);w(8,0x00ffffff);w(0x40,r(0x40)|(1u<<31));}
+    void transferFailure(bool read,unsigned n,unsigned at){
+        if(transferLogs++<12)b2l_diag_record("B2L TOUCH: cmd=0x%x read=%d bytes=%u done=%u timeout_us=%u ctrl=0x%x int=0x%x err=0x%x trans=0x%x fifo=0x%x addr=0x%x fs1=0x%x fs2=0x%x\n",
+            lastCommand,read,n,at,timeoutUS,r(0),r(0x24),r(0x2c),r(0x50),r(0x30),r(0x70),r(0x60),r(0x64));
+    }
     bool message(uint8_t *buf,unsigned n,bool read){
         if(!buf||!n||n>256)return false;
         w(0x48,r(0x48)&~(1u<<31));
@@ -39,7 +48,7 @@ class B2LInput : public IOService {
         w(0x24,r(0x24));w(0x20,0x80);
         w(0x44,(r(0x44)&~0x8003ffffu)|0x80020000u|(read?0x10000u:0)|n);
         unsigned at=0;
-        for(unsigned t=0;t<5000;++t){
+        for(unsigned t=0;t<timeoutUS;++t){
             uint32_t fifo=r(0x30);
             if(at<n){
                 if(read&&!(fifo&(1u<<24)))buf[at++]=(uint8_t)r(0x38);
@@ -48,9 +57,10 @@ class B2LInput : public IOService {
             if(at==n&&(r(0x24)&0x80)&&(read||(r(0x30)&0x100))){quiesce();return true;}
             IODelay(1);
         }
-        w(0,r(0)|(1u<<31));w(0,r(0)&~(1u<<31));quiesce();return false;
+        transferFailure(read,n,at);resetController();quiesce();return false;
     }
-    bool command(uint8_t cmd,uint8_t *data,unsigned n){return message(&cmd,1,false)&&message(data,n,true);}
+    bool writeCommand(uint8_t *data,unsigned n){lastCommand=data[0];resetController();return message(data,n,false);}
+    bool command(uint8_t cmd,uint8_t *data,unsigned n){lastCommand=cmd;resetController();return message(&cmd,1,false)&&message(data,n,true);}
 public:
     bool start(IOService *provider) APPLE_KEXT_OVERRIDE;
     void stop(IOService *provider) APPLE_KEXT_OVERRIDE;
@@ -69,9 +79,42 @@ bool B2LInput::start(IOService *provider){
     if(i2cDesc)i2cMap=i2cDesc->map(kIOMapInhibitCache);
     if(i2cMap){
         i2c=(volatile uint8_t*)i2cMap->getVirtualAddress();
-        uint8_t boot=0;
-        /* Timing was initialized by firmware, never guess clock dividers. */
-        if(r(0x60)&&r(0x64)&&command(0x55,&boot,1)&&boot==0x20)touch=true;
+        timeoutUS=100000; /* same bounded probe budget as the touch branch */
+        const void *property=NULL;unsigned propertySize=0;DTEntry chosen;
+        uint64_t handoff[24]={0};
+        if(SecureDTLookupEntry(NULL,"/chosen",&chosen)==kSuccess &&
+           SecureDTGetProperty(chosen,"b2l,touch-status",&property,&propertySize)==kSuccess &&
+           propertySize==sizeof(handoff))memcpy(handoff,property,sizeof(handoff));
+        b2l_diag_record("B2L TOUCH EFI: version=%llu locate=0x%llx init=0x%llx probe=0x%llx reset=0x%llx functions=0x%llx pointer=0x%llx dvdd=0x%llx avdd=0x%llx boot=0x%llx usi=0x%llx transfers=%llu failed=%llu\n",
+            handoff[0],handoff[1],handoff[2],handoff[3],handoff[4],handoff[5],handoff[6],handoff[7],handoff[8],handoff[9],handoff[14],handoff[20],handoff[21]);
+        b2l_diag_record("B2L TOUCH HANDOFF: fs1=0x%x fs2=0x%x fs3=0x%x sla=0x%x ctrl=0x%x int=0x%llx err=0x%llx trans=0x%llx fifo=0x%llx\n",
+            r(0x60),r(0x64),r(0x68),r(0x6c),r(0),handoff[16],handoff[17],handoff[18],handoff[19]);
+        uint8_t boot=0,integrity=0,device[5]={0};
+        const char *stage="timing";
+        /* Reuse firmware timings, never infer dividers or touch PMIC state. */
+        if(r(0x60)&&r(0x64)){
+            stage="device-id";
+            if(command(0x22,device,sizeof(device))){
+                stage="integrity";
+                if(command(0x21,&integrity,1)){
+                    stage="boot-status";
+                    if(command(0x55,&boot,1)&&boot==0x20&&(integrity&0x80)){
+                        uint8_t clear=0x62,functions[3]={0x30,0x61,0x00},sense=0x10;
+                        stage="clear-events";
+                        if(writeCommand(&clear,1)){
+                            stage="touch-functions";
+                            if(writeCommand(functions,3)){
+                                stage="sense-on";
+                                if(writeCommand(&sense,1)){touch=true;stage="ready";}
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        timeoutUS=20000;
+        b2l_diag_record("B2L TOUCH INIT: stage=%s ready=%d boot=0x%x integrity=0x%x id=%02x%02x%02x%02x%02x\n",
+            stage,touch,boot,integrity,device[0],device[1],device[2],device[3],device[4]);
         quiesce();
     }
     loop=IOWorkLoop::workLoop();if(!loop)return false;

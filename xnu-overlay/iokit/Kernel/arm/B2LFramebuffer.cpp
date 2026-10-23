@@ -20,6 +20,7 @@
 
 #if defined(B2L)
 #include <IOKit/IOService.h>
+#include <arm64/b2l_diag.h>
 #include <IOKit/IOUserClient.h>
 #include <IOKit/IOKitKeys.h>
 #include <IOKit/IOLib.h>
@@ -257,6 +258,7 @@ AppleCLCD::swap(const uint8_t *rec)
 bool
 IOMobileFramebufferUserClient::initWithTask(task_t owningTask, void *securityID, UInt32 type)
 {
+    b2l_diag_record("B2L FB OPEN: pid=%d type=%u\n",proc_selfpid(),type);
 	if (!IOUserClient::initWithTask(owningTask, securityID, type)) {
 		return false;
 	}
@@ -330,6 +332,12 @@ IOMobileFramebufferUserClient::externalMethod(uint32_t selector, IOExternalMetho
     __unused IOExternalMethodDispatch *dispatch, __unused OSObject *target,
     __unused void *reference)
 {
+    static unsigned samples;
+    if(__atomic_fetch_add(&samples,1,__ATOMIC_RELAXED)<64)
+        b2l_diag_record("B2L FB CALL: pid=%d selector=%u scalar_in=%u struct_in=%llu struct_out=%llu\n",
+            proc_selfpid(),selector,args?args->scalarInputCount:0,
+            args?(uint64_t)args->structureInputSize:0,args?(uint64_t)args->structureOutputSize:0);
+
 	IOReturn ret = kIOReturnSuccess;
 	uint64_t out[2] = { 0, 0 };
 	uint32_t outCount = 0;

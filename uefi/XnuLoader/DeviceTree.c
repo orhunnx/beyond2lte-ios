@@ -94,6 +94,7 @@ int b2l_build_device_tree(void *buffer, b2l_size capacity,
         b2l_u64 range[2]={c->secondary_base,c->secondary_size};
         prop(&w,&chosen,"b2l,secondary-trampoline",range,sizeof(range));
     }
+    if(c->touch_status[0]==1)prop(&w,&chosen,"b2l,touch-status",c->touch_status,sizeof(c->touch_status));
     text_prop(&w, &chosen, "firmware-version", "beyond2lte-ios EFI loader");
     text_prop(&w, &chosen, "stdout-path", "/framebuffer");
     /* XNU requires this container even without a TrustCache or AuxKC.

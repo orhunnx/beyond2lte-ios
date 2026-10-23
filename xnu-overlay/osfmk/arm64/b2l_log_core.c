@@ -58,6 +58,23 @@ void b2l_log_ring_append(struct b2l_log_ring*r,uint8_t byte)
     note_drop(r);
 }
 
+/* One reservation keeps a whole diagnostic line contiguous even when ordinary
+ * console bytes are published concurrently. Same bounded/no-wait semantics. */
+void b2l_log_ring_append_bytes(struct b2l_log_ring*r,const void*data,size_t n)
+{
+    if(!r||!data||!n||n>4096)return;
+    uint64_t pos=__atomic_load_n(&r->next,__ATOMIC_RELAXED);
+    for(unsigned tries=0;tries<4;tries++){
+        if(pos>B2L_LOG_SEQUENCE_LIMIT-n){note_drop(r);return;}
+        if(__atomic_compare_exchange_n(&r->next,&pos,pos+n,1,__ATOMIC_RELAXED,__ATOMIC_RELAXED)){
+            const uint8_t*p=data;
+            for(size_t i=0;i<n;i++)if(!b2l_log_ring_publish(r,pos+i,p[i]))note_drop(r);
+            return;
+        }
+    }
+    note_drop(r);
+}
+
 int b2l_log_ring_read(const struct b2l_log_ring*r,uint64_t pos,uint8_t*out)
 {
     if(!r||!out||pos>=B2L_LOG_SEQUENCE_LIMIT)return 0;

@@ -17,6 +17,7 @@ static void*reader_thread(void*arg){(void)arg;while(atomic_load(&running)){
  for(uint64_t i=start;i<end;i++){uint8_t c=0;if(b2l_log_ring_read(&concurrent,i,&c))assert(c==(uint8_t)(i%251));}
  }return 0;}
 static void*append_thread(void*arg){for(unsigned i=0;i<30000;i++)b2l_log_ring_append(&concurrent,(uint8_t)(uintptr_t)arg);return 0;}
+static void*bulk_thread(void*arg){uint8_t line[16];memset(line,(int)(uintptr_t)arg,16);for(unsigned i=0;i<1000;i++)b2l_log_ring_append_bytes(&concurrent,line,sizeof(line));return 0;}
 struct disk{uint8_t*data;unsigned reads,writes,syncs;unsigned failread,failwrite,failsync;};
 static int rd(void*ctx,uint64_t offset,void*out,size_t n){struct disk*d=ctx;assert(n==4096&&offset<=B2L_LOG_REGION_BYTES-n&&offset%4096==0);d->reads++;if(d->failread&&d->reads==d->failread)return 73;memcpy(out,d->data+offset,n);return 0;}
 static int wr(void*ctx,uint64_t offset,const void*in,size_t n){struct disk*d=ctx;assert(n==4096&&offset<=B2L_LOG_REGION_BYTES-n&&offset%4096==0);d->writes++;if(d->failwrite&&d->writes==d->failwrite){memcpy(d->data+offset,in,31);return 74;}memcpy(d->data+offset,in,n);return 0;}
@@ -43,6 +44,16 @@ int main(int argc,char**argv){
  for(unsigned i=0;i<8;i++)assert(!pthread_create(&writers[i],0,append_thread,(void*)(uintptr_t)(i+1)));
  for(unsigned i=0;i<8;i++)assert(!pthread_join(writers[i],0));uint64_t appended=b2l_log_ring_end(&concurrent);assert(appended>0&&appended<=240000);
  for(uint64_t i=appended-B2L_LOG_TEXT_CAPACITY;i<appended;i++)if(b2l_log_ring_read(&concurrent,i,&c))assert(c>=1&&c<=8);
+ memset(&concurrent,0,sizeof concurrent);
+ for(unsigned i=0;i<8;i++)assert(!pthread_create(&writers[i],0,bulk_thread,(void*)(uintptr_t)(i+1)));
+ for(unsigned i=0;i<8;i++)assert(!pthread_join(writers[i],0));
+ appended=b2l_log_ring_end(&concurrent);assert(appended>=B2L_LOG_TEXT_CAPACITY && !(appended%16));
+ for(uint64_t pos=appended-B2L_LOG_TEXT_CAPACITY;pos<appended;pos+=16){
+  uint8_t first=0;int complete=1;for(unsigned j=0;j<16;j++){uint8_t v=0;if(!b2l_log_ring_read(&concurrent,pos+j,&v)){complete=0;break;}if(!j)first=v;else assert(v==first);}if(complete)assert(first>=1&&first<=8);
+ }
+ uint64_t bulkEnd=concurrent.next;uint8_t byte=1;
+ b2l_log_ring_append_bytes(&concurrent,&byte,4097);assert(concurrent.next==bulkEnd);
+ concurrent.next=B2L_LOG_SEQUENCE_LIMIT-2;b2l_log_ring_append_bytes(&concurrent,"abcd",4);assert(concurrent.next==B2L_LOG_SEQUENCE_LIMIT-2);
  struct disk d={0};d.data=calloc(1,B2L_LOG_REGION_BYTES);assert(d.data);
  struct b2l_log_sink sink={rd,wr,sy,&d,B2L_LOG_REGION_BYTES};struct b2l_log_writer w={0};
  assert(b2l_log_writer_open(&w,&sink)==B2L_LOG_INVALID_HEADER&&!d.writes);

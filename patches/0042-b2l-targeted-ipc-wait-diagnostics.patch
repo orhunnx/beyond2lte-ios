@@ -1,0 +1,139 @@
+--- a/bsd/conf/files
++++ b/bsd/conf/files
+@@ -685,3 +685,4 @@
+ bsd/kern/CacheSha.c optional b2l
+ 
+ bsd/kern/b2l_persona_seed.c optional b2l
++bsd/kern/b2l_diag.c optional b2l
+--- a/osfmk/ipc/mach_msg.c
++++ b/osfmk/ipc/mach_msg.c
+@@ -71,6 +71,9 @@
+  */
+ 
+ #include <mach/mach_types.h>
++#if defined(ARM64_BOARD_CONFIG_B2L)
++#include <arm64/b2l_diag.h>
++#endif
+ #include <mach/kern_return.h>
+ #include <mach/port.h>
+ #include <mach/message.h>
+@@ -378,6 +381,10 @@
+ 	/* kmsg freed */
+ 
+ out:
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	if(mr==MACH_MSG_SUCCESS)
++		b2l_diag_ipc(1,recv_bufs.recv_msg_addr,msgr.msgr_msg_size,0,0,0,0,0);
++#endif
+ 	if (msgr_out) {
+ 		*msgr_out = msgr;
+ 	}
+@@ -701,6 +708,12 @@
+ 	 * Now that we have validated send_msg_size, send_aux_size and
+ 	 * send_dsc_count, copy in the message.
+ 	 */
++#if defined(ARM64_BOARD_CONFIG_B2L)
++    b2l_diag_ipc(0,send_uctx->send_msg_addr,send_uctx->send_msg_size,
++        send_uctx->send_header.msgh_bits,send_uctx->send_header.msgh_id,
++        send_uctx->send_header.msgh_remote_port,send_uctx->send_header.msgh_local_port,
++        send_uctx->send_dsc_count);
++#endif
+ 	kmsg = ipc_kmsg_alloc(send_uctx->send_msg_size, send_uctx->send_aux_size,
+ 	    send_uctx->send_dsc_count, IPC_KMSG_ALLOC_USER);
+ 	if (kmsg == IKM_NULL) {
+@@ -761,6 +774,9 @@
+ 	mach_msg_return_t  mr = MACH_MSG_SUCCESS;
+ 
+ 	assert(option64 & MACH64_RCV_MSG);
++#if defined(ARM64_BOARD_CONFIG_B2L)
++    b2l_diag_wait("mach-recv",rcv_name,option64,msg_timeout);
++#endif
+ 
+ 	mr = ipc_mqueue_copyin(space, rcv_name, &object);
+ 	if (mr != MACH_MSG_SUCCESS) {
+--- a/bsd/dev/arm/systemcalls.c
++++ b/bsd/dev/arm/systemcalls.c
+@@ -27,6 +27,9 @@
+ #include <sys/kdebug.h>
+ #include <sys/sysent.h>
+ #include <sys/sysproto.h>
++#if defined(ARM64_BOARD_CONFIG_B2L)
++#include <arm64/b2l_diag.h>
++#endif
+ #include <sys/kauth.h>
+ #include <sys/bitstring.h>
+ 
+@@ -177,9 +180,15 @@
+ 	}
+ #endif /* CONFIG_DEBUG_SYSCALL_REJECTION */
+ 
++#if defined(ARM64_BOARD_CONFIG_B2L)
++    b2l_diag_wait("syscall",code,get_saved_state_reg(state,0),get_saved_state_reg(state,1));
++#endif
+ 	AUDIT_SYSCALL_ENTER(code, proc, uthread);
+ 	error = (*(callp->sy_call))(proc, &uthread->uu_arg[0], &(uthread->uu_rval[0]));
+ 	AUDIT_SYSCALL_EXIT(code, proc, uthread, error);
++#if defined(ARM64_BOARD_CONFIG_B2L)
++    b2l_diag_syscall(code,error,(const uint64_t*)uthread->uu_arg);
++#endif
+ 
+ #if CONFIG_MACF
+ skip_syscall:
+--- a/bsd/kern/kern_exit.c
++++ b/bsd/kern/kern_exit.c
+@@ -2043,16 +2043,16 @@
+ static void
+ b2l_trace_crash(proc_t p, int rv, struct uthread *ut)
+ {
+-	static unsigned samples[10];
++	static unsigned samples[11];
+ 	const char *names[] = { "SpringBoard", "usermanagerd", "UserEventAgent",
+ 	    "securityd", "ManagedSettings", "mobileactivat", "lsd",
+-	    "cryptexd", "appprotectiond", "passd" };
++	    "cryptexd", "appprotectiond", "passd", "backboardd" };
+ 	unsigned slot;
+ 	if (!exception_log_max_pid || proc_getpid(p) > exception_log_max_pid ||
+ 	    p != current_proc() || (!rv && !ut->uu_exception)) return;
+-	for (slot = 0; slot < 10; slot++)
++	for (slot = 0; slot < 11; slot++)
+ 		if (!strncmp(p->p_comm, names[slot], strlen(names[slot]))) break;
+-	if (slot == 10 || __atomic_fetch_add(&samples[slot], 1, __ATOMIC_RELAXED) >= 4) return;
++	if (slot == 11 || __atomic_fetch_add(&samples[slot], 1, __ATOMIC_RELAXED) >= 4) return;
+ 	const char *desc = exit_reason_get_string_desc(p->p_exit_reason);
+ 	b2l_early_trace("B2L CRASH: %s[%d] status=0x%x exception=%u code=0x%llx sub=0x%llx\n",
+ 	    p->p_comm, proc_getpid(p), rv, ut->uu_exception,
+--- a/iokit/Kernel/IOService.cpp
++++ b/iokit/Kernel/IOService.cpp
+@@ -28,6 +28,9 @@
+ 
+ #include <IOKit/system.h>
+ #include <IOKit/IOService.h>
++#if defined(ARM64_BOARD_CONFIG_B2L)
++#include <arm64/b2l_diag.h>
++#endif
+ #include <libkern/OSDebug.h>
+ #include <libkern/c++/OSAllocation.h>
+ #include <libkern/c++/OSContainers.h>
+@@ -6727,6 +6730,12 @@
+ 	if (!matching) {
+ 		return NULL;
+ 	}
++
++#if defined(ARM64_BOARD_CONFIG_B2L)
++    OSString *cls=OSDynamicCast(OSString,matching->getObject(kIOProviderClassKey));
++    OSString *name=OSDynamicCast(OSString,matching->getObject(kIONameMatchKey));
++    b2l_diag_service(cls?cls->getCStringNoCopy():NULL,name?name->getCStringNoCopy():NULL,timeout);
++#endif
+ 
+ 	result = NULL;
+ 	cancelArgs.ref = &result;
+--- a/osfmk/arm64/Makefile
++++ b/osfmk/arm64/Makefile
+@@ -48,6 +48,7 @@
+ EXPORT_MD_LIST = \
+ 	b2l_arm64e_compat.h \
+ 	b2l_early.h \
++	b2l_diag.h \
+ 	b2l_log_core.h \
+ 	b2l_persistent_log.h \
+ 	cpc_arm64.h \

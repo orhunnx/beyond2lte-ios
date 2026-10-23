@@ -16,6 +16,8 @@
   SecondaryEntry.S
   MachO.c
   DeviceTree.c
+  TouchHandoff.c
+  TouchDiagnostic.h
   Progress.c
   Arena.c
   BootPayload.c

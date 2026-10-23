@@ -34,6 +34,7 @@ struct b2l_log_writer {
 };
 enum {B2L_LOG_BAD_ARGUMENT=-1,B2L_LOG_INVALID_HEADER=-2,B2L_LOG_EXHAUSTED=-3};
 void b2l_log_ring_append(struct b2l_log_ring*,uint8_t);
+void b2l_log_ring_append_bytes(struct b2l_log_ring*,const void*,size_t);
 /* Pure bounded publication operation exposed to test delayed writer ordering. */
 int b2l_log_ring_publish(struct b2l_log_ring*,uint64_t zero_based_sequence,uint8_t);
 uint64_t b2l_log_ring_end(const struct b2l_log_ring*);

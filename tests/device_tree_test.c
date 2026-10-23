@@ -32,6 +32,7 @@ static size_t decode(const unsigned char *buf, size_t size, size_t off,
         if (!strcmp(name,"reg") && node_name && !strcmp(node_name,"framebuffer")) {
             uint64_t pa; memcpy(&pa,buf+off,8); assert(depth==1 && len==16 && pa==0xca000000);
         }
+        if (!strcmp(name,"b2l,touch-status")) { assert(len==24*8 && read64(buf+off)==1 && read64(buf+off+8)==0x123); }
         if (!strcmp(name,"crypto-hash-method")) assert(len==9 && !memcmp(buf+off,"sha2-384",9));
         if (!strcmp(name,"display-scale")) assert(len==4 && read32(buf+off)==3);
         if (!strcmp(name,"random-seed")) { ++seed_properties; assert(len==256); for(unsigned j=0;j<256;++j)assert(buf[off+j]==(unsigned char)(j+1)); }
@@ -101,6 +102,7 @@ int main(void)
     c.memory_base=0x900000000ULL; c.memory_size=512ULL*1024*1024;
     c.mpidr=0x80000000; c.counter_frequency=26000000;
     c.has_boot_ufs_lun=1;c.boot_ufs_lun=3;
+    c.touch_status[0]=1;c.touch_status[1]=0x123;
     c.secondary_base=0xceffc000;c.secondary_size=16384;
     c.native_cache_base=c.memory_base+32*1024*1024;c.native_cache_size=128*1024*1024;
     c.video.base=0xca000000; c.video.row_bytes=1440*4; c.video.width=1440; c.video.height=3040;
