@@ -37,6 +37,16 @@ verified in the actual Mach-O. Source and symbols remain reproducible locally.
 0067 BOOT is 23373512 bytes, SHA-256:
 55e6c9833abe280714223c02246ccbca241aea817fc54b839d2b5efc94d6a553.
 
-The verified0066 firmware/loader prefix is reused byte for byte. This image
-has not been installed: the user's running0066 half-hour observation is being
-preserved. Read that runtime's logs before any later installation.
+The verified0066 firmware/loader prefix is reused byte for byte. Before
+installation, the half-hour0066 capture was saved to
+out/logs/0066-recovery-30min. Epoch34 contains4,949,518 bytes from sequence0
+with no gaps, missing positions or producer drops. The last timed WAIT is
+second1933. There are no captured crashes, but assetsd execution and Photos
+requests are still not observed. Three swaps remain; SpringBoard receives the
+display list successfully and104 sampled event-loop completions return error0.
+
+The connected beyond2lte recovery identity and BOOT capacity were checked.
+Full previous BOOT was backed up and its image prefix matched0066. Only BOOT
+was written; full0067 image-prefix readback matched SHA-256 and reboot was
+requested. Receipt and backup remain under ignored out/0067. Periodic progress
+output on the device still requires the next runtime capture.
