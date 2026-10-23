@@ -1,0 +1,127 @@
+--- a/osfmk/ipc/mach_msg.c
++++ b/osfmk/ipc/mach_msg.c
+@@ -350,6 +350,13 @@
+ 	/* auto redeem the voucher in the message */
+ 	ipc_voucher_receive_postprocessing(kmsg, options);
+ 
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	/* Snapshot kernel port identities before copyout replaces them with names. */
++	mach_msg_header_t *diag_hdr = ikm_header(kmsg);
++	b2l_diag_ports(1, diag_hdr->msgh_id, diag_hdr->msgh_bits,
++	    VM_KERNEL_ADDRPERM((uintptr_t)diag_hdr->msgh_remote_port),
++	    VM_KERNEL_ADDRPERM((uintptr_t)diag_hdr->msgh_local_port), 0, 0);
++#endif
+ 	/* Save destination port context for the trailer before copyout */
+ 	msgr.msgr_context = ikm_header(kmsg)->msgh_remote_port->ip_context;
+ 
+@@ -381,10 +388,6 @@
+ 	/* kmsg freed */
+ 
+ out:
+-#if defined(ARM64_BOARD_CONFIG_B2L)
+-	if(mr==MACH_MSG_SUCCESS)
+-		b2l_diag_ipc(1,recv_bufs.recv_msg_addr,msgr.msgr_msg_size,0,0,0,0,0);
+-#endif
+ 	if (msgr_out) {
+ 		*msgr_out = msgr;
+ 	}
+@@ -734,6 +737,13 @@
+ 		return mr;
+ 	}
+ 
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	mach_msg_header_t *diag_hdr = ikm_header(kmsg);
++	b2l_diag_ports(0, diag_hdr->msgh_id, diag_hdr->msgh_bits,
++	    VM_KERNEL_ADDRPERM((uintptr_t)diag_hdr->msgh_remote_port),
++	    VM_KERNEL_ADDRPERM((uintptr_t)diag_hdr->msgh_local_port),
++	    send_uctx->send_header.msgh_remote_port, send_uctx->send_header.msgh_local_port);
++#endif
+ 	mr = ipc_kmsg_send(kmsg, options, msg_timeout);
+ 
+ 	if (mr != MACH_MSG_SUCCESS) {
+--- a/osfmk/ipc/ipc_kmsg.c
++++ b/osfmk/ipc/ipc_kmsg.c
+@@ -70,6 +70,9 @@
+  *	Operations on kernel messages.
+  */
+ 
++#if defined(ARM64_BOARD_CONFIG_B2L)
++#include <arm64/b2l_diag.h>
++#endif
+ #include <mach/mach_types.h>
+ #include <mach/boolean.h>
+ #include <mach/kern_return.h>
+@@ -4856,6 +4859,13 @@
+ 		goto out;
+ 	}
+ 
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	if (mr == MACH_MSG_SUCCESS) {
++		b2l_diag_receive(msg_rcv_addr, msgr->msgr_msg_size,
++		    msgr->msgr_trailer_size, recv_bufs->recv_msg_addr,
++		    recv_bufs->recv_msg_size, options);
++	}
++#endif
+ out:
+ 	if (mr == MACH_RCV_INVALID_DATA) {
+ 		msgr->msgr_msg_size     = 0;
+--- a/osfmk/ipc/ipc_notify.c
++++ b/osfmk/ipc/ipc_notify.c
+@@ -63,6 +63,10 @@
+  *	Notification-sending functions.
+  */
+ 
++#if defined(ARM64_BOARD_CONFIG_B2L)
++#include <arm64/b2l_diag.h>
++#include <vm/vm_kern.h>
++#endif
+ #include <mach/port.h>
+ #include <mach/mach_notify.h>
+ #include <kern/ipc_kobject.h>
+@@ -180,6 +183,12 @@
+ void
+ ipc_notify_send_once_and_unlock(ipc_port_t port)
+ {
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	/* Scalar snapshots under the native lock; no extra lock/copy/allocation. */
++	uint64_t diag_key = VM_KERNEL_ADDRPERM((uintptr_t)port);
++	uint64_t diag_context = port->ip_reply_context;
++	uint32_t diag_receiver = ip_get_receiver_name(port);
++#endif
+ 	/*
+ 	 * clear any reply context:
+ 	 * no one will be sending the response b/c we are destroying
+@@ -195,6 +204,10 @@
+ 		ipc_port_release_sonce_and_unlock(port);
+ 	} else {
+ 		ip_mq_unlock(port);
++#if defined(ARM64_BOARD_CONFIG_B2L)
++		/* Still own the original sonce ref. Only kernel stack data here. */
++		b2l_diag_sonce(diag_key, diag_receiver, diag_context);
++#endif
+ 		(void)mach_notify_send_once(port);
+ 	}
+ 	/* send-once right consumed */
+--- a/osfmk/arm64/bsd_arm64.c
++++ b/osfmk/arm64/bsd_arm64.c
+@@ -27,6 +27,9 @@
+  */
+ 
+ #ifdef  MACH_BSD
++#if defined(ARM64_BOARD_CONFIG_B2L)
++#include <arm64/b2l_diag.h>
++#endif
+ #include <mach_ldebug.h>
+ 
+ #include <mach/kern_return.h>
+@@ -296,6 +299,10 @@
+ 
+ 
+ 	retval = mach_call(&args);
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	/* User stack reads only after the native trap returns, with no IPC locks. */
++	b2l_diag_checkpoint();
++#endif
+ 
+ skip_machcall:
+ 

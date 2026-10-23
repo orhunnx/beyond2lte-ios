@@ -157,8 +157,92 @@ void b2l_diag_ipc(int rx,uint64_t addr,uint32_t n,uint32_t bits,int32_t id,
         off+=len;
     }
 }
+/* Native delivery location, not the original vector base. Trailer audit
+ * token is copied only from bytes which native IPC already returned. */
+void b2l_diag_receive(uint64_t addr,uint32_t n,uint32_t trailer,
+    uint64_t base,uint32_t capacity,uint64_t options)
+{
+    int r=role();if(r<0)return;
+    b2l_diag_ipc(1,addr,n,0,0,0,0,0);
+    if(r<2)return;
+    static unsigned samples[2];
+    if(__atomic_fetch_add(&samples[r-2],1,__ATOMIC_RELAXED)>=1024)return;
+    uint32_t h[6]={0},t[13]={0};
+    if(n<24||addr>UINT64_MAX-n||copyin(addr,h,sizeof(h)))return;
+    unsigned take=trailer<sizeof(t)?trailer:sizeof(t);int error=-1;
+    if(take>=8&&addr+n<=UINT64_MAX-take)error=copyin(addr+n,t,take);
+    b2l_diag_record("B2L IPCRCV: pid=%d tid=%llu id=0x%x local=0x%x remote=0x%x actual=0x%llx base=0x%llx capacity=%u options=0x%llx trailer=%u copy=%d type=%u size=%u audit=%u,%u,%u,%u,%u,%u,%u,%u\n",
+        proc_selfpid(),thread_tid(current_thread()),h[5],h[3],h[2],addr,base,capacity,options,
+        trailer,error,t[0],t[1],t[5],t[6],t[7],t[8],t[9],t[10],t[11],t[12]);
+}
+/* Port tokens are permuted address snapshots, never owned references and
+ * never dereferenced. Address reuse can alias tokens: correlate PID/name/time.
+ * Track initial lsd reply endpoints without allocating in native IPC paths. */
+static uint64_t reply_tokens[128];
+static unsigned port_samples[4][2],sonce_samples;
+static uint64_t sonce_sequence;
+struct pending_sonce {uint64_t tid,event;};
+static struct pending_sonce pending_sonce[64];
+static unsigned pending_sonce_count;
+void b2l_diag_ports(int rx,int32_t id,uint32_t bits,uint64_t remote,
+    uint64_t local,uint32_t user_remote,uint32_t user_local)
+{
+    int r=role();if(r<2||rx<0||rx>1)return;
+    if(!rx&&r==3&&local&&((bits>>8)&0xff)==18){
+        for(unsigned i=0;i<128;i++){
+            uint64_t old=__atomic_load_n(&reply_tokens[i],__ATOMIC_RELAXED);
+            if(old==local)break;
+            if(!old&&__atomic_compare_exchange_n(&reply_tokens[i],&old,local,0,__ATOMIC_RELAXED,__ATOMIC_RELAXED))break;
+        }
+    }
+    if(__atomic_fetch_add(&port_samples[r][rx],1,__ATOMIC_RELAXED)>=512)return;
+    b2l_diag_record("B2L IPCPORT: dir=%s pid=%d tid=%llu id=0x%x bits=0x%x dest=0x%llx reply=0x%llx user_dest=0x%x user_reply=0x%x\n",
+        rx?"deliver":"send",proc_selfpid(),thread_tid(current_thread()),id,bits,remote,local,user_remote,user_local);
+}
+void b2l_diag_sonce(uint64_t key,uint32_t receiver,uint64_t context)
+{
+    int r=role(),tracked=0;
+    for(unsigned i=0;i<128;i++)if(key&&__atomic_load_n(&reply_tokens[i],__ATOMIC_RELAXED)==key){tracked=1;break;}
+    if(r<2&&!tracked)return;
+    if(__atomic_fetch_add(&sonce_samples,1,__ATOMIC_RELAXED)>=128)return;
+    uint64_t event=__atomic_fetch_add(&sonce_sequence,1,__ATOMIC_RELAXED)+1;
+    uint64_t tid=thread_tid(current_thread());
+    arm_saved_state_t *regs=get_user_regs(current_thread());
+    b2l_diag_record("B2L SONCE: event=%llu pid=%d tid=%llu role=%d token=0x%llx receiver=0x%x context=0x%llx tracked=%d pc=0x%llx\n",
+        event,proc_selfpid(),tid,r,key,receiver,context,tracked,regs?(uint64_t)get_saved_state_pc(regs):0);
+    uintptr_t bt[12];unsigned n=backtrace(bt,12,NULL,NULL);
+    for(unsigned i=0;i<n;i++)b2l_diag_record("B2L SONCEKBT: event=%llu frame=%u pc=0x%llx\n",event,i,(uint64_t)bt[i]);
+    /* Queue only an event number. Copying user memory is deferred until the
+     * current native trap/syscall returns; never fault while an IPC lock is held. */
+    for(unsigned i=0;i<64;i++){
+        struct pending_sonce *p=&pending_sonce[i];
+        uint64_t old=__atomic_load_n(&p->tid,__ATOMIC_RELAXED);
+        if(old!=tid&&!(old==0&&__atomic_compare_exchange_n(&p->tid,&old,tid,0,__ATOMIC_RELAXED,__ATOMIC_RELAXED)))continue;
+        if(!__atomic_exchange_n(&p->event,event,__ATOMIC_RELEASE))
+            __atomic_fetch_add(&pending_sonce_count,1,__ATOMIC_RELEASE);
+        break;
+    }
+}
+void b2l_diag_checkpoint(void)
+{
+    if(!__atomic_load_n(&pending_sonce_count,__ATOMIC_ACQUIRE))return;
+    uint64_t tid=thread_tid(current_thread());
+    for(unsigned i=0;i<64;i++){
+        struct pending_sonce *p=&pending_sonce[i];
+        if(__atomic_load_n(&p->tid,__ATOMIC_RELAXED)!=tid)continue;
+        uint64_t event=__atomic_exchange_n(&p->event,0,__ATOMIC_ACQUIRE);
+        if(!event)return;
+        __atomic_fetch_sub(&pending_sonce_count,1,__ATOMIC_RELAXED);
+        uintptr_t bt[16];struct backtrace_user_info bi=BTUINFO_INIT;
+        unsigned n=backtrace_user(bt,16,NULL,&bi);
+        b2l_diag_record("B2L SONCEUBT: event=%llu pid=%d tid=%llu frames=%u error=%d\n",event,proc_selfpid(),tid,n,bi.btui_error);
+        for(unsigned j=0;j<n;j++)b2l_diag_record("B2L SONCEUBT: event=%llu frame=%u pc=0x%llx\n",event,j,(uint64_t)bt[j]);
+        return;
+    }
+}
 void b2l_diag_syscall(unsigned code,int error,const uint64_t *args)
 {
+    b2l_diag_checkpoint();
     int r=role();if(r<0||!args)return;
     struct process_sample *p=r>=2?container_sample(r):NULL;
     if(r>=2&&!p)return;

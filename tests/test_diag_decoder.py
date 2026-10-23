@@ -14,4 +14,6 @@ r=m.decode(text);assert r['messages'][0]['parts']['ool']['printable_tokens']==['
 assert not r['messages'][0]['parts']['ool']['gaps']
 assert r['messages'][1]['parts']['inline']['gaps']==[[0,64],[68,80]]
 assert r['messages'][1]['parts']['inline']['copy_errors']==[68]
+extra=m.decode("B2L IPCRCV: pid=72 actual=0x1040 base=0x1000\nB2L SONCE: event=1 pid=72\nB2L SONCEUBT: event=1 frame=0 pc=0x123\n")
+assert len(extra['delivery_records'])==1 and len(extra['right_lifetime_records'])==2
 print('PASS IPC decoder: exact bytes/tokens, missing ranges and copy faults')

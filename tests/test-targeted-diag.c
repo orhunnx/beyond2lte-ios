@@ -27,6 +27,7 @@ static uint64_t get_saved_state_pc(arm_saved_state_t *r){return r->pc;}
 struct backtrace_user_info {int btui_error;};
 #define BTUINFO_INIT {0}
 static unsigned backtrace_user(uintptr_t *bt,unsigned n,void *c,struct backtrace_user_info *i){(void)c;(void)i;assert(n>=2);bt[0]=0x100000000;bt[1]=0x180000000;return 2;}
+static unsigned backtrace(uintptr_t *bt,unsigned n,void *ctl,void *info){(void)ctl;(void)info;assert(n>=2);bt[0]=0xffff000000001000;bt[1]=0xffff000000002000;return 2;}
 #define SYS_csops 169
 #define SYS_csops_audittoken 170
 #define SYS_open 5
@@ -85,5 +86,22 @@ int main(void){
  uint64_t args[2]={ptr,0};strcpy((char*)region,"/private/var/containers/test");
  b2l_diag_syscall(SYS_open,2,args);assert(strstr(output,"SYSPATH")&&strstr(output,"error=2"));old=used;
  b2l_diag_syscall(SYS_open,0,args);assert(old==used);
+ // Actual copyout address differs from the stack-vector allocation base.
+ clear();strcpy(process.p_comm,"containermanage");memset(region,0,sizeof(region));
+ uint32_t *delivered=(void*)(region+2048);delivered[0]=0x1212;delivered[1]=24;delivered[3]=0x1607;delivered[5]=0x40000000;
+ uint32_t *tr=(void*)(region+2048+24);tr[0]=0;tr[1]=52;tr[10]=110;
+ b2l_diag_receive(ptr+2048,24,52,ptr,4096,0x123);
+ assert(strstr(output,"id=0x40000000")&&strstr(output,"audit=0,0,0,0,0,110,0,0"));
+ clear();requested=0;b2l_diag_receive(ptr+2048,24,52,ptr,4096,0);assert(!used);requested=1;
+ // Track only an lsd send-once reply endpoint, then observe another process
+ // destroying it. User stack reading must not happen inside the notify hook.
+ strcpy(process.p_comm,"lsd");
+ b2l_diag_ports(0,0x40000000,18u<<8,0x11110000,0x22220000,0x1503,0x1607);
+ clear();strcpy(process.p_comm,"other");
+ b2l_diag_sonce(0x33330000,0,0);assert(!used);
+ b2l_diag_sonce(0x22220000,0x1607,55);
+ assert(strstr(output,"tracked=1")&&strstr(output,"SONCEKBT")&&!strstr(output,"SONCEUBT"));
+ b2l_diag_checkpoint();assert(strstr(output,"SONCEUBT"));old=used;
+ b2l_diag_checkpoint();assert(used==old);
  puts("PASS actual targeted diagnostics: gating, current-thread snapshots, limits, copy faults, OOL bounds, XPC admission and path errors");
 }
