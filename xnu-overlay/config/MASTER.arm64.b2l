@@ -117,7 +117,9 @@ options		COUNT_SYSCALLS		# count bsd system calls 	# <countcalls>
 options     TRASH_VFP_ON_SAVE   # <debug,trash_vfp>
 options		ALTERNATE_DEBUGGER	# <alternate_debugger>
 
-options   CONFIG_VNODES=1024		# <xsmall>
+# Keep normal RAM-based vnode sizing usable for a full root filesystem.
+# unix_startup caps (sane_size / 64 KiB) + 1024 at this value; allocation is lazy.
+options   CONFIG_VNODES=65536		# <xsmall>
 
 options   CONFIG_FREEZE_SUSPENDED_MIN=4		# <xsmall>
 
