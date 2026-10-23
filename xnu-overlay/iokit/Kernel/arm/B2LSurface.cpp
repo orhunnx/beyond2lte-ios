@@ -22,8 +22,9 @@
  * into each task that creates or looks it up; mappings are counted per
  * client and dropped on release or close.
  *
- * Unsupported property, notification, accelerator and shared-event selectors
- * return kIOReturnUnsupported (logged once per selector).
+ * Selectors 5, 9, 10 and 27 implement matrix, nonbulk property and bulk
+ * attachment updates/readback. Unsupported notification, accelerator and
+ * shared-event selectors return kIOReturnUnsupported (logged once).
  */
 #include "B2LSurface.h"
 
@@ -38,12 +39,18 @@
 #include <libkern/c++/OSArray.h>
 #include <libkern/c++/OSDictionary.h>
 #include <libkern/c++/OSNumber.h>
+#include <libkern/c++/OSString.h>
+#include <libkern/c++/OSSerialize.h>
 #include <libkern/c++/OSUnserialize.h>
 #include <sys/proc.h>
 
 enum {
 	kB2LSurfaceCreate             = 0,
 	kB2LSurfaceLookup             = 4,
+	kB2LSurfaceSetYCbCrMatrix     = 5,
+	kB2LSurfaceSetValue           = 9,
+	kB2LSurfaceCopyValues         = 10,
+	kB2LSurfaceSetBulkAttachments = 27,
 	kB2LSurfaceLimits             = 13,
 	kB2LSurfaceLookupFromPort     = 34,
 	kB2LSurfaceCreatePort         = 35,
@@ -84,6 +91,8 @@ B2LSurface::free()
 	if (OSDynamicCast(IOBufferMemoryDescriptor, memory) != NULL) {
 		OSAddAtomic64(-(SInt64)allocSize, (volatile SInt64 *)&b2l_surface_wired);
 	}
+	OSSafeReleaseNULL(properties);
+	OSSafeReleaseNULL(serializedProperties);
 	OSSafeReleaseNULL(kernelMap);
 	OSSafeReleaseNULL(memory);
 	OSSafeReleaseNULL(state);
@@ -408,9 +417,10 @@ class IOSurfaceRootUserClient : public IOUserClient {
 	OSArray *fRefs;
 
 	B2LSurfaceRef *findRef(uint32_t id, unsigned int *index);
-	IOReturn addRef(B2LSurface *s, B2LSurfaceRef **refOut);
-	IOReturn returnSurface(B2LSurface *s, IOExternalMethodArguments *args);
+	IOReturn addRef(B2LSurface *s, B2LSurfaceRef **refOut, bool cachedLookup, bool *counted);
+	IOReturn returnSurface(B2LSurface *s, IOExternalMethodArguments *args, bool cachedLookup = false);
 	IOReturn create(IOExternalMethodArguments *args);
+	IOReturn metadata(uint32_t selector, IOExternalMethodArguments *args);
 
 public:
 	bool initWithTask(task_t owningTask, void *securityID, UInt32 type) APPLE_KEXT_OVERRIDE;
@@ -500,15 +510,16 @@ IOSurfaceRootUserClient::findRef(uint32_t id, unsigned int *index)
  * task the first time. Takes over the caller's user count on s.
  */
 IOReturn
-IOSurfaceRootUserClient::addRef(B2LSurface *s, B2LSurfaceRef **refOut)
+IOSurfaceRootUserClient::addRef(B2LSurface *s, B2LSurfaceRef **refOut, bool cachedLookup, bool *counted)
 {
+	*counted = false;
 	IOLockLock(fLock);
 	B2LSurfaceRef *ref = findRef(s->id, NULL);
 	if (ref != NULL && ref->surface == s) {
-		ref->count++;
+		if (!cachedLookup) { ref->count++; *counted = true; }
+		ref->retain(); /* protect it before dropping the client lock */
 		IOLockUnlock(fLock);
 		b2l_surface_put(s);
-		ref->retain();
 		*refOut = ref;
 		return kIOReturnSuccess;
 	}
@@ -532,15 +543,20 @@ IOSurfaceRootUserClient::addRef(B2LSurface *s, B2LSurfaceRef **refOut)
 	IOLockLock(fLock);
 	B2LSurfaceRef *raced = findRef(s->id, NULL);
 	if (raced != NULL && raced->surface == s) {
-		/* Another thread mapped it meanwhile: count there, drop ours. */
-		raced->count++;
+		/* Another thread mapped it meanwhile: use its cached mapping. */
+		if (!cachedLookup) { raced->count++; *counted = true; }
+		raced->retain();
 		IOLockUnlock(fLock);
 		ref->release();
-		raced->retain();
 		*refOut = raced;
 		return kIOReturnSuccess;
 	}
-	fRefs->setObject(ref);
+	if (!fRefs->setObject(ref)) {
+		IOLockUnlock(fLock);
+		ref->release();
+		return kIOReturnNoMemory;
+	}
+	*counted = true;
 	IOLockUnlock(fLock);
 	/* Transfer our retain to returnSurface; fRefs owns its own. */
 	*refOut = ref;
@@ -584,7 +600,9 @@ b2l_struct_out(IOExternalMethodArguments *args, const void *buf, uint32_t len)
 		if (len > args->structureOutputDescriptor->getLength()) {
 			return kIOReturnNoSpace;
 		}
-		args->structureOutputDescriptor->writeBytes(0, buf, len);
+		if (args->structureOutputDescriptor->writeBytes(0, buf, len) != len) {
+			return kIOReturnVMError;
+		}
 		args->structureOutputDescriptorSize = len;
 		return kIOReturnSuccess;
 	}
@@ -598,10 +616,11 @@ b2l_struct_out(IOExternalMethodArguments *args, const void *buf, uint32_t len)
 
 /* Map s for this client and answer with its lock result. Takes s's user count. */
 IOReturn
-IOSurfaceRootUserClient::returnSurface(B2LSurface *s, IOExternalMethodArguments *args)
+IOSurfaceRootUserClient::returnSurface(B2LSurface *s, IOExternalMethodArguments *args, bool cachedLookup)
 {
 	B2LSurfaceRef *ref = NULL;
-	IOReturn ret = addRef(s, &ref);
+	bool counted = false;
+	IOReturn ret = addRef(s, &ref, cachedLookup, &counted);
 	if (ret != kIOReturnSuccess) {
 		return ret;
 	}
@@ -610,12 +629,15 @@ IOSurfaceRootUserClient::returnSurface(B2LSurface *s, IOExternalMethodArguments 
 		ret = kIOReturnNoMemory;
 	} else {
 		b2l_surface_fill_result(s, ref, out);
-        ref->release();
+		/* Selector 34 tells the framework to reuse its cached client object.
+		 * Its userspace retain does not require another kernel mapping count. */
+		if (cachedLookup && !counted) put64(out, 0, UINT64_MAX);
 		ret = b2l_struct_out(args, out, B2L_SURFACE_RESULT_SIZE);
 		IOFreeData(out, B2L_SURFACE_RESULT_SIZE);
 	}
-	if (ret != kIOReturnSuccess) {
-		/* The caller never learns the id: undo this create/lookup. */
+	ref->release();
+	if (ret != kIOReturnSuccess && counted) {
+		/* Undo only the count added by this request, never a cached mapping. */
 		trapRelease((void *)(uintptr_t)s->id, NULL, NULL, NULL, NULL, NULL);
 	}
 	return ret;
@@ -720,6 +742,11 @@ IOSurfaceRootUserClient::externalMethod(uint32_t selector, IOExternalMethodArgum
 		b2l_surf_log_once("sel", selector);
 		return b2l_struct_out(args, limits, sizeof(limits));
 	}
+	case kB2LSurfaceSetYCbCrMatrix:
+	case kB2LSurfaceSetValue:
+	case kB2LSurfaceCopyValues:
+	case kB2LSurfaceSetBulkAttachments:
+		return metadata(selector, args);
 	case kB2LSurfaceCreate:
 		return create(args);
 	case kB2LSurfaceLookup: {
@@ -737,7 +764,7 @@ IOSurfaceRootUserClient::externalMethod(uint32_t selector, IOExternalMethodArgum
 		IOReturn ret = IOUserClient::copyObjectForPortNameInTask(fTask, (mach_port_name_t)arg0, &obj);
 		B2LSurface *s = OSDynamicCast(B2LSurface, obj);
 		if (ret == kIOReturnSuccess) {
-			ret = (s != NULL && b2l_surface_get(s)) ? returnSurface(s, args) : kIOReturnBadArgument;
+			ret = (s != NULL && b2l_surface_get(s)) ? returnSurface(s, args, true) : kIOReturnBadArgument;
 		}
 		OSSafeReleaseNULL(obj);
 		b2l_surf_log_once("sel", selector);
@@ -796,6 +823,239 @@ b2l_surface_held(IOLock *lock, OSArray *refs, uint32_t id)
 	IOLockUnlock(lock);
 	return s;
 }
+
+/* BEGIN B2L SURFACE METADATA: shipped IOSurface.framework selectors 5/9/10/27. */
+/* Bound the native deserializer and forbid references to collections: those
+ * can form retain cycles. Leaf references from IOCFSerialize remain valid. */
+static bool
+b2l_surface_serialization_valid(const uint8_t *p, uint32_t size)
+{
+	if (size < 4 || size > B2L_SURFACE_MAX_PROPS) return false;
+	uint32_t signature;
+	memcpy(&signature, p, 4);
+	if (signature != 0xd3) {
+		/* Indexed binary is not emitted by the shipped IOCFSerialize(..., 1). */
+		if (p[0] == 0xd4 || p[size - 1] != 0) return false;
+		const char *text = (const char *)p;
+		if (strnstr(text, "ID=", size) || strnstr(text, "IDREF=", size) ||
+		    strnstr(text, "<!DOCTYPE", size) || strnstr(text, "<!ENTITY", size)) return false;
+		uint32_t depth = 0;
+		for (uint32_t i = 0; i + 1 < size; i++) {
+			if (p[i] != '<' || p[i + 1] == '?' || p[i + 1] == '!') continue;
+			if (p[i + 1] == '/') { if (depth == 0) return false; depth--; }
+			else {
+				if (++depth > 32) return false;
+				uint32_t j = i + 1;
+				while (j < size && p[j] != '>') j++;
+				if (j == size) return false;
+				/* IDs with whitespace around '=' are references too. */
+				for (uint32_t k = i + 1; k + 2 < j; k++) {
+					if ((p[k] == ' ' || p[k] == '\t' || p[k] == '\r' || p[k] == '\n') &&
+					    p[k + 1] == 'I' && p[k + 2] == 'D') return false;
+				}
+				if (j > i && p[j - 1] == '/') depth--;
+			}
+		}
+		return depth == 0;
+	}
+	/* One byte per object, bounded before allocation by the input size. */
+	uint8_t *types = (uint8_t *)IOMallocZeroData(size / 4);
+	if (types == NULL) return false;
+	uint32_t count = 0, pos = 4;
+	bool valid = true;
+	while (pos < size && valid) {
+		if (size - pos < 4 || count >= 4096) { valid = false; break; }
+		uint32_t token;
+		memcpy(&token, p + pos, 4); pos += 4;
+		uint32_t type = (token >> 24) & 0x7f, length = token & 0xffffff;
+		uint32_t bytes = 0;
+		if (type == 12) { /* reference: never allow a collection target */
+			if (length >= count || types[length] <= 3) valid = false;
+			continue;
+		}
+		types[count++] = (uint8_t)type;
+		switch (type) {
+		case 1: case 2: case 3:
+			if (length > 4096) valid = false;
+			break;
+		case 4:
+			if (length != 8 && length != 16 && length != 32 && length != 64 &&
+			    length != 31 && length != 63) valid = false;
+			bytes = 8; break;
+		case 8: case 9: case 10:
+			bytes = (length + 3) & ~3u; break;
+		case 11:
+			if (length > 1) valid = false;
+			break;
+		default: valid = false; break;
+		}
+		if (bytes > size - pos) valid = false;
+		else pos += bytes;
+	}
+	IOFreeData(types, size / 4);
+	return valid && pos == size;
+}
+
+/* Read the descriptor length before narrowing; one owned snapshot is used for
+ * validation and parsing, including the direct IOKit input case. */
+static IOReturn
+b2l_surface_metadata_input(IOExternalMethodArguments *args, uint8_t **copy,
+    uint32_t *length)
+{
+	uint64_t n = args->structureInputDescriptor ?
+	    args->structureInputDescriptor->getLength() : args->structureInputSize;
+	if (n == 0 || n > B2L_SURFACE_MAX_PROPS + 12) return kIOReturnBadArgument;
+	*copy = (uint8_t *)IOMallocData((size_t)n);
+	if (*copy == NULL) return kIOReturnNoMemory;
+	*length = (uint32_t)n;
+	if (args->structureInputDescriptor) {
+		if (args->structureInputDescriptor->readBytes(0, *copy, n) == n) return kIOReturnSuccess;
+	} else if (args->structureInput) {
+		memcpy(*copy, args->structureInput, n);
+		return kIOReturnSuccess;
+	}
+	IOFreeData(*copy, n); *copy = NULL;
+	return kIOReturnBadArgument;
+}
+
+struct b2l_surface_attachment_span { uint8_t offset, length; };
+static const struct b2l_surface_attachment_span b2l_surface_attachment_spans[] = {
+	{0x00,32},{0x20,16},{0x30,8},
+	{0x38,1},{0x39,1},{0x3a,1},{0x3b,1},{0x3c,1},{0x3d,1},{0x3e,1},{0x3f,1},
+	{0x40,24},{0x58,4},{0x5c,8},{0x64,1},{0x68,8},{0x70,4},
+	{0x65,1},{0x66,1},{0x74,12},{0x80,2},{0x82,2}
+};
+
+/* Caller holds the surface lock. Validate the whole update before writing. */
+static IOReturn
+b2l_surface_set_bulk(B2LSurface *s, const uint8_t *input, uint32_t size)
+{
+	if (size != 160) return kIOReturnBadArgument;
+	uint64_t length, mask;
+	memcpy(&length, input + 0x88, 8);
+	memcpy(&mask, input + 0x90, 8);
+	if (length > 132 || (mask & ~0x3fffffULL)) return kIOReturnBadArgument;
+	for (unsigned int i = 0; i < 22; i++) {
+		const struct b2l_surface_attachment_span *span = &b2l_surface_attachment_spans[i];
+		if ((mask & (1ULL << i)) && span->offset + span->length > length)
+			return kIOReturnBadArgument;
+	}
+	uint8_t *state = (uint8_t *)s->state->getBytesNoCopy() + 0x34;
+	for (unsigned int i = 0; i < 22; i++) {
+		const struct b2l_surface_attachment_span *span = &b2l_surface_attachment_spans[i];
+		if (mask & (1ULL << i)) memcpy(state + span->offset, input + span->offset, span->length);
+	}
+	return kIOReturnSuccess;
+}
+
+/* Caller holds the surface lock. Publish only after every allocation and the
+ * seed reply succeeds. A short output copy leaves dictionary and seed intact. */
+static IOReturn
+b2l_surface_set_values(B2LSurface *s, OSArray *array, IOExternalMethodArguments *args)
+{
+	uint32_t count = array->getCount();
+	OSDictionary *updates = count == 1 ? OSDynamicCast(OSDictionary, array->getObject(0)) : NULL;
+	OSString *key = count == 2 ? OSDynamicCast(OSString, array->getObject(1)) : NULL;
+	if ((count != 1 || updates == NULL) && (count != 2 || key == NULL))
+		return kIOReturnBadArgument;
+	OSDictionary *next = s->properties ? OSDictionary::withDictionary(s->properties) :
+	    OSDictionary::withCapacity(updates ? updates->getCount() : 1);
+	if (next == NULL) return kIOReturnNoMemory;
+	bool ok = updates ? next->merge(updates) : next->setObject(key, array->getObject(0));
+	OSSerialize *serialized = ok ? OSSerialize::binaryWithCapacity(256) : NULL;
+	IOReturn ret = kIOReturnNoMemory;
+	if (serialized && next->serialize(serialized)) {
+		if (serialized->getLength() > B2L_SURFACE_MAX_PROPS) ret = kIOReturnNoSpace;
+		else {
+			uint8_t *state = (uint8_t *)s->state->getBytesNoCopy();
+			uint32_t seed;
+			memcpy(&seed, state + 0x20, 4);
+			seed = (seed | 1u) + 2u;
+			ret = b2l_struct_out(args, &seed, sizeof(seed));
+			if (ret == kIOReturnSuccess) {
+				OSSafeReleaseNULL(s->properties);
+				OSSafeReleaseNULL(s->serializedProperties);
+				s->properties = next; next = NULL;
+				s->serializedProperties = serialized; serialized = NULL;
+				uint32_t bytes = s->serializedProperties->getLength();
+				memcpy(state + 0x28, &bytes, 4);
+				__atomic_store_n((uint32_t *)(state + 0x20), seed, __ATOMIC_RELEASE);
+			}
+		}
+	}
+	OSSafeReleaseNULL(serialized);
+	OSSafeReleaseNULL(next);
+	return ret;
+}
+
+static IOReturn
+b2l_surface_copy_values(B2LSurface *s, IOExternalMethodArguments *args)
+{
+	OSSerialize *serialized = s->serializedProperties;
+	if (serialized == NULL) return kIOReturnNotFound;
+	uint32_t size = serialized->getLength() + 12;
+	uint8_t *out = (uint8_t *)IOMallocZeroData(size);
+	if (out == NULL) return kIOReturnNoMemory;
+	put32(out, 4, *(uint32_t *)((uint8_t *)s->state->getBytesNoCopy() + 0x20));
+	memcpy(out + 12, serialized->text(), size - 12);
+	IOReturn ret = b2l_struct_out(args, out, size);
+	IOFreeData(out, size);
+	return ret;
+}
+
+IOReturn
+IOSurfaceRootUserClient::metadata(uint32_t selector, IOExternalMethodArguments *args)
+{
+	uint8_t *input = NULL;
+	uint32_t size = 0, id = 0;
+	IOReturn ret;
+	if (selector == kB2LSurfaceSetYCbCrMatrix) {
+		if (args->scalarInputCount != 2 || args->scalarInput[0] > UINT32_MAX ||
+		    args->scalarInput[1] > UINT8_MAX) return kIOReturnBadArgument;
+		id = (uint32_t)args->scalarInput[0];
+	} else {
+		ret = b2l_surface_metadata_input(args, &input, &size);
+		if (ret != kIOReturnSuccess) return ret;
+		if ((selector == kB2LSurfaceSetBulkAttachments && size != 160) ||
+		    (selector == kB2LSurfaceCopyValues && size != 13) ||
+		    (selector == kB2LSurfaceSetValue && size <= 12)) {
+			IOFreeData(input, size); return kIOReturnBadArgument;
+		}
+		memcpy(&id, input + (selector == kB2LSurfaceSetBulkAttachments ? 0x98 : 0), 4);
+	}
+	B2LSurface *s = b2l_surface_held(fLock, fRefs, id);
+	if (s == NULL) { if (input) IOFreeData(input, size); return kIOReturnNotFound; }
+	OSObject *object = NULL;
+	OSArray *array = NULL;
+	if (selector == kB2LSurfaceSetValue) {
+		if (b2l_surface_serialization_valid(input + 12, size - 12))
+			object = OSUnserializeXML((const char *)input + 12, size - 12);
+		array = OSDynamicCast(OSArray, object);
+		if (array == NULL) {
+			OSSafeReleaseNULL(object); s->release(); IOFreeData(input, size);
+			return kIOReturnBadArgument;
+		}
+	}
+	IOLockLock(b2l_surface_lock);
+	switch (selector) {
+	case kB2LSurfaceSetYCbCrMatrix:
+		((uint8_t *)s->state->getBytesNoCopy())[0x6e] = (uint8_t)args->scalarInput[1];
+		ret = kIOReturnSuccess; break;
+	case kB2LSurfaceSetBulkAttachments:
+		ret = b2l_surface_set_bulk(s, input, size); break;
+	case kB2LSurfaceSetValue:
+		ret = b2l_surface_set_values(s, array, args); break;
+	case kB2LSurfaceCopyValues:
+		ret = b2l_surface_copy_values(s, args); break;
+	default: ret = kIOReturnUnsupported; break;
+	}
+	IOLockUnlock(b2l_surface_lock);
+	OSSafeReleaseNULL(object);
+	s->release();
+	if (input) IOFreeData(input, size);
+	return ret;
+}
+/* END B2L SURFACE METADATA */
 
 IOReturn
 IOSurfaceRootUserClient::trapLock(void *id, __unused void *options, void *seedOut,

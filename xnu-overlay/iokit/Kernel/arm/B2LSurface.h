@@ -14,6 +14,8 @@
 #include <IOKit/IOMemoryDescriptor.h>
 #include <IOKit/IOBufferMemoryDescriptor.h>
 #include <libkern/c++/OSObject.h>
+#include <libkern/c++/OSDictionary.h>
+#include <libkern/c++/OSSerialize.h>
 #include <mach/mach_types.h>
 
 #define B2L_SURFACE_MAX_PLANES        20
@@ -38,6 +40,8 @@ public:
 	IOMemoryDescriptor       *memory;       /* pixels (buffer or physical) */
 	IOOptionBits              mapCache;     /* cache mode for user mappings */
 	IOBufferMemoryDescriptor *state;        /* shared state page, read-only for users */
+	OSDictionary             *properties;   /* protected by the surface lock */
+	OSSerialize              *serializedProperties; /* immutable readback snapshot */
 	IOMemoryMap              *kernelMap;    /* lazily created for kernel copies */
 
 	bool init() APPLE_KEXT_OVERRIDE { return OSObject::init(); }
