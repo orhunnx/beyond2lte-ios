@@ -8,6 +8,33 @@
 #define B2L_EXT_HANDLES 1024u
 #define B2L_EXT_PATH 1024u
 #define B2L_EXT_TOKEN 73u
+/* Exact file-extension classes from the shipped ContainerManagerCommon plists.
+ * Preserve the requested class with the capability; these are not aliases. */
+static const char *const b2l_ext_classes[] = {
+    NULL, "com.apple.app-sandbox.read", "com.apple.app-sandbox.read-write",
+    "com.apple.sandbox.container", "com.apple.sandbox.application-group",
+    "com.apple.sandbox.system-container", "com.apple.sandbox.system-group"
+};
+static unsigned
+b2l_ext_class(const char *name)
+{
+    for (unsigned i = 1; i < sizeof(b2l_ext_classes) / sizeof(b2l_ext_classes[0]); i++)
+        if (!strcmp(name, b2l_ext_classes[i])) return i;
+    return 0;
+}
+static void
+b2l_ext_issue_trace(proc_t process, const char *name, uint64_t type, uint64_t flags, int error)
+{
+    static unsigned samples[2];
+    if (__atomic_fetch_add(&samples[error != 0], 1, __ATOMIC_RELAXED) >= 16) return;
+    char text[96];
+    size_t n = name ? strlen(name) : 0;
+    if (n >= sizeof(text)) n = sizeof(text) - 1;
+    for (size_t i = 0; i < n; i++) text[i] = (unsigned char)name[i] >= 32 && (unsigned char)name[i] <= 126 ? name[i] : '?';
+    text[n] = 0;
+    b2l_diag_record("B2L EXT ISSUE: pid=%d class=%s type=%llu flags=0x%llx error=%d\n",
+        proc_pid(process), name ? text : "-", (unsigned long long)type, (unsigned long long)flags, error);
+}
 struct b2l_ext_issue_args {
     uint64_t class_name, type, resource, flags, token, target_pid, target_version;
 };
@@ -20,7 +47,7 @@ _Static_assert(sizeof(struct b2l_ext_release_args) == 24, "iOS26 release ABI");
 _Static_assert(sizeof(struct b2l_ext_last_args) == 32, "iOS26 release-last ABI");
 struct b2l_ext_token_entry {
     uint64_t issuer, target, serial;
-    uint32_t refs;
+    uint32_t refs, class_id;
     bool used, ready, writable, consumed;
     char token[B2L_EXT_TOKEN], path[B2L_EXT_PATH];
 };
@@ -91,18 +118,37 @@ b2l_ext_issue(proc_t process, user_addr_t argument)
     size_t n = 0;
     int error = copyin(argument, &a, sizeof(a));
     if (error) return error;
-    if (a.type != 0) return ENOTSUP;
-    if (!a.class_name || !a.resource || !a.token) return EINVAL;
+    if (a.type != 0) {
+        b2l_ext_issue_trace(process, NULL, a.type, a.flags, ENOTSUP);
+        return ENOTSUP;
+    }
+    if (!a.class_name || !a.resource || !a.token) {
+        b2l_ext_issue_trace(process, NULL, a.type, a.flags, EINVAL);
+        return EINVAL;
+    }
     error = copyinstr(a.class_name, class_name, sizeof(class_name), &n);
-    if (error) return error;
-    bool writable = !strcmp(class_name, "com.apple.app-sandbox.read-write");
-    if (!writable && strcmp(class_name, "com.apple.app-sandbox.read")) return ENOTSUP;
+    if (error) {
+        b2l_ext_issue_trace(process, NULL, a.type, a.flags, error);
+        return error;
+    }
+    unsigned class_id = b2l_ext_class(class_name);
+    if (!class_id) {
+        b2l_ext_issue_trace(process, class_name, a.type, a.flags, ENOTSUP);
+        return ENOTSUP;
+    }
+    bool writable = class_id != 1;
     error = copyinstr(a.resource, path, sizeof(path), &n);
-    if (error) return error;
-    if (!b2l_ext_canonical(path)) return EINVAL;
+    if (!error && !b2l_ext_canonical(path)) error = EINVAL;
+    if (error) {
+        b2l_ext_issue_trace(process, class_name, a.type, a.flags, error);
+        return error;
+    }
     uint64_t target;
     error = b2l_ext_target(&a, &target);
-    if (error) return error;
+    if (error) {
+        b2l_ext_issue_trace(process, class_name, a.type, a.flags, error);
+        return error;
+    }
     uint64_t issuer = proc_uniqueid(process);
     read_random(random, sizeof(random));
     memcpy(token, "b2l-dev-", 8);
@@ -118,6 +164,7 @@ b2l_ext_issue(proc_t process, user_addr_t argument)
     for (unsigned i = 0; i < B2L_EXT_TOKENS; i++) {
         if (b2l_ext_tokens[i].used && !strcmp(b2l_ext_tokens[i].token, token)) {
             lck_spin_unlock(&b2l_ext_lock);
+            b2l_ext_issue_trace(process, class_name, a.type, a.flags, EAGAIN);
             return EAGAIN;
         }
         if (!b2l_ext_tokens[i].used && slot == B2L_EXT_TOKENS) slot = i;
@@ -127,12 +174,15 @@ b2l_ext_issue(proc_t process, user_addr_t argument)
         serial = ++b2l_ext_serial;
         if (!serial) serial = ++b2l_ext_serial;
         t->issuer = issuer; t->target = target; t->serial = serial;
-        t->used = true; t->writable = writable;
+        t->used = true; t->writable = writable; t->class_id = class_id;
         memcpy(t->token, token, sizeof(token));
         memcpy(t->path, path, strlen(path) + 1);
     }
     lck_spin_unlock(&b2l_ext_lock);
-    if (slot == B2L_EXT_TOKENS) return ENOSPC;
+    if (slot == B2L_EXT_TOKENS) {
+        b2l_ext_issue_trace(process, class_name, a.type, a.flags, ENOSPC);
+        return ENOSPC;
+    }
     error = copyout(token, a.token, sizeof(token));
     /* Exit notification can run between target lookup and publication.
      * Recheck after inserting the pending (not consumable) entry; a later
@@ -149,6 +199,7 @@ b2l_ext_issue(proc_t process, user_addr_t argument)
         else t->ready = true;
     } else if (!error) error = ESRCH;
     lck_spin_unlock(&b2l_ext_lock);
+    b2l_ext_issue_trace(process, class_name, a.type, a.flags, error);
     return error;
 }
 
@@ -242,12 +293,17 @@ static int
 b2l_extension_syscall(proc_t process, int operation, user_addr_t argument)
 {
     if (!b2l_sandbox_development_enabled() || !process || !proc_is64bit(process)) return ENOPOLICY;
+    int error;
     switch (operation) {
     case 5: return b2l_ext_issue(process, argument);
-    case 6: return b2l_ext_consume(process, argument);
-    case 7: case 0x50: return b2l_ext_release(process, operation, argument);
+    case 6: error = b2l_ext_consume(process, argument); break;
+    case 7: case 0x50: error = b2l_ext_release(process, operation, argument); break;
     default: return ENOTSUP;
     }
+    static unsigned samples[2][2];
+    if (__atomic_fetch_add(&samples[operation != 6][error != 0], 1, __ATOMIC_RELAXED) < 8)
+        b2l_diag_record("B2L EXT RESULT: pid=%d op=%d error=%d\n", proc_pid(process), operation, error);
+    return error;
 }
 
 static void

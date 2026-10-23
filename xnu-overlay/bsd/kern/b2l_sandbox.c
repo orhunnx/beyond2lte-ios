@@ -20,6 +20,7 @@
 #include <kern/kalloc.h>
 #include <kern/mach_filter.h>
 #include <arm64/b2l_arm64e_compat.h>
+#include <arm64/b2l_diag.h>
 
 void b2l_sandbox_register(void);
 

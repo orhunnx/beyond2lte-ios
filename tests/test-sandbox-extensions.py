@@ -15,6 +15,7 @@ body=r'''
 #include <limits.h>
 #include <stdatomic.h>
 #include <pthread.h>
+#include <stdarg.h>
 #define ENOPOLICY 103
 #define LCK_GRP_DECLARE(a,b) int a __attribute__((unused))
 #define LCK_SPIN_DECLARE(a,b) pthread_mutex_t a = PTHREAD_MUTEX_INITIALIZER
@@ -27,6 +28,10 @@ typedef struct proc *proc_t;
 static struct proc processes[12];
 static proc_t proc_find(int pid){assert(!lock_depth);for(unsigned i=0;i<12;i++)if(processes[i].pid==pid)return &processes[i];return NULL;}
 static void proc_rele(proc_t p){assert(!lock_depth&&p);}
+static int proc_pid(proc_t p){assert(!lock_depth&&p);return p->pid;}
+static char diag_output[32768];static size_t diag_used;
+static pthread_mutex_t diag_mutex=PTHREAD_MUTEX_INITIALIZER;
+static void b2l_diag_record(const char*format,...){assert(!lock_depth);pthread_mutex_lock(&diag_mutex);va_list ap;va_start(ap,format);int n=vsnprintf(diag_output+diag_used,sizeof(diag_output)-diag_used,format,ap);va_end(ap);assert(n>0&&(size_t)n<sizeof(diag_output)-diag_used);diag_used+=(size_t)n;pthread_mutex_unlock(&diag_mutex);}
 static uint64_t proc_uniqueid(proc_t p){assert(!lock_depth&&p);return p->unique;}
 static unsigned proc_pidversion(proc_t p){assert(!lock_depth&&p);return p->version;}
 static bool proc_is64bit(proc_t p){return p->is64;}
@@ -55,6 +60,23 @@ static void test_basic(void){
  assert(!consume(&processes[1],&h)&&h>0&&h<=INT64_MAX);assert(!consume(&processes[1],&h2)&&h2!=h);assert(handle_count()==2);
  assert(release(&processes[2],h)==ENOENT&&handle_count()==2);assert(!release(&processes[1],h));assert(release(&processes[1],h)==ENOENT);
  assert(!release(&processes[1],h2));assert(!token_count()&&!handle_count());assert(consume(&processes[1],&h)==ENOENT);
+}
+static void test_native_container_classes(void){
+ const char*names[]={"com.apple.sandbox.container","com.apple.sandbox.application-group","com.apple.sandbox.system-container","com.apple.sandbox.system-group"};
+ for(unsigned i=0;i<4;i++){
+  reset_registry();setup();strcpy((char*)memory+0x2000,names[i]);
+  strcpy((char*)memory+0x3000,"/private/var/mobile/Containers/Shared/AppGroup/FIXTURE");
+  issueargs.flags=0x30000;issueargs.target_pid=processes[1].pid;issueargs.target_version=processes[1].version;
+  assert(!issue(&processes[0]));assert(token_count()==1);
+  assert(b2l_ext_tokens[0].class_id==i+3&&b2l_ext_tokens[0].writable);
+  uint64_t handle;assert(consume(&processes[2],&handle)==EPERM);
+  assert(!consume(&processes[1],&handle));assert(!release(&processes[1],handle));
+  assert(!token_count()&&!handle_count());
+ }
+ setup();strcpy((char*)memory+0x2000,"com.apple.sandbox.application-group.extra");assert(issue(&processes[0])==ENOTSUP);
+ setup();strcpy((char*)memory+0x2000,"com.apple.sandbox.");assert(issue(&processes[0])==ENOTSUP);
+ setup();strcpy((char*)memory+0x2000,"com.apple.app-sandbox.read");assert(!issue(&processes[0]));assert(b2l_ext_tokens[0].class_id==1&&!b2l_ext_tokens[0].writable);
+ b2l_extension_process_exit(&processes[0]);
 }
 static void test_copy_rollback(void){
  reset_registry();setup();fail_write=true;assert(issue(&processes[0])==EFAULT&&!token_count());fail_write=false;assert(!issue(&processes[0]));
@@ -104,7 +126,7 @@ static void test_capacity_and_path_release(void){
 }
 static void *worker(void*arg){unsigned i=(unsigned)(uintptr_t)arg;for(unsigned n=0;n<300;n++){setup();struct b2l_ext_issue_args a=issueargs;putargs(&a,sizeof(a));assert(!b2l_extension_syscall(&processes[i],5,0x1000));uint64_t h;assert(!consume(&processes[i],&h));assert(!release(&processes[i],h));}return NULL;}
 static void test_concurrency(void){reset_registry();pthread_t ts[8];for(unsigned i=0;i<8;i++)assert(!pthread_create(&ts[i],NULL,worker,(void*)(uintptr_t)i));for(unsigned i=0;i<8;i++)assert(!pthread_join(ts[i],NULL));assert(!token_count()&&!handle_count());}
-int main(void){for(unsigned i=0;i<12;i++)processes[i]=(struct proc){10000+i,100+(int)i,20+i,true};test_basic();test_copy_rollback();test_bindings_and_exit();test_publication_races();test_validation();test_capacity_and_path_release();test_concurrency();puts("B2L extension actual registry: ABI, transfer/owner/refcount, copies/rollback, forged/stale/bound tokens, malformed input, capacity, exit cleanup and 8-thread concurrency passed");}
+int main(void){for(unsigned i=0;i<12;i++)processes[i]=(struct proc){10000+i,100+(int)i,20+i,true};test_native_container_classes();test_basic();test_copy_rollback();test_bindings_and_exit();test_publication_races();test_validation();test_capacity_and_path_release();test_concurrency();assert(!strstr(diag_output,"b2l-dev-"));assert(diag_used<8192);puts("B2L extension actual registry: native container classes, exact-name rejection, ABI, transfer/owner/refcount, copies/rollback, forged/stale/bound tokens, malformed input, capacity, exit cleanup and 8-thread concurrency passed");}
 '''
 with tempfile.TemporaryDirectory(prefix='b2l-ext-test-') as td:
     d=pathlib.Path(td);(d/'test.c').write_text(body)
