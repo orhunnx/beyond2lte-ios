@@ -131,3 +131,105 @@ header was unchanged. SYSTEM and USERDATA were not mounted or written from
 recovery; the previously captured 0052 logs remain local. Reboot was requested
 successfully. Retained 0052 is the matching rollback. Runtime diagnostic output,
 touch operation and UI appearance still await the next device observation.
+
+
+## First 0053 device capture
+
+Read-only recovery capture: epoch 19, 207 valid records, 496,312 decoded bytes,
+zero missing positions, zero producer drops. Decoder recovers 391 IPC records,
+825 wait-related lines (683 symbolized frames) and 645 syscall-error/path
+lines. Captured IPC chunks have no decoder gaps or copy errors. The new bulk
+lines stay contiguous, although older ordinary/crash console lines still
+interleave. No FAULTMSG text or kernel panic appears in this capture.
+
+HFS catalog and extent overflow were read without mount, replay or writes.
+The current launchd.log is 797,026 bytes, initial hello 16:02:18 through
+16:10:18. Rotated previous-boot logs were kept separate. As before, an unreplayed
+catalog may omit newer journaled changes. Private logs/payloads remain ignored.
+
+### GUI observations
+
+No SURF/FB OPEN/CALL, first frame copy or IOKITWAIT is recorded. SpringBoard
+PID 28, backboardd 62, runningboardd 27 and logd 26 start; none has a captured
+exit in the current launchd file.
+
+With the current shared-cache slide 0x13818000, SpringBoard main TID 238 sample
+2 (uptime second 188) resolves to:
+
+```
+SBLogTelemetrySignposts -> SpringBoard initializer -> os_log_create
+ -> libsystem_trace -> libdispatch -> mach_msg -> mach_msg2_trap
+```
+
+The actual sample is taken before a receive, not a remote observation of an
+indefinitely blocked thread. No later sample for that TID is present. Captured
+nearby bootstrap traffic explicitly names com.apple.logd, and logd is spawned.
+This is a concrete logging-initialization lead; it does not prove logd is the
+root cause, that it never replied, or that every GUI thread is stuck there.
+
+backboardd main TID 331 sample 2 is a dyld/ObjC initialization mprotect boundary.
+Worker TID 453 sample 8 resolves to mach_msg -> libxpc -> RunningBoardServices
+synchronous request code. Other worker samples show normal workqueue/syscall
+boundaries. No current evidence establishes completed graphics initialization.
+
+### Touch failure narrowed to firmware dispatch / dependency boundary
+
+`B2L TOUCH EFI` reports version=1, locate=0x800000000000000e (EFI_NOT_FOUND).
+All live FS timing registers and CTRL read zero; native INIT remains at timing
+with ready=0. The zero init/probe fields are empty snapshot slots after failed
+LocateProtocol, not successful initialization results.
+
+The matching built FD SHA256 is the installed 0053 firmware hash. Decompressing
+its guided FV confirms the B2LTouchDxe driver file GUID is actually present
+(file type 7). Thus this is not merely a missing source/build component.
+B2LTouchEntry installs the diagnostic protocol before attempting power/probe;
+absence means that entry has not successfully installed the protocol before
+loader capture. Its HSI2C/PMIC protocol DEPEX and DXE dispatch timing must be
+observed next; the current capture does not distinguish those causes. Do not
+label the native sensor sequence or touchscreen itself defective from zero
+uninitialized timing registers.
+
+### Other userspace exits
+
+| Service | Exits | Current evidence |
+| --- | ---: | --- |
+| lsd | 19 SIGABRT | Same CoreServices abort at unslid 0x18178b38c, previously inspected system/group-container URL path |
+| appprotectiond | 15 SIGTRAP | Same AppProtection assertion at 0x18606c6bc, whose local static message is Couldn't get main container |
+| ManagedSettingsAgent | 15 SIGTRAP | Same ManagedSettings 0x212f413b8/SystemLocations.swift:37 initialization assertion |
+| mobileactivationd | 15 SIGTRAP | Main cold error path for failure to copy container paths; binary match described below |
+| passd | 7 SIGTRAP | swift_unexpectedError -> FinanceKit 0x1b9ba2848, previously inspected CoreDataProvider initialization error; actual error object is not captured |
+| fairplayd.H2 | 42 exit(190) | Exit status only; no current root-cause string/backtrace |
+| PerfPowerServices | 42 exit(1) | Exit status only; cannot assign a particular hardware dependency from this record |
+| webinspectord | 40 exit(1) | Exit status only; not proven to block UI |
+
+mobileactivationd PID 152 has PC=0x100a89fcc, return=0x100a78b74. The local
+pristine daemon has a BRK #1 at 0x100321fcc in main.cold.3; return site
+0x100310b74 follows a direct call to that exact function at 0x100310b70.
+Both runtime addresses match the same 0x768000 executable slide. Its CFString
+argument decodes to `Failed to copy container path(s).` and the error helper's
+line argument is 357. This is stronger than assuming an arbitrary BRK is an
+unsupported instruction or choosing only by the low PC bits. A second possible
+low-PC BRK candidate in DER decoding is ruled out by this matching caller.
+The text is from static binary inspection, not a newly recovered FAULTMSG.
+
+The grouped container assertions remain unresolved. Successful csops self
+queries and existing directory EEXIST results do not prove successful container
+client validation. The observed ENOENT paths include optional/cache probes and
+missing journals; each is not automatically a fatal error.
+
+### IPC instrumentation limit found
+
+Only discovery messages for MCM/lsd were admitted; no semantic container request
+or error response is captured. No OOL region is recorded. The private protocol
+uses other IDs too: bootstrap traffic has 0x400000cf and replies 0x20000000,
+while captured 0x10000000 messages also include NSXPC touch-authentication and
+keepalive traffic. The 0053 ID filter therefore does not establish complete
+container coverage and must be refined using observed wire format/roles.
+No direct container error code should be inferred from this incomplete trace.
+
+Six CPUs and four workers remain active. Last complete cache line is
+queued=22057, learned=3944, applied=1879, skipped=18109, dropped=14941,
+errors=0, pending=0, active=0, peak=4, cpus=0x3f. Flush errors remain zero and
+FIPS_POST returns true. No BOOT write or reboot was performed during this
+inspection. Next focused evidence is logd/RunningBoard response handling,
+complete MCM wire admission and the touch driver's dispatch/dependency state.
