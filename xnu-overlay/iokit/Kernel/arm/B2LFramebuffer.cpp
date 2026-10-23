@@ -43,6 +43,9 @@ enum {
 	kB2LFBIsMainDisplay           = 18,
 	kB2LFBGetDotPitch             = 28,
 	kB2LFBNotifications           = 72,
+	kB2LFBFrameInfoDescriptor     = 74,
+	kB2LFBSetContrast             = 84,
+	kB2LFBSelectDisplay           = 88,
 };
 
 #define B2L_FB_SWAP_REC_SIZE          0x588
@@ -332,6 +335,7 @@ IOMobileFramebufferUserClient::externalMethod(uint32_t selector, IOExternalMetho
     __unused IOExternalMethodDispatch *dispatch, __unused OSObject *target,
     __unused void *reference)
 {
+    if (args == NULL) return kIOReturnBadArgument;
     static unsigned samples;
     if(__atomic_fetch_add(&samples,1,__ATOMIC_RELAXED)<64)
         b2l_diag_record("B2L FB CALL: pid=%d selector=%u scalar_in=%u struct_in=%llu struct_out=%llu\n",
@@ -342,7 +346,68 @@ IOMobileFramebufferUserClient::externalMethod(uint32_t selector, IOExternalMetho
 	uint64_t out[2] = { 0, 0 };
 	uint32_t outCount = 0;
 
+	/* 0058: preserve unknown block/parameter failures while capturing their ABI.
+	 * No profile data is fabricated from the requested output length. */
+	if (selector == 68 || selector == 79 || selector == kB2LFBSetContrast) {
+		static unsigned detailSamples;
+		if (__atomic_fetch_add(&detailSamples, 1, __ATOMIC_RELAXED) < 24) {
+			uint64_t values[3] = { 0, 0, 0 }, input = 0;
+			if (args->scalarInput != NULL) {
+				for (unsigned i = 0; i < args->scalarInputCount && i < 3; ++i)
+					values[i] = args->scalarInput[i];
+			}
+			if (args->structureInputDescriptor == NULL && args->structureInput != NULL)
+				memcpy(&input, args->structureInput,
+				    args->structureInputSize < sizeof(input) ? args->structureInputSize : sizeof(input));
+			b2l_diag_record("B2L FB DETAIL: pid=%d selector=%u values=0x%llx,0x%llx,0x%llx input=0x%llx\n",
+			    proc_selfpid(), selector, values[0], values[1], values[2], input);
+		}
+	}
+
 	switch (selector) {
+	/* Native wrappers: 0x2294bf384 (74), 0x2294c00d4 (84),
+	 * 0x2294c1adc (88), pristine iOS 26.6.2 cache, unslid addresses. */
+	case kB2LFBFrameInfoDescriptor: {
+		if (args->scalarInputCount != 1 || args->scalarInput == NULL ||
+		    args->structureInputSize != 0 || args->structureInputDescriptor != NULL) {
+			return kIOReturnBadArgument;
+		}
+		if (args->scalarInput[0] != 0) return kIOReturnBadArgument;
+		if (args->structureOutputDescriptor != NULL) return kIOReturnUnsupported;
+		if (args->scalarOutputCount != 2 || args->scalarOutput == NULL ||
+		    args->structureOutputSize != 64 || args->structureOutput == NULL) {
+			return kIOReturnNoSpace;
+		}
+		/* Fixed CPU scanout has no frame-info profiles. Native enumeration
+		 * at 0x2294bde68 accepts descriptor count zero without reading a name. */
+		bzero(args->structureOutput, 64);
+		args->structureOutputSize = 64;
+		outCount = 2; /* count = 0, selected index = 0 */
+		break;
+	}
+	case kB2LFBSetContrast: {
+		uint32_t contrastBits;
+		if (args->scalarInputCount != 0 || args->structureInputDescriptor != NULL ||
+		    args->structureInput == NULL || args->structureInputSize != sizeof(contrastBits) ||
+		    args->scalarOutputCount != 0 || args->structureOutputSize != 0 ||
+		    args->structureOutputDescriptor != NULL) {
+			return kIOReturnBadArgument;
+		}
+		memcpy(&contrastBits, args->structureInput, sizeof(contrastBits));
+		/* Identity contrast needs no pixel transform; other values are unsupported. */
+		if (contrastBits != 0x3f800000U) ret = kIOReturnUnsupported;
+		break;
+	}
+	case kB2LFBSelectDisplay:
+		if (args->scalarInputCount != 1 || args->scalarInput == NULL ||
+		    args->structureInputSize != 0 || args->structureInputDescriptor != NULL ||
+		    args->scalarOutputCount != 0 || args->structureOutputSize != 0 ||
+		    args->structureOutputDescriptor != NULL) {
+			return kIOReturnBadArgument;
+		}
+		/* This service exposes only logical display type 0 (primary). */
+		if (args->scalarInput[0] != 0) ret = kIOReturnUnsupported;
+		break;
 	case kB2LFBGetLayerDefaultSurface:
 		out[0] = b2l_surface_port_in_task(fFB->fSurface, fTask);
 		outCount = 1;
