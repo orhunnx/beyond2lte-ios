@@ -1,0 +1,45 @@
+--- a/osfmk/ipc/mach_port.c
++++ b/osfmk/ipc/mach_port.c
+@@ -103,6 +103,9 @@
+ #include <kern/mach_filter.h>
+ #if defined(ARM64_BOARD_CONFIG_B2L)
+ #include <arm64/b2l_diag.h>
++#if CONFIG_MACF
++#include <arm64/b2l_mach_filter.h>
++#endif
+ #endif
+ #include <IOKit/IOBSD.h>
+ 
+@@ -2614,6 +2617,22 @@
+ 		kr = ipc_service_port_derive_sblabel(options->service_port_name,
+ 		    &label, options->flags);
+ 	}
++#if defined(ARM64_BOARD_CONFIG_B2L) && CONFIG_MACF
++	else if (label.io_type == IOT_CONNECTION_PORT &&
++	    options->service_port_name == MPO_ANONYMOUS_SERVICE &&
++	    !(options->flags & MPO_IMMOVABLE_RECEIVE)) {
++		/* Native anonymous forward channel: no named service to derive from.
++		 * Allocate only when B2L owns the callback table; native ipc_port_alloc
++		 * takes label ownership and frees it on allocation failure. */
++		void *anonymous_label = NULL;
++		kr = b2l_mach_filter_anonymous_connection(options->flags,
++		    options->service_port_name, &anonymous_label);
++		label.iol_connection = anonymous_label;
++		if (anonymous_label && (options->flags & MPO_FILTER_MSG)) {
++			label.io_filtered = true;
++		}
++	}
++#endif
+ 	if (kr != KERN_SUCCESS) {
+ 		return kr;
+ 	}
+--- a/osfmk/arm64/Makefile
++++ b/osfmk/arm64/Makefile
+@@ -49,6 +49,7 @@
+ 	b2l_arm64e_compat.h \
+ 	b2l_early.h \
+ 	b2l_diag.h \
++	b2l_mach_filter.h \
+ 	b2l_log_core.h \
+ 	b2l_persistent_log.h \
+ 	cpc_arm64.h \

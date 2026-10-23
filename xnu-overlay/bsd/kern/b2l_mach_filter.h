@@ -4,10 +4,46 @@
  * Native XNU owns rights/type checks and calls these hooks with owned labels. */
 #ifndef B2L_MACH_FILTER_H
 #define B2L_MACH_FILTER_H
+#include <arm64/b2l_mach_filter.h>
 
+enum b2l_mach_label_kind {
+    B2L_MACH_NAMED_SERVICE = 1,
+    B2L_MACH_ANONYMOUS_FORWARD = 2
+};
 struct b2l_mach_service_label {
     os_refcnt_t references;
+    enum b2l_mach_label_kind kind;
 };
+/* Only successful ownership of the native callback table permits private
+ * anonymous labels. A pre-existing real provider must never receive them. */
+static bool b2l_mach_filter_owned;
+
+static struct b2l_mach_service_label *
+b2l_mach_label_create(enum b2l_mach_label_kind kind)
+{
+    struct b2l_mach_service_label *identity =
+        kalloc_type(struct b2l_mach_service_label, Z_WAITOK | Z_ZERO);
+    if (!identity) return NULL;
+    os_ref_init(&identity->references, NULL);
+    identity->kind = kind;
+    return identity;
+}
+
+kern_return_t
+b2l_mach_filter_anonymous_connection(uint32_t flags,uint32_t parent,void **out)
+{
+    if (!out) return KERN_INVALID_ARGUMENT;
+    *out = NULL;
+    if (!b2l_sandbox_development_enabled() ||
+        !__atomic_load_n(&b2l_mach_filter_owned, __ATOMIC_ACQUIRE)) return KERN_SUCCESS;
+    if ((flags & MPO_PORT_TYPE_MASK) != MPO_CONNECTION_PORT ||
+        parent != MPO_ANONYMOUS_SERVICE || (flags & MPO_IMMOVABLE_RECEIVE))
+        return KERN_INVALID_ARGUMENT;
+    struct b2l_mach_service_label *identity = b2l_mach_label_create(B2L_MACH_ANONYMOUS_FORWARD);
+    if (!identity) return KERN_RESOURCE_SHORTAGE;
+    *out = identity;
+    return KERN_SUCCESS;
+}
 
 /* This retain runs with a native port lock held: no allocation or sleep. */
 static void
@@ -32,10 +68,8 @@ b2l_mach_filter_alloc(mach_service_port_info_t info, void **out)
     *out = NULL;
     if (!info) return KERN_INVALID_ARGUMENT;
     if (!b2l_sandbox_development_enabled()) return KERN_NOT_SUPPORTED;
-    struct b2l_mach_service_label *identity =
-        kalloc_type(struct b2l_mach_service_label, Z_WAITOK | Z_ZERO);
+    struct b2l_mach_service_label *identity = b2l_mach_label_create(B2L_MACH_NAMED_SERVICE);
     if (!identity) return KERN_RESOURCE_SHORTAGE;
-    os_ref_init(&identity->references, NULL);
     *out = identity;
     return KERN_SUCCESS;
 }
@@ -48,7 +82,8 @@ b2l_mach_filter_derive(void *service, boolean_t *send_side_filtering)
 {
     if (send_side_filtering) *send_side_filtering = FALSE;
     if (!service) return NULL;
-    if (!send_side_filtering || !b2l_sandbox_development_enabled()) {
+    if (!send_side_filtering || !b2l_sandbox_development_enabled() ||
+        ((struct b2l_mach_service_label *)service)->kind != B2L_MACH_NAMED_SERVICE) {
         b2l_mach_filter_release(service);
         return NULL;
     }
@@ -66,8 +101,14 @@ b2l_mach_filter_connection(void *service, void *connection, uint64_t *policy)
     kern_return_t result = KERN_INVALID_ARGUMENT;
     if (!b2l_sandbox_development_enabled()) {
         result = KERN_NOT_SUPPORTED;
-    } else if (policy && service && connection && service == connection) {
-        result = KERN_SUCCESS;
+    } else if (policy && service && connection) {
+        struct b2l_mach_service_label *s = service, *c = connection;
+        /* Native XNU already verified both receive-right port types. Named
+         * connections preserve exact parent identity. An owned anonymous
+         * forward label states its native anonymous kind, not a named parent. */
+        if (s->kind == B2L_MACH_NAMED_SERVICE &&
+            ((service == connection && c->kind == B2L_MACH_NAMED_SERVICE) ||
+             c->kind == B2L_MACH_ANONYMOUS_FORWARD)) result = KERN_SUCCESS;
     }
     b2l_mach_filter_release(service);
     b2l_mach_filter_release(connection);
@@ -101,6 +142,9 @@ static kern_return_t
 b2l_mach_filter_register(void)
 {
     if (!b2l_sandbox_development_enabled()) return KERN_NOT_SUPPORTED;
-    return mach_msg_filter_register_callback(&b2l_mach_filter_callbacks);
+    kern_return_t result = mach_msg_filter_register_callback(&b2l_mach_filter_callbacks);
+    if (result == KERN_SUCCESS)
+        __atomic_store_n(&b2l_mach_filter_owned, true, __ATOMIC_RELEASE);
+    return result; /* A repeated failed registration never clears ownership. */
 }
 #endif /* B2L_MACH_FILTER_H */

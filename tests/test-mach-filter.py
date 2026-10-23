@@ -22,6 +22,11 @@ prefix = r"""
 #define KERN_RESOURCE_SHORTAGE 6
 #define KERN_NOT_SUPPORTED 46
 #define KERN_FAILURE 5
+#define MPO_PORT_TYPE_MASK 0x1dc00u
+#define MPO_CONNECTION_PORT 0x800u
+#define MPO_IMMOVABLE_RECEIVE 0x80u
+#define MPO_FILTER_MSG 0x100u
+#define MPO_ANONYMOUS_SERVICE UINT32_C(0xfffffffe)
 #define MACH_MSG_FILTER_POLICY_ALLOW 0
 #define MACH_MSG_FILTER_CALLBACKS_VERSION_1 1
 #define Z_WAITOK 1
@@ -66,8 +71,11 @@ static unsigned refs(void *p) { return atomic_load(&((struct b2l_mach_service_la
 static void retain_pair(void *a,void *b) { b2l_mach_filter_retain(a);b2l_mach_filter_retain(b); }
 static void test_registration(void) {
  enabled=false;assert(b2l_mach_filter_register()==KERN_NOT_SUPPORTED&&!registration_calls);
- enabled=true;assert(!b2l_mach_filter_register()&&registered==&b2l_mach_filter_callbacks);
- assert(b2l_mach_filter_register()==KERN_FAILURE&&registered==&b2l_mach_filter_callbacks);
+ enabled=true;static const struct mach_msg_filter_callbacks foreign={0};registered=&foreign;
+ assert(b2l_mach_filter_register()==KERN_FAILURE&&!b2l_mach_filter_owned);void *inactive=(void*)1;
+ assert(!b2l_mach_filter_anonymous_connection(MPO_CONNECTION_PORT,MPO_ANONYMOUS_SERVICE,&inactive)&&!inactive);
+ registered=NULL;assert(!b2l_mach_filter_register()&&registered==&b2l_mach_filter_callbacks&&b2l_mach_filter_owned);
+ assert(b2l_mach_filter_register()==KERN_FAILURE&&registered==&b2l_mach_filter_callbacks&&b2l_mach_filter_owned);
 }
 static void test_allocation_errors(void) {
  void *p=(void*)1;assert(b2l_mach_filter_alloc(NULL,&p)==KERN_INVALID_ARGUMENT&&!p);
@@ -94,6 +102,24 @@ static void test_relation_and_ownership(void) {
  b2l_mach_filter_release(connection);b2l_mach_filter_release(b);
  b2l_mach_filter_retain(NULL);b2l_mach_filter_release(NULL);
 }
+static void test_anonymous_forward(void) {
+ void *a=make_label(),*b=make_label(),*anon=NULL;uint64_t policy=999;boolean_t filtered=1;
+ assert(!b2l_mach_filter_anonymous_connection(0x283f,MPO_ANONYMOUS_SERVICE,&anon)&&anon);
+ assert(((struct b2l_mach_service_label*)anon)->kind==B2L_MACH_ANONYMOUS_FORWARD&&refs(anon)==1);
+ retain_pair(a,anon);assert(!b2l_mach_filter_connection(a,anon,&policy)&&!policy&&refs(a)==1&&refs(anon)==1);
+ retain_pair(b,anon);assert(!b2l_mach_filter_connection(b,anon,&policy)&&refs(b)==1&&refs(anon)==1);
+ retain_pair(anon,anon);assert(b2l_mach_filter_connection(anon,anon,&policy)==KERN_INVALID_ARGUMENT&&refs(anon)==1);
+ b2l_mach_filter_retain(anon);assert(!b2l_mach_filter_derive(anon,&filtered)&&!filtered&&refs(anon)==1);
+ void *out=(void*)1;assert(b2l_mach_filter_anonymous_connection(MPO_CONNECTION_PORT|MPO_IMMOVABLE_RECEIVE,MPO_ANONYMOUS_SERVICE,&out)==KERN_INVALID_ARGUMENT&&!out);
+ assert(b2l_mach_filter_anonymous_connection(0,MPO_ANONYMOUS_SERVICE,&out)==KERN_INVALID_ARGUMENT&&!out);
+ assert(b2l_mach_filter_anonymous_connection(MPO_CONNECTION_PORT,UINT32_MAX,&out)==KERN_INVALID_ARGUMENT&&!out);
+ assert(b2l_mach_filter_anonymous_connection(MPO_CONNECTION_PORT,123,&out)==KERN_INVALID_ARGUMENT&&!out);
+ assert(b2l_mach_filter_anonymous_connection(MPO_CONNECTION_PORT,MPO_ANONYMOUS_SERVICE,NULL)==KERN_INVALID_ARGUMENT);
+ fail_alloc=true;assert(b2l_mach_filter_anonymous_connection(MPO_CONNECTION_PORT,MPO_ANONYMOUS_SERVICE,&out)==KERN_RESOURCE_SHORTAGE&&!out);fail_alloc=false;
+ enabled=false;assert(!b2l_mach_filter_anonymous_connection(MPO_CONNECTION_PORT,MPO_ANONYMOUS_SERVICE,&out)&&!out);
+ retain_pair(a,anon);assert(b2l_mach_filter_connection(a,anon,&policy)==KERN_NOT_SUPPORTED&&refs(anon)==1&&refs(a)==1);enabled=true;
+ b2l_mach_filter_release(a);b2l_mach_filter_release(b);b2l_mach_filter_release(anon);
+}
 static void test_runtime_gate(void) {
  void *a=make_label();boolean_t filtered=1;uint64_t policy=999;mach_msg_filter_id fid=999;
  enabled=false;b2l_mach_filter_retain(a);assert(!b2l_mach_filter_derive(a,&filtered)&&!filtered&&refs(a)==1);
@@ -114,20 +140,31 @@ static void *concurrent(void *a) {
   b2l_mach_filter_release(connection);
  } return NULL;
 }
+static void *concurrent_anonymous(void *arg) {
+ void **pair=arg;for(unsigned i=0;i<10000;i++){
+  uint64_t policy=99;mach_msg_filter_id filter=99;
+  retain_pair(pair[0],pair[1]);assert(!b2l_mach_filter_connection(pair[0],pair[1],&policy)&&!policy);
+  b2l_mach_filter_retain(pair[1]);assert(b2l_mach_filter_fetch(NULL,pair[1],0,&filter)&&!filter);
+ }return NULL;
+}
 static void test_concurrent_lifetime(void) {
  void *a=make_label();pthread_t threads[8];
  for(unsigned i=0;i<8;i++)assert(!pthread_create(&threads[i],NULL,concurrent,a));
  for(unsigned i=0;i<8;i++)assert(!pthread_join(threads[i],NULL));
  assert(refs(a)==1);b2l_mach_filter_release(a);
+ a=make_label();void *anon=NULL;assert(!b2l_mach_filter_anonymous_connection(MPO_CONNECTION_PORT,MPO_ANONYMOUS_SERVICE,&anon));void *pair[]={a,anon};
+ for(unsigned i=0;i<8;i++)assert(!pthread_create(&threads[i],NULL,concurrent_anonymous,pair));
+ for(unsigned i=0;i<8;i++)assert(!pthread_join(threads[i],NULL));
+ assert(refs(a)==1&&refs(anon)==1);b2l_mach_filter_release(a);b2l_mach_filter_release(anon);
 }
 int main(void) {
- test_registration();test_allocation_errors();test_relation_and_ownership();test_runtime_gate();test_concurrent_lifetime();
+ test_registration();test_allocation_errors();test_relation_and_ownership();test_anonymous_forward();test_runtime_gate();test_concurrent_lifetime();
  assert(atomic_load(&allocations)==atomic_load(&frees));
- puts("Mach filter v1: actual provider, strict relation/missing-label errors, allocation/gates, reference transfer/teardown and 8-thread ownership passed");return 0;
+ puts("Mach filter v1: actual provider, owned anonymous forward kind, strict named relation/missing-label errors, allocation/gates, reference transfer/teardown and 8-thread ownership passed");return 0;
 }
 """
 with tempfile.TemporaryDirectory(prefix="b2l-mach-filter-") as td:
-    d=pathlib.Path(td);(d/"test.c").write_text(prefix+'\n#include "'+str(provider)+'"\n'+suffix)
+    d=pathlib.Path(td);(d/"include/mach").mkdir(parents=True);(d/"include/mach/kern_return.h").write_text("typedef int kern_return_t;\n");(d/"test.c").write_text(prefix+'\n#include "'+str(provider)+'"\n'+suffix)
     compiler=os.getenv("CLANG") or shutil.which("clang");assert compiler
-    subprocess.run([compiler,"-std=c11","-Wall","-Wextra","-Werror","-g","-pthread","-fsanitize=address,undefined","-fno-omit-frame-pointer",str(d/"test.c"),"-o",str(d/"test")],check=True)
+    subprocess.run([compiler,"-I"+str(d/"include"),"-I"+str(root/"xnu-overlay/osfmk"),"-std=c11","-Wall","-Wextra","-Werror","-g","-pthread","-fsanitize=address,undefined","-fno-omit-frame-pointer",str(d/"test.c"),"-o",str(d/"test")],check=True)
     subprocess.run([str(d/"test")],check=True)

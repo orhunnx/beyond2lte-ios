@@ -52,7 +52,8 @@ python3 "$repo_root/scripts/apply-board-patches.py" "$xnu_path" \
   "$repo_root/patches/0042-b2l-targeted-ipc-wait-diagnostics.patch" \
   "$repo_root/patches/0043-b2l-ipc-copyout-and-right-lifetime.patch" \
   "$repo_root/patches/0044-b2l-service-exception-diagnostics.patch" \
-  "$repo_root/patches/0045-b2l-mach-provenance-diagnostics.patch"
+  "$repo_root/patches/0045-b2l-mach-provenance-diagnostics.patch" \
+  "$repo_root/patches/0046-b2l-anonymous-forward-connection-label.patch"
 # New files have separate provenance and are kept as an overlay.
 while IFS= read -r -d '' source_file; do
   relative="${source_file#"$repo_root/xnu-overlay/"}"
