@@ -69,7 +69,7 @@ static int mac_policy_register(struct mac_policy_conf *c,mac_policy_handle_t *h,
  assert(!strcmp(c->mpc_name,"Sandbox")&&c->mpc_fullname&&c->mpc_ops->mpo_policy_syscall&&c->mpc_ops->mpo_priv_grant);
  *h=0;mac_policy_list.entries[0].mpc=c;mac_policy_list.staticmax=1;return 0;
 }
-'''+sandbox+legacy+dispatch+r'''
+'''+'\n/* Mach provider itself has a separate ownership/lifetime host test. */\ntypedef int kern_return_t;\nstatic int b2l_mach_filter_register(void){return 0;}\n'+sandbox+legacy+dispatch+r'''
 static int mac_priv_check(kauth_cred_t c,int p){(void)c;(void)p;return priv_restrict_error;}
 static int mac_priv_grant(kauth_cred_t c,int p){
  struct mac_policy_conf *m=mac_policy_list.entries[0].mpc;

@@ -18,6 +18,10 @@ fi
 
 "$cc" "${flags[@]}" "$repo/tests/native_cache_store_test.c" "$repo/common/cache/b2l_cache_core.c" "$repo/common/cache/CacheSha.c" -o "$tmp/store"
 "$tmp/store"
+"$cc" "${flags[@]}" "$repo/tests/native_cache_undo_test.c" "$repo/common/cache/b2l_cache_core.c" "$repo/common/cache/CacheSha.c" -o "$tmp/undo"
+"$tmp/undo"
+"$cc" "${flags[@]}" "$repo/tests/native_cache_reclaim_test.c" "$repo/common/cache/b2l_cache_core.c" "$repo/common/cache/CacheSha.c" -o "$tmp/reclaim"
+"$tmp/reclaim"
 # Expanded local SYSTEM image and saved v1 file are optional private fixtures.
 if [[ $# == 2 ]]; then
  "$cc" "${flags[@]}" "$repo/tests/native_cache_layout_test.c" "$repo/common/cache/b2l_cache_core.c" "$repo/common/cache/CacheHfs.c" "$repo/common/cache/CacheSha.c" -o "$tmp/layout"

@@ -7,6 +7,8 @@
 #include "b2l_native_cache.h"
 #include "b2l_cache_core.h"
 #include "b2l_nc_store.h"
+#include "b2l_nc_undo.h"
+#include <sys/fcntl.h>
 #include <kern/kalloc.h>
 #include "b2l_cache_exclusion.h"
 #include <arm64/b2l_arm64e_compat.h>
@@ -64,6 +66,12 @@ struct integrity_file {uint8_t uuid[16];uint64_t size;int result;struct b2l_nc_e
 static struct integrity_file integrity_files[128];static unsigned integrity_count;
 static uint8_t target_page[4096];
 static uint64_t integrity_excluded,integrity_restored;
+static struct b2l_nc_undo undo;
+static vnode_t undo_vp;
+static uint8_t undo_record[B2L_NC_COPY],reclaim_zero[B2L_NC_COPY];
+static uint64_t reclaimed,undo_restored;
+static int reclaim_disabled;
+
 
 static int enabled(void){int v=0;return b2l_arm64e_compat_enabled()&&PE_parse_boot_argn("b2l_native_cache",&v,sizeof(v))&&v==1;}
 void b2l_native_cache_storage(const struct b2l_io*io,const uint8_t id[12]){
@@ -115,6 +123,76 @@ static int identity(vnode_t vp,uint64_t*ino,uint64_t*bytes,uint8_t uuid[16],unsi
 static int same_file(vnode_t vp,const uint8_t*r){uint64_t ino,size;uint8_t uuid[16];unsigned kind;
  return identity(vp,&ino,&size,uuid,&kind,verify)||ino!=b2l_nc_u64(r+16)||size!=b2l_nc_u64(r+24)||
  kind!=b2l_nc_u32(r+56)||memcmp(uuid,r+40,16)?-1:0;}
+/* The journaled root owns this ordinary, root-only undo archive. Recovery
+ * never mounts or writes it. No runtime worker modifies it or source code. */
+static int undo_read(void*vp,uint64_t at,void*out,size_t n){return n>INT_MAX?EINVAL:rd(vp,at,out,(unsigned)n);}
+static int undo_write(void*vp,uint64_t at,const void*in,size_t n){
+ if(at>INT64_MAX||n>INT_MAX||n>(uint64_t)INT64_MAX-at)return EINVAL;
+ int resid=0;int e=vn_rdwr(UIO_WRITE,vp,(caddr_t)in,(int)n,(off_t)at,UIO_SYSSPACE,IO_SYNC,kauth_cred_get(),&resid,current_proc());
+ return e?e:(resid?EIO:0);
+}
+static int undo_sync(void*vp){return VNOP_FSYNC(vp,MNT_WAIT,vfs_context_current());}
+static int undo_open(int create){
+ struct vnode_attr va;vfs_context_t ctx=vfs_context_current();
+ int e=vnode_open("/private/var/db/.b2l-native-undo-v1",FREAD|FWRITE|O_NOFOLLOW|(create?O_CREAT:0),0600,
+     VNODE_LOOKUP_NOFOLLOW_ANY,&undo_vp,ctx);
+ if(e)return e;
+ VATTR_INIT(&va);VATTR_WANTED(&va,va_data_size);VATTR_WANTED(&va,va_uid);VATTR_WANTED(&va,va_nlink);VATTR_WANTED(&va,va_mode);
+ if(vnode_vtype(undo_vp)!=VREG||vnode_mount(undo_vp)!=vnode_mount(rootvnode)||vnode_getattr(undo_vp,&va,ctx)||
+    !VATTR_IS_SUPPORTED(&va,va_uid)||!VATTR_IS_SUPPORTED(&va,va_nlink)||!VATTR_IS_SUPPORTED(&va,va_mode)||
+    !VATTR_IS_SUPPORTED(&va,va_data_size)||va.va_uid||va.va_nlink!=1||(va.va_mode&0777)!=0600||va.va_data_size<0)return EINVAL;
+ struct b2l_io io={undo_read,undo_write,undo_sync,undo_vp,(uint64_t)va.va_data_size};
+ if(b2l_ncu_open(&undo,&io,root_identity,create,verify))return EIO;
+ vnode_t parent=NULL;
+ if(vnode_lookup("/private/var/db",VNODE_LOOKUP_NOFOLLOW_ANY,&parent,ctx))return EIO;
+ e=vnode_mount(parent)==vnode_mount(rootvnode)?VNOP_FSYNC(parent,MNT_WAIT,ctx):EXDEV;vnode_put(parent);
+ if(e)return e;
+ /* Existing records are checked when restoring. Normal boots validate the
+  * archive headers here and each newly appended record before slot erasure. */
+ return 0;
+}
+static void undo_close(void){
+ if(undo_vp){vnode_close(undo_vp,FREAD|FWRITE,vfs_context_current());undo_vp=NULL;}
+}
+/* Return 1 only for a matching file and fully synced/read-back target. */
+static int apply_record(const uint8_t*r,int restore,const uint8_t**target_out){
+ vnode_t vp=NULL;*target_out=NULL;
+ if(VFS_VGET(vnode_mount(rootvnode),(ino64_t)b2l_nc_u64(r+16),&vp,vfs_context_current())||!vp){skipped++;return 0;}
+ unsigned len=b2l_nc_u32(r+60);uint64_t off=b2l_nc_u64(r+32);
+ if(same_file(vp,r)||rd(vp,off,page,len)||b2l_nc_page_state(r,page,len)<0){skipped++;vnode_put(vp);return 0;}
+ const uint8_t*target=r+B2L_NC_DATA+(restore==1?0:4096);
+ if(restore!=1&&b2l_nc_u32(r+56)==2){
+  struct integrity_file*f=integrity_file(vp,b2l_nc_u64(r+24),r+40);
+  if(!f||f->result<0){vnode_put(vp);panic("B2L native cache: corecrypto section metadata unsafe");}
+  if(f->result==1){
+   integrity_excluded+=b2l_xfilter(r,&f->range,target_page);target=target_page;
+   uint64_t start=off>f->range.offset?off:f->range.offset;
+   uint64_t end=off+len<f->range.offset+f->range.bytes?off+len:f->range.offset+f->range.bytes;
+   for(uint64_t at=start;at<end;at+=4)if(memcmp(page+at-off,target+at-off,4))integrity_restored++;
+  }
+ }
+ int e=0,resid=0,changed=memcmp(page,target,len)!=0;
+ if(changed)e=vn_rdwr(UIO_WRITE,vp,(caddr_t)target,(int)len,(off_t)off,UIO_SYSSPACE,IO_SYNC,kauth_cred_get(),&resid,current_proc());
+ if(!e&&!resid)e=VNOP_FSYNC(vp,MNT_WAIT,vfs_context_current());
+ if(e||resid||rd(vp,off,page,len)||memcmp(page,target,len)){
+  failures++;vnode_put(vp);panic("B2L native cache apply failed before userspace");
+ }
+ if(changed)applied++;else already++;
+ *target_out=target;vnode_put(vp);return 1;
+}
+static void reclaim_record(unsigned index,const uint8_t*r,const uint8_t*target){
+ /* A filtered record archives exactly the bytes actually applied, including
+  * measured-text exclusions. No-op (restored original) pages need no new undo. */
+ if(memcmp(r+B2L_NC_DATA,target,4096)){
+  memcpy(undo_record,r,B2L_NC_COPY);memcpy(undo_record+B2L_NC_DATA+4096,target,4096);b2l_nc_seal(undo_record);
+  if(b2l_ncu_append(&undo,undo_record,verify))goto failed;
+ }
+ if(b2l_ncs_reclaim(&store,index,reclaim_zero,verify))goto failed;
+ reclaimed++;return;
+failed:
+ failures++;reclaim_disabled=1;
+ printf("B2L NCACHE: undo/reclaim I/O failed; no further slot reuse this boot\n");
+}
 static int persist(unsigned index,uint8_t*r,const uint8_t*old,uint8_t*verify){
  return b2l_ncs_put(&store,index,r,old,verify);
 }
@@ -243,32 +321,38 @@ void b2l_native_cache_before_init(void){
   * explicit: never guess an exclusion or continue into a known dirty module. */
  int restore=0;(void)PE_parse_boot_argn("b2l_cache_restore",&restore,sizeof(restore));
  if(restore!=1&&integrity_open())panic("B2L native cache: corecrypto image metadata unavailable");
- for(unsigned i=0;i<store.used;i++){
-  if(!store.keys[i].inode)continue;const uint8_t*r=NULL;vnode_t vp=NULL;
-  if(b2l_ncs_read(&store,i,&r)||!r)panic("B2L native cache: durable record read failed before apply");
-  if(!r||VFS_VGET(vnode_mount(rootvnode),(ino64_t)store.keys[i].inode,&vp,vfs_context_current())||!vp){skipped++;continue;}
-  unsigned len=b2l_nc_u32(r+60);uint64_t off=store.keys[i].offset;
-  if(same_file(vp,r)||rd(vp,off,page,len)||b2l_nc_page_state(r,page,len)<0){skipped++;vnode_put(vp);continue;}
-  const uint8_t*target=r+B2L_NC_DATA+(restore==1?0:4096);
-  if(restore!=1&&b2l_nc_u32(r+56)==2){
-   struct integrity_file*f=integrity_file(vp,b2l_nc_u64(r+24),r+40);
-   if(!f||f->result<0){vnode_put(vp);panic("B2L native cache: corecrypto section metadata unsafe");}
-   if(f->result==1){
-    integrity_excluded+=b2l_xfilter(r,&f->range,target_page);target=target_page;
-    uint64_t start=off>f->range.offset?off:f->range.offset;
-    uint64_t end=off+len<f->range.offset+f->range.bytes?off+len:f->range.offset+f->range.bytes;
-    for(uint64_t at=start;at<end;at+=4)if(memcmp(page+at-off,target+at-off,4))integrity_restored++;
-   }
-  }
-  if(!memcmp(page,target,len)){already++;vnode_put(vp);continue;}
-  int resid=0;int e=vn_rdwr(UIO_WRITE,vp,(caddr_t)target,(int)len,(off_t)off,UIO_SYSSPACE,IO_SYNC,kauth_cred_get(),&resid,current_proc());
-  if(!e&&!resid)e=VNOP_FSYNC(vp,MNT_WAIT,vfs_context_current());
-  if(e||resid||rd(vp,off,page,len)||memcmp(page,target,len)){failures++;vnode_put(vp);printf("B2L NCACHE: apply I/O failure; aborting before userspace\n");panic("B2L native cache apply failed; recovery required");}
-  applied++;vnode_put(vp);
+ int recycle=1;(void)PE_parse_boot_argn("b2l_cache_reclaim",&recycle,sizeof(recycle));
+ int archive_error=undo_open(restore!=1&&recycle==1);
+ if(archive_error){
+  undo_close();reclaim_disabled=1;
+  if(restore==1&&archive_error!=ENOENT)panic("B2L native cache: undo archive invalid; restore incomplete");
+  if(restore!=1)printf("B2L NCACHE: undo archive unavailable (%d); retaining SYSTEM records\n",archive_error);
  }
+ if(b2l_nc_u32(store.headers+store.header_copy*4096+8)!=2)reclaim_disabled=1;
+ for(unsigned i=0;i<store.used;i++){
+  if(!store.keys[i].inode)continue;const uint8_t*r=NULL,*target=NULL;
+  if(b2l_ncs_read(&store,i,&r)||!r)panic("B2L native cache: durable record read failed before apply");
+  if(apply_record(r,restore,&target)&&restore!=1&&recycle==1&&!reclaim_disabled)
+   reclaim_record(i,r,target);
+ }
+ if(restore==1&&undo_vp){
+  /* Later records can start from an already translated page. Reverse append
+   * order restores that chain all the way back to its original page. */
+  for(uint64_t i=undo.count;i;i--){
+   const uint8_t*target=NULL;
+   if(b2l_ncu_read(&undo,i-1,undo_record))panic("B2L native cache: durable undo read failed");
+   if(apply_record(undo_record,1,&target))undo_restored++;
+  }
+ }
+ if(restore!=1&&reclaimed&&!reclaim_disabled&&b2l_ncs_trim(&store,undo.next,verify)){
+  failures++;reclaim_disabled=1;printf("B2L NCACHE: scan-range trim failed; learning disabled this boot\n");
+ }
+ printf("B2L NCACHE: reclaimed=%llu live=%u free=%u scan=%u undo=%llu undo_restored=%llu reclaim_disabled=%d\n",
+  reclaimed,store.live,store.slots-store.live,store.used,undo.count,undo_restored,reclaim_disabled);
+ undo_close();
  printf("B2L NCACHE: pre-init %s applied=%llu already=%llu skipped=%llu; journal replay completed by HFS\n",restore==1?"restore":"apply",applied,already,skipped);
  printf("B2L NCACHE: corecrypto measured text original; excluded=%llu restored=%llu words; other translations retained\n",integrity_excluded,integrity_restored);
- if(restore==1)return;
+ if(restore==1||failures)return;
  int count=CACHE_WORKERS;(void)PE_parse_boot_argn("b2l_cache_workers",&count,sizeof(count));
  if(count<1||count>(int)CACHE_WORKERS)count=CACHE_WORKERS;
  for(unsigned i=0;i<(unsigned)count;i++){

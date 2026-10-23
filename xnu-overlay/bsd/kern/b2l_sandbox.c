@@ -12,6 +12,9 @@
 #include <sys/codesign.h>
 #include <security/mac_policy.h>
 #include <os/atomic_private.h>
+#include <os/refcnt.h>
+#include <kern/kalloc.h>
+#include <kern/mach_filter.h>
 #include <arm64/b2l_arm64e_compat.h>
 
 void b2l_sandbox_register(void);
@@ -28,6 +31,8 @@ b2l_sandbox_development_enabled(void)
 {
     return b2l_arm64e_compat_enabled() && !cs_process_global_enforcement();
 }
+
+#include "b2l_mach_filter.h"
 
 /* At most129 operation and65 privilege lines per boot, regardless of callers.
  * Only numeric API identifiers are logged; no task names, IDs or user data. */
@@ -115,7 +120,7 @@ static struct mac_policy_conf b2l_sandbox_conf = {
     .mpc_ops = &b2l_sandbox_ops,
 };
 
-/* Invoked immediately after mac_policy_initbsd(), before userspace exec.
+/* Invoked by mac_policy_init(), before machine_lockdown and userspace exec.
  * No NOTLATE/UNLOADOK flag: it is a permanent built-in development provider.
  * A real preexisting Sandbox policy wins through mac_policy_register EEXIST. */
 void
@@ -123,7 +128,12 @@ b2l_sandbox_register(void)
 {
     if (!b2l_sandbox_development_enabled() || b2l_sandbox_registered) return;
     int error = mac_policy_register(&b2l_sandbox_conf, &b2l_sandbox_handle, NULL);
-    if (!error) b2l_sandbox_registered = true;
+    if (!error) {
+        b2l_sandbox_registered = true;
+        kern_return_t filter_error = b2l_mach_filter_register();
+        printf("B2L Sandbox: Mach filter v1 provider %s (%d)\n",
+            filter_error ? "not registered" : "registered", filter_error);
+    }
     printf("B2L Sandbox: development provider %s (%d)\n",
         error ? "not registered" : "registered", error);
 }

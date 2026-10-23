@@ -22,7 +22,9 @@ claim PAC hardware, or translate arbitrary binaries statically.
    `load_init_program`, XNU validates cache records and resolves root CNIDs with
    VFS_VGET. It compares file size, Mach-O/cache UUID and the affected page bytes.
    Matching pages are updated through vn_rdwr and VNOP_FSYNC, then read back.
-   Already translated pages are skipped; unrelated edits are never overwritten.
+   Already translated pages are synced and read back before reclamation; unrelated
+   edits are never overwritten. Eligible records are then archived and freed as
+   described below.
 5. Only after successful emulation does the EL0 trap path enqueue a bounded
    observation. It performs no filesystem I/O, allocation or waiting for storage.
    One of four background kernel workers resolves the referenced VM map through constant
@@ -66,12 +68,46 @@ I/O failure stops before userspace, preserving the durable repair record.
 Journaling protects filesystem metadata; it does not itself promise atomic file
 content writes. Actual sudden power removal has not been tested on hardware.
 
-Original pages stay in the cache. A maintenance BOOT with
-`b2l_cache_restore=1` restores them before init and disables learning. The
-single-core 0031 BOOT remains the retained rollback artifact. A new root UUID or
-incompatible cache version requires explicit cache reinitialization; old records
-are not silently adopted for another installation. A full cache stops accepting
-new pages; it never evicts the only retained original of an applied page.
+### Applied-record reclamation (0056)
+
+With V2 storage, `b2l_cache_reclaim=1` (default) recycles an applied SYSTEM cell
+only after this order completes:
+
+1. Write, fsync and read back the actual target page on the journaled root.
+2. Append its original/actual-native 12 KiB record to
+   `/private/var/db/.b2l-native-undo-v1`, fsync and read back.
+3. Publish the new undo count in an alternate 4 KiB archive header, fsync and
+   read back. The root-only 0600 archive is bound to the same root identity.
+   Its parent directory is synced before any cell is reclaimed.
+4. Erase the older SYSTEM copy first, then the latest copy, flushing and
+   reading back each. Only then remove the key from the RAM index.
+5. Trim the committed SYSTEM scan high-water mark where possible. Workers can
+   reuse freed cells for new pages. The 1.5 MiB RAM hot window remains bounded.
+
+The undo archive retains the original bytes on USERDATA; it is not discarded
+when SYSTEM is freed. It consumes root filesystem space as translations grow.
+An incomplete append is ignored or retried from the last committed count. A cut
+between source-page application and archive publication retains the SYSTEM
+repair record. A cut during SYSTEM erasure has an already published undo record.
+On an I/O error, further reclamation stops, and learning is disabled if the
+SYSTEM index may no longer match disk. An unavailable archive leaves SYSTEM
+records in place. `b2l_cache_reclaim=0` disables reclamation. V1 keeps the old
+retained-cell behavior.
+
+A maintenance BOOT with `b2l_cache_restore=1` first restores active SYSTEM
+records, then reads the USERDATA archive in reverse append order. Reverse order
+handles additional translations learned from previously translated pages. Each
+record still requires exact root/file identity and original/native/mixed page
+validation. Ordinary boots read the archive headers and their new append only;
+they do not rescan the entire undo history. Archive records are individually
+validated during maintenance restore. Maintenance restore keeps both stores and
+disables learning. **Use a 0056-or-later maintenance BOOT after reclamation:** an
+older maintenance image cannot see originals moved into the USERDATA archive.
+
+A new root UUID or incompatible format requires explicit reinitialization;
+records are not adopted for another installation. A full SYSTEM cache stops
+accepting new pages until eligible cells are applied and reclaimed. It never
+evicts the only retained original of an applied page.
 
 ## One-time provisioning and verification
 
@@ -97,6 +133,7 @@ Runtime lines:
 - `B2L cache: staged headers read-only` (EFI).
 - `B2L NCACHE: bounded SYSTEM file storage ready` (native transport).
 - `B2L NCACHE: pre-init apply applied=... already=... skipped=...`.
+- `B2L NCACHE: reclaimed=... live=... free=... scan=... undo=... undo_restored=... reclaim_disabled=...`.
 - `B2L NCACHE: automatic learning enabled`.
 - `B2L NCACHE: queued=... learned=... applied=... ... errors=...` (~30 seconds).
 

@@ -40,5 +40,26 @@ int main(void){
  for(int stage=1;stage<=2;stage++){
   memcpy(disk,saved,sizeof(disk));writes=syncs=0;fail_sync=stage;open_store();assert(put(1));fail_sync=0;open_store();const uint8_t*r;assert(!b2l_ncs_read(&store,0,&r)&&r);
  }
+ // Freed holes preserve collision chains and are reused beyond disk capacity.
+ static uint8_t zero[B2L_NC_COPY],trim[4096];
+ initialize();for(unsigned i=0;i<CELLS;i++)assert(!put(i));
+ for(unsigned round=0;round<3;round++){
+  for(unsigned i=0;i<CELLS;i+=2)assert(!b2l_ncs_reclaim(&store,i,zero,verify));
+  assert(store.live==CELLS/2&&store.next_free==0);
+  for(unsigned i=1;i<CELLS;i+=2)assert(b2l_ncs_find(&store,42,i*4096)==i);
+  open_store();assert(store.live==CELLS/2);
+  for(unsigned i=0;i<CELLS;i+=2)assert(!put(i));assert(store.live==CELLS);
+ }
+ // A torn erase leaves the latest undo, or a free cell, after reopen.
+ initialize();assert(!put(0));assert(!put(0));memcpy(saved,disk,sizeof(disk));
+ for(unsigned which=1;which<=2;which++)for(unsigned cut=0;cut<B2L_NC_COPY;cut+=127){
+  memcpy(disk,saved,sizeof(disk));writes=syncs=0;fail_write=(int)which;short_write=(int)cut;open_store();
+  assert(b2l_ncs_reclaim(&store,0,zero,verify));fail_write=0;open_store();
+  const uint8_t*r=NULL;assert(!b2l_ncs_read(&store,0,&r));if(r)assert(b2l_nc_u64(r+8)==2);
+ }
+ memcpy(disk,saved,sizeof(disk));writes=syncs=fail_write=0;open_store();
+ assert(!b2l_ncs_reclaim(&store,0,zero,verify)&&store.live==0);
+ assert(!b2l_ncs_trim(&store,trim,verify)&&store.used==0);open_store();assert(store.used==0);
+ assert(!put(0));open_store();assert(store.used==1&&store.live==1);
  puts("V2 64-bit capacity, all torn-header prefixes, bounded RAM eviction, disk reindex, and interrupted record/header commits passed");
 }
