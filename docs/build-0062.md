@@ -1,8 +1,8 @@
 # Build 0062: IOSurface metadata contracts
 
 This candidate adds native iOS 26 IOSurface selectors used during CPU frame
-setup. It includes the corrected 0061 framebuffer masks. It is prepared for a
-subsequent device trial; 0061 remains the installed isolated mask test.
+setup. It includes the corrected 0061 framebuffer masks. The prior 0061 trial established an Apple logo. Build 0062 is now installed
+for the next device trial.
 
 - Selector 5 stores a YCbCr matrix code in shared state +0x6e. Byte codes are
   supported; values above 255 are rejected because native truncation is unproven.
@@ -39,5 +39,14 @@ harness covers existing/raced publication, both reply modes, mapping/array
 allocation failures and short outputs.
 
 The real XNU DEVELOPMENT ARM64 B2L build passes with these changes. This
-candidate is packaged offline. The user has confirmed an Apple logo on the
-installed 0061 mask-only trial, which remains running for observation.
+candidate was packaged with the 0061 mask-only checkpoint retained for rollback.
+
+## Installation
+
+The 0061 persistent log was recovered before this update. BOOT 0062 was then
+written alone, its full image prefix SHA-256 matched the package manifest,
+and reboot was requested. A read-only USERDATA header comparison was unchanged.
+The recovered 0061 log confirms the first IOSurface frame copy and three swap
+records; subsequent home-screen presentation is not established. No kernel
+panic or targeted SpringBoard/backboardd crash is recorded in that capture.
+0062 runtime behavior still requires the next phone observation/log.
