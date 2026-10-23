@@ -38,12 +38,12 @@ static int role(void)
     return requested==1?r:-1;
 }
 struct sample_slot {uint64_t tid,last;unsigned count;};
-static struct sample_slot slots[2][16];
+static struct sample_slot slots[4][16];
 /* Current thread only, before potentially blocking native calls. A thread
  * which never returns still leaves its entry PC/stack in the persistent log. */
 void b2l_diag_wait(const char *kind,uint64_t a,uint64_t b,uint64_t c)
 {
-    int r=role();if(r<0||r>1)return;
+    int r=role();if(r<0)return;
     uint64_t tid=thread_tid(current_thread()),ns=0;
     absolutetime_to_nanoseconds(mach_absolute_time(),&ns);
     uint64_t sec=ns/1000000000+1;
@@ -65,8 +65,27 @@ void b2l_diag_wait(const char *kind,uint64_t a,uint64_t b,uint64_t c)
     for(unsigned i=0;i<n&&i<12;i++)b2l_diag_record("B2L WAITBT: pid=%d tid=%llu sample=%u frame=%u pc=0x%llx\n",pid,tid,sample,i,(uint64_t)bt[i]);
 }
 static unsigned ipc_samples[4][2],ipc_seen[4][2],sys_samples[4];
+/* Never recycle slots during a boot: a restarting lsd must not starve MCM,
+ * and one daemon's dyld/bootstrap traffic must not exhaust another's limit.
+ * Fields/counters are atomic; no locks or allocation in IPC/syscall hooks. */
+struct process_sample { unsigned pid, ipc[2], errors, csops, exists; };
+static struct process_sample process_samples[2][8];
+static struct process_sample *container_sample(int r)
+{
+    if(r<2||r>3)return NULL;
+    unsigned pid=(unsigned)proc_selfpid();
+    if(!pid)return NULL;
+    for(unsigned i=0;i<8;i++){
+        struct process_sample *p=&process_samples[r-2][i];
+        unsigned old=__atomic_load_n(&p->pid,__ATOMIC_RELAXED);
+        if(old==pid)return p;
+        if(!old&&__atomic_compare_exchange_n(&p->pid,&old,pid,0,__ATOMIC_RELAXED,__ATOMIC_RELAXED))return p;
+    }
+    return NULL;
+}
+
 static uint64_t message_sequence;
-static unsigned raw_budget=512*1024;
+static unsigned raw_budget=4*1024*1024;
 static unsigned raw_reserve(unsigned n)
 {
     unsigned old=__atomic_load_n(&raw_budget,__ATOMIC_RELAXED);
@@ -103,16 +122,25 @@ void b2l_diag_ipc(int rx,uint64_t addr,uint32_t n,uint32_t bits,int32_t id,
         bits=h[0];n=h[1];remote=h[2];local=h[3];id=(int32_t)h[5];
         if((bits&0x80000000u)&&n>=28&&!copyin(addr+24,h,4))count=h[0];
     }
-    /* Capture discovery messages, then restrict later payloads to libxpc's
-     * request/reply IDs. Numeric IDs are retained for offline interpretation. */
-    unsigned seen=__atomic_fetch_add(&ipc_seen[r][rx],1,__ATOMIC_RELAXED);
-    if(seen>=24&&id!=0x10000000&&id!=0x10000001)return;
-    unsigned sample=__atomic_fetch_add(&ipc_samples[r][rx],1,__ATOMIC_RELAXED);
-    if(sample>=128)return;
+    /* Observed iOS26 CPX@ traffic also uses 0x400000cf/0x20000000.
+     * For MCM/lsd retain every numeric ID within a bounded per-process window;
+     * do not infer request semantics from an ID or miss errors via an ID filter.
+     * GUI admission stays at its existing small discovery/XPC limit. */
+    if(r>=2){
+        struct process_sample *p=container_sample(r);if(!p)return;
+        unsigned sample=__atomic_fetch_add(&p->ipc[rx],1,__ATOMIC_RELAXED);
+        if(sample>=(r==2?512u:256u))return;
+    }else{
+        unsigned seen=__atomic_fetch_add(&ipc_seen[r][rx],1,__ATOMIC_RELAXED);
+        if(seen>=24&&id!=0x10000000&&id!=0x10000001)return;
+        unsigned sample=__atomic_fetch_add(&ipc_samples[r][rx],1,__ATOMIC_RELAXED);
+        if(sample>=128)return;
+    }
     uint64_t seq=__atomic_fetch_add(&message_sequence,1,__ATOMIC_RELAXED)+1;
     b2l_diag_record("B2L IPC: seq=%llu dir=%s role=%d pid=%d tid=%llu id=0x%x bits=0x%x remote=0x%x local=0x%x bytes=%u descriptors=%u\n",
         seq,rx?"rx":"tx",r,proc_selfpid(),thread_tid(current_thread()),id,bits,remote,local,n,count);
-    bytes(seq,"inline",addr,n<1024?n:1024);
+    unsigned inline_max=r>=2?3072u:1024u;
+    bytes(seq,"inline",addr,n<inline_max?n:inline_max);
     if(!(bits&0x80000000u)||n<28||count>16)return;
     uint32_t off=28;
     for(unsigned i=0;i<count;i++){
@@ -131,8 +159,26 @@ void b2l_diag_ipc(int rx,uint64_t addr,uint32_t n,uint32_t bits,int32_t id,
 }
 void b2l_diag_syscall(unsigned code,int error,const uint64_t *args)
 {
-    int r=role();if(r<0||!error||!args)return;
-    if(__atomic_fetch_add(&sys_samples[r],1,__ATOMIC_RELAXED)>=128)return;
+    int r=role();if(r<0||!args)return;
+    struct process_sample *p=r>=2?container_sample(r):NULL;
+    if(r>=2&&!p)return;
+    /* Log successful AND failed native results, including the CDHash cases
+     * that return before the old kern_proc.c out-label trace. Original target
+     * lookup, audit-token validation and authorization remain unchanged. */
+    if(p&&(code==SYS_csops||code==SYS_csops_audittoken)&&
+       __atomic_fetch_add(&p->csops,1,__ATOMIC_RELAXED)<256){
+        uint32_t status=0;int read_error=-1;
+        if(!error&&args[1]==0&&args[2]&&args[3]>=sizeof(status))
+            read_error=copyin(args[2],&status,sizeof(status));
+        b2l_diag_record("B2L CSRESULT: pid=%d tid=%llu target=%d op=%u size=%llu error=%d status=0x%x status_copy=%d\n",
+            proc_selfpid(),thread_tid(current_thread()),(int)args[0],(unsigned)args[1],args[3],error,status,read_error);
+    }
+    if(!error)return;
+    if(p){
+        /* Expected mkdir EEXIST probes have a separate small budget. */
+        unsigned *counter=(error==17&&(code==SYS_mkdir||code==SYS_mkdirat))?&p->exists:&p->errors;
+        if(__atomic_fetch_add(counter,1,__ATOMIC_RELAXED)>=(counter==&p->exists?16u:256u))return;
+    }else if(__atomic_fetch_add(&sys_samples[r],1,__ATOMIC_RELAXED)>=128)return;
     b2l_diag_record("B2L SYSERR: pid=%d tid=%llu syscall=%u error=%d a0=0x%llx a1=0x%llx\n",
         proc_selfpid(),thread_tid(current_thread()),code,error,args[0],args[1]);
     uint64_t path=0;

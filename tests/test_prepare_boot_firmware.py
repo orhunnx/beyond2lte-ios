@@ -46,6 +46,27 @@ VOID PlatformBootManagerAfterConsole () {
                                "--loader", str(root / "Loader.efi"), "--loader-guid", GUID],
                               capture_output=True, text=True)
 
+    def test_touch_enables_real_soc_transport_and_is_idempotent(self):
+        with tempfile.TemporaryDirectory(prefix="b2l-touch-firmware-") as directory:
+            root = Path(directory)
+            self.fixture(root)
+            dxe = root / "Platforms/Samsung/beyond2ltePkg/Include/DXE.inc"
+            dxe.parent.mkdir(parents=True, exist_ok=True)
+            dxe.write_text("  # INF beyond2ltePkg/Drivers/B2LTouchDxe/B2LTouchDxe.inf\n")
+            soc = root / "Silicon/Samsung/S5E9820Pkg/S5E9820Pkg.dsc.inc"
+            soc.parent.mkdir(parents=True, exist_ok=True)
+            soc.write_text("  # HsI2cLib|S5E9820Pkg/Library/HsI2cLib/HsI2cLib.inf\n")
+            command = [sys.executable, str(PREPARE), "--mu", str(root),
+                       "--loader", str(root / "Loader.efi"), "--loader-guid", GUID,
+                       "--enable-touch"]
+            for unused in range(2):
+                result = subprocess.run(command, capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(soc.read_text().splitlines(),
+                    ["  HsI2cLib|S5E9820Pkg/Library/HsI2cLib/HsI2cLib.inf"])
+                self.assertEqual(dxe.read_text().splitlines(),
+                    ["  INF beyond2ltePkg/Drivers/B2LTouchDxe/B2LTouchDxe.inf"])
+
     def test_deterministic_launch_and_idempotence(self):
         with tempfile.TemporaryDirectory(prefix="b2l-firmware-test-") as directory:
             root = Path(directory)

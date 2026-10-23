@@ -24,7 +24,7 @@ def decode(text):
                 except (ValueError,KeyError):p['copy_errors'].append('invalid hex record')
             if 'copyin_error' in fields:p['copy_errors'].append(int(fields.get('off',0)))
         if 'B2L WAIT:' in line or 'B2L WAITBT:' in line or 'B2L IOKITWAIT:' in line:waits.append(line)
-        if 'B2L SYSERR:' in line or 'B2L SYSPATH:' in line:errors.append(line)
+        if 'B2L SYSERR:' in line or 'B2L SYSPATH:' in line or 'B2L CSRESULT:' in line:errors.append(line)
     for (seq,kind),p in parts.items():
         target=messages.setdefault(seq,dict(sequence=seq,fields={},parts={}))
         cursor=0;data=bytearray();gaps=[]

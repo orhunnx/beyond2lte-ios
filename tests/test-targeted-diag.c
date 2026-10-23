@@ -11,7 +11,8 @@ struct proc {char p_comm[32];};typedef struct proc *proc_t;
 static struct proc process={"SpringBoard"};static int requested=1;static uint64_t now=1000000000;
 static unsigned char region[8192];static char output[200000];static size_t used;
 static proc_t current_proc(void){return &process;}static int proc_is64bit(proc_t p){(void)p;return 1;}
-static int proc_selfpid(void){return 28;}static void *current_thread(void){return (void*)1;}
+static int pid=28;
+static int proc_selfpid(void){return pid;}static void *current_thread(void){return (void*)1;}
 static uint64_t thread_tid(void *p){(void)p;return 41;}
 static uint64_t mach_absolute_time(void){return now;}
 static void absolutetime_to_nanoseconds(uint64_t t,uint64_t *v){*v=t;}
@@ -26,6 +27,8 @@ static uint64_t get_saved_state_pc(arm_saved_state_t *r){return r->pc;}
 struct backtrace_user_info {int btui_error;};
 #define BTUINFO_INIT {0}
 static unsigned backtrace_user(uintptr_t *bt,unsigned n,void *c,struct backtrace_user_info *i){(void)c;(void)i;assert(n>=2);bt[0]=0x100000000;bt[1]=0x180000000;return 2;}
+#define SYS_csops 169
+#define SYS_csops_audittoken 170
 #define SYS_open 5
 #define SYS_stat64 338
 #define SYS_lstat64 340
@@ -40,7 +43,7 @@ static unsigned backtrace_user(uintptr_t *bt,unsigned n,void *c,struct backtrace
 #define SYS_renameat 465
 #define SYS_renameatx_np 489
 #include "../xnu-overlay/bsd/kern/b2l_diag.c"
-static void clear(void){used=0;output[0]=0;memset(ipc_samples,0,sizeof(ipc_samples));memset(ipc_seen,0,sizeof(ipc_seen));raw_budget=512*1024;}
+static void clear(void){used=0;output[0]=0;memset(ipc_samples,0,sizeof(ipc_samples));memset(ipc_seen,0,sizeof(ipc_seen));memset(process_samples,0,sizeof(process_samples));raw_budget=4*1024*1024;}
 int main(void){
  uint32_t *h=(void*)region;uint64_t ptr=(uintptr_t)region;
  requested=0;b2l_diag_ipc(0,ptr,64,0,1,0,0,0);assert(!used);
@@ -56,12 +59,29 @@ int main(void){
  region[39]=1;h[6]=17;b2l_diag_ipc(1,ptr,44,0,0,0,0,0);assert(!strstr(output,"IPCOOL"));clear();h[6]=1;
  a=UINT64_MAX-10;memcpy(region+28,&a,8);b2l_diag_ipc(1,ptr,44,0,0,0,0,0);assert(strstr(output,"IPCOOL")&&!strstr(output,"part=ool"));clear();
  raw_budget=9;b2l_diag_ipc(1,ptr,44,0,0,0,0,0);assert(raw_budget==0&&strstr(output,"captured=9"));clear();
- // Discovery chatter does not exhaust later XPC admission counters.
+ // MCM captures actual iOS26 bootstrap/request/reply IDs after dyld chatter.
+ for(unsigned i=0;i<40;i++)b2l_diag_ipc(0,ptr,24,0,1,0,0,0);
+ b2l_diag_ipc(0,ptr,24,0,0x400000cf,0,0,0);
+ b2l_diag_ipc(1,ptr,44,0,0,0,0,0);
+ assert(strstr(output,"id=0x400000cf"));clear();
+ // Per-process saturation does not starve another MCM process or a new lsd.
+ for(unsigned i=0;i<600;i++)b2l_diag_ipc(0,ptr,24,0,1,0,0,0);
+ assert(process_samples[0][0].ipc[0]==600);used=0;output[0]=0;pid=100;
+ b2l_diag_ipc(0,ptr,24,0,0x400000cf,0,0,0);assert(strstr(output,"pid=100"));clear();
+ // Discovery chatter does not exhaust later GUI XPC admission counters.
+ strcpy(process.p_comm,"SpringBoard");
  for(unsigned i=0;i<200;i++)b2l_diag_ipc(0,ptr,24,0,1,0,0,0);
- assert(ipc_samples[2][0]==24);b2l_diag_ipc(0,ptr,24,0,0x10000000,0,0,0);assert(ipc_samples[2][0]==25);clear();
+ assert(ipc_samples[0][0]==24);b2l_diag_ipc(0,ptr,24,0,0x10000000,0,0,0);assert(ipc_samples[0][0]==25);clear();
  strcpy(process.p_comm,"SpringBoard");b2l_diag_wait("mach-recv",2,3,4);assert(strstr(output,"WAITBT"));size_t old=used;
  b2l_diag_wait("mach-recv",2,3,4);assert(used==old);
  for(unsigned i=0;i<15;i++){now+=5000000000;b2l_diag_wait("mach-recv",2,3,4);}assert(slots[0][0].count==8);clear();
+ strcpy(process.p_comm,"containermanage");
+ uint64_t query[5]={111,0,ptr,4,0};h[0]=0x24000001;
+ b2l_diag_syscall(SYS_csops_audittoken,0,query);
+ assert(strstr(output,"target=111 op=0")&&strstr(output,"status=0x24000001"));clear();
+ query[1]=5;b2l_diag_syscall(SYS_csops_audittoken,3,query);
+ assert(strstr(output,"op=5")&&strstr(output,"error=3"));clear();
+ strcpy(process.p_comm,"SpringBoard");
  uint64_t args[2]={ptr,0};strcpy((char*)region,"/private/var/containers/test");
  b2l_diag_syscall(SYS_open,2,args);assert(strstr(output,"SYSPATH")&&strstr(output,"error=2"));old=used;
  b2l_diag_syscall(SYS_open,0,args);assert(old==used);

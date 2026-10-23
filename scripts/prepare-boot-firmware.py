@@ -55,6 +55,19 @@ def main():
         if marker not in text and enabled not in text:
             p.error("expected beyond2lte touch entry is absent")
         dxe.write_text(text.replace(marker, enabled))
+        # The touch branch's yap.sh --touch enables BOTH entries. Enabling only
+        # the FV module leaves HsI2cDxe linked to the null bus-data provider,
+        # so its protocol (and hence TouchDxe's DEPEX) never becomes available.
+        soc = root / "Silicon/Samsung/S5E9820Pkg/S5E9820Pkg.dsc.inc"
+        binding = "  HsI2cLib|S5E9820Pkg/Library/HsI2cLib/HsI2cLib.inf"
+        disabled = binding.replace("  HsI2cLib", "  # HsI2cLib", 1)
+        soc_text = soc.read_text()
+        if soc_text.count(disabled) == 1 and binding not in soc_text:
+            soc_text = soc_text.replace(disabled, binding)
+        if soc_text.splitlines().count(binding) != 1:
+            p.error("expected exactly one enabled S5E9820 HsI2cLib binding")
+        soc.write_text(soc_text)
+
 
     dsc_path = platform / "beyond2lte.dsc"
     fdf_path = platform / "beyond2lte.fdf"
