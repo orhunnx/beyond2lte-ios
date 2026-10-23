@@ -43,3 +43,12 @@ checkpoints; private logs and receipts remain local.
 The parallel IOSurface property/attachment implementation is excluded from this
 build. Build 0061 contains only the proven framebuffer-mask correction and
 bounded swap diagnostics; it retains the complete 0060 surface implementation.
+
+## Device observation
+
+BOOT 0061 was installed with a complete image-prefix SHA-256 readback match
+and rebooted. The user then reported that the Apple logo appeared. This is
+physical screen evidence of iOS graphic output after the mask correction.
+The subsequent spinner, SpringBoard home UI and sustained presentation still
+need runtime observation. The installed trial contains no new IOSurface
+metadata implementation. Preserve it as the working graphics checkpoint.
