@@ -31,6 +31,8 @@ struct backtrace_user_info {int btui_error;};
 static unsigned backtrace_user(uintptr_t *bt,unsigned n,void *c,struct backtrace_user_info *i){(void)c;(void)i;assert(n>=2);bt[0]=0x100000000;bt[1]=0x180000000;return 2;}
 static unsigned backtrace(uintptr_t *bt,unsigned n,void *ctl,void *info){(void)ctl;(void)info;assert(n>=2);bt[0]=0xffff000000001000;bt[1]=0xffff000000002000;return 2;}
 #define SYS___mac_syscall 381
+#define SYS_kevent_qos 374
+#define SYS_kevent_id 375
 #define SYS_csops 169
 #define SYS_csops_audittoken 170
 #define SYS_open 5
@@ -170,5 +172,25 @@ int main(void){
  b2l_diag_wait("mach-recv",2,3,4);assert(strstr(output,"window=1"));clear();
  now=301000000000;b2l_diag_ipc(0,ptr,64,0,0x1234,1,2,0);assert(strstr(output,"id=0x1234"));
  b2l_diag_wait("mach-recv",2,3,4);assert(strstr(output,"window=2"));clear();
+ // The exact render-display RPC retains its own quota even after GUI chatter.
+ clear();now=1000000000;strcpy(process.p_comm,"SpringBoard");
+ gui_bootstrap_ipc[0][0]=1000;ipc_seen[0][0]=1000;ipc_samples[0][0]=1000;
+ gui_raw_budget[0]=raw_budget=0;
+ b2l_diag_ipc(0,ptr,64,0,0x9d27,1,2,0);
+ assert(strstr(output,"id=0x9d27")&&strstr(output,"captured=64"));
+ b2l_diag_ports(0,0x9d27,0,1,2,3,4);assert(strstr(output,"IPCPORT"));clear();
+ h[1]=64;h[5]=0x9d8b;b2l_diag_receive(ptr,64,0,ptr,64,0);
+ assert(strstr(output,"id=0x9d8b")&&strstr(output,"IPCRCV"));clear();
+ // Notifications have an independent cap and cannot starve real RPC evidence.
+ clear();for(unsigned i=0;i<40;i++){used=0;output[0]=0;b2l_diag_ipc(0,ptr,64,0,0x47,1,2,0);}
+ used=0;output[0]=0;b2l_diag_ipc(0,ptr,64,0,0x9d27,1,2,0);assert(strstr(output,"id=0x9d27"));clear();
+ // Native event-loop success/error retains its own thread/window budget.
+ clear();strcpy(process.p_comm,"backboardd");now=181000000000;
+ uint64_t evargs[8]={UINT64_MAX,0,0,0,0,0,0,0x100};
+ b2l_diag_syscall(SYS_kevent_qos,9,evargs);assert(strstr(output,"EVRESULT")&&strstr(output,"error=9"));clear();
+ b2l_diag_syscall(SYS_kevent_qos,0,evargs);assert(strstr(output,"EVRESULT")&&strstr(output,"error=0"));clear();
+ for(unsigned i=0;i<8;i++)b2l_diag_syscall(SYS_kevent_qos,0,evargs);
+ used=0;output[0]=0;b2l_diag_syscall(SYS_kevent_qos,0,evargs);assert(!used);
+ now=301000000000;b2l_diag_syscall(SYS_kevent_qos,0,evargs);assert(strstr(output,"EVRESULT"));clear();
  puts("PASS actual targeted diagnostics: gating, current-thread snapshots, limits, copy faults, OOL bounds, XPC admission and path errors");
 }

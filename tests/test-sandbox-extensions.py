@@ -79,13 +79,17 @@ static void test_native_container_classes(void){
  b2l_extension_process_exit(&processes[0]);
 }
 static void test_tcc_native_file_class(void){
- reset_registry();setup();strcpy((char*)memory+0x2000,"com.apple.tcc.kTCCServiceAddressBook");strcpy((char*)memory+0x3000,"/");
- assert(!issue(&processes[0]));assert(b2l_ext_tokens[0].class_id==B2L_EXT_ADDRESSBOOK_CLASS);
+ const char*classes[]={"com.apple.tcc.kTCCServiceAddressBook","com.apple.tcc.kTCCServicePhotos"};
+ for(unsigned i=0;i<2;i++){
+ reset_registry();setup();strcpy((char*)memory+0x2000,classes[i]);strcpy((char*)memory+0x3000,"/");
+ assert(!issue(&processes[0]));assert(b2l_ext_tokens[0].class_id==i+B2L_EXT_ADDRESSBOOK_CLASS);
  assert(!strcmp(b2l_ext_tokens[0].path,"/"));uint64_t h;assert(!consume(&processes[1],&h));assert(!release(&processes[1],h));assert(!token_count());
  assert(!issue(&processes[0]));assert(!consume(&processes[1],&h));
  struct b2l_ext_release_args a={0,0,0x3000};putargs(&a,sizeof(a));assert(b2l_extension_syscall(&processes[2],7,0x1000)==ENOENT);
  putargs(&a,sizeof(a));assert(!b2l_extension_syscall(&processes[1],7,0x1000));assert(!token_count()&&!handle_count());
- const char*bad[]={"com.apple.tcc.kTCCServiceAddressBook.extra","com.apple.tcc.kTCCServicePhotos","com.apple.tcc."};
+ }
+ struct b2l_ext_release_args a={0,0,0x3000};uint64_t h;
+ const char*bad[]={"com.apple.tcc.kTCCServiceAddressBook.extra","com.apple.tcc.kTCCServicePhotos.extra","com.apple.tcc.kTCCServicePhotosAdd","com.apple.tcc."};
  for(unsigned i=0;i<sizeof(bad)/sizeof(bad[0]);i++){setup();strcpy((char*)memory+0x2000,bad[i]);strcpy((char*)memory+0x3000,"/");assert(issue(&processes[0])==ENOTSUP);}
  setup();strcpy((char*)memory+0x2000,"com.apple.tcc.kTCCServiceAddressBook");issueargs.type=3;assert(issue(&processes[0])==ENOTSUP);
  setup();strcpy((char*)memory+0x2000,"com.apple.tcc.kTCCServiceAddressBook");strcpy((char*)memory+0x3000,"/../");assert(issue(&processes[0])==EINVAL);
@@ -101,7 +105,7 @@ static void test_issue_trace_budgets(void){
  assert(strstr(diag_output,"class=com.apple.tcc.kTCCServicePhotos type=0 flags=0x0 error="));
  size_t before=diag_used;
  for(unsigned i=0;i<100;i++)b2l_ext_issue_trace(&processes[0],"forged.class",0,0,ENOTSUP);
- assert(occurrences(diag_output,"class=forged.class ")==3&&diag_used-before<512);
+ assert(occurrences(diag_output,"class=forged.class ")==4&&diag_used-before<640);
  b2l_ext_issue_trace(&processes[0],NULL,3,0,ENOTSUP);assert(strstr(diag_output,"class=- type=3"));
 }
 static void test_copy_rollback(void){

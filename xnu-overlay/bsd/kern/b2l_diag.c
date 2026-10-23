@@ -160,6 +160,14 @@ static void tcc_ipc(int rx,uint64_t addr,uint32_t n,uint32_t bits,int32_t id,
 static unsigned gui_ipc_samples[2][4][2],gui_port_samples[2][4][2],gui_receive_samples[2][4];
 static unsigned gui_bootstrap_ipc[2][2],gui_bootstrap_ports[2][2],gui_bootstrap_receive[2];
 static bool gui_bootstrap_id(int32_t id){return id==0x400000cf||id==0x20000000;}
+/* Native CARenderServerGetDisplays request/reply IDs. Discovery traffic and
+ * unrelated GUI messages cannot exhaust this specific post-lookup evidence. */
+static int gui_render_slot(int32_t id){return id==0x9d27?0:id==0x9d8b?1:id==0x47?2:-1;}
+static bool gui_render_id(int32_t id){return gui_render_slot(id)>=0;}
+/* Each numeric kind has its own quota; unrelated send-once notifications cannot
+ * crowd out the display request or reply. id0x47 is evidence, not a failure. */
+static unsigned gui_render_ipc[2][3][2],gui_render_ports[2][3][2],gui_render_receive[2][3];
+static unsigned gui_render_budget[2]={65536,65536};
 static unsigned gui_raw_budget[2]={262144,262144};
 static int gui_window(void)
 {
@@ -190,6 +198,8 @@ void b2l_diag_ipc(int rx,uint64_t addr,uint32_t n,uint32_t bits,int32_t id,
         struct process_sample *p=container_sample(r);if(!p)return;
         unsigned sample=__atomic_fetch_add(&p->ipc[rx],1,__ATOMIC_RELAXED);
         if(sample>=(r==2?512u:256u))return;
+    }else if(gui_render_id(id)){
+        if(__atomic_fetch_add(&gui_render_ipc[r][gui_render_slot(id)][rx],1,__ATOMIC_RELAXED)>=32)return;
     }else if(gui_bootstrap_id(id)){
         if(__atomic_fetch_add(&gui_bootstrap_ipc[r][rx],1,__ATOMIC_RELAXED)>=32)return;
     }else if(window>=0){
@@ -204,7 +214,7 @@ void b2l_diag_ipc(int rx,uint64_t addr,uint32_t n,uint32_t bits,int32_t id,
     b2l_diag_record("B2L IPC: seq=%llu dir=%s role=%d pid=%d tid=%llu id=0x%x bits=0x%x remote=0x%x local=0x%x bytes=%u descriptors=%u\n",
         seq,rx?"rx":"tx",r,proc_selfpid(),thread_tid(current_thread()),id,bits,remote,local,n,count);
     unsigned inline_max=r>=2?3072u:1024u;
-    unsigned *budget=r<2?&gui_raw_budget[r]:&raw_budget;
+    unsigned *budget=r<2?(gui_render_id(id)?&gui_render_budget[r]:&gui_raw_budget[r]):&raw_budget;
     bytes_from(seq,"inline",addr,n<inline_max?n:inline_max,budget);
     if(!(bits&0x80000000u)||n<28||count>16)return;
     uint32_t off=28;
@@ -232,7 +242,9 @@ void b2l_diag_receive(uint64_t addr,uint32_t n,uint32_t trailer,
     static unsigned samples[2];
     if(r<2){
         uint32_t header[6];if(n<24||copyin(addr,header,sizeof(header)))return;
-        if(gui_bootstrap_id((int32_t)header[5])){
+        if(gui_render_id((int32_t)header[5])){
+            if(__atomic_fetch_add(&gui_render_receive[r][gui_render_slot((int32_t)header[5])],1,__ATOMIC_RELAXED)>=32)return;
+        }else if(gui_bootstrap_id((int32_t)header[5])){
             if(__atomic_fetch_add(&gui_bootstrap_receive[r],1,__ATOMIC_RELAXED)>=32)return;
         }else{
             int w=gui_window();if(w<0||__atomic_fetch_add(&gui_receive_samples[r][w],1,__ATOMIC_RELAXED)>=32)return;
@@ -260,7 +272,9 @@ void b2l_diag_ports(int rx,int32_t id,uint32_t bits,uint64_t remote,
 {
     int r=role();if(r<0||rx<0||rx>1)return;
     if(r<2){
-        if(gui_bootstrap_id(id)){
+        if(gui_render_id(id)){
+            if(__atomic_fetch_add(&gui_render_ports[r][gui_render_slot(id)][rx],1,__ATOMIC_RELAXED)>=32)return;
+        }else if(gui_bootstrap_id(id)){
             if(__atomic_fetch_add(&gui_bootstrap_ports[r][rx],1,__ATOMIC_RELAXED)>=32)return;
         }else{
             int w=gui_window();if(w<0||__atomic_fetch_add(&gui_port_samples[r][w][rx],1,__ATOMIC_RELAXED)>=32)return;
@@ -372,11 +386,30 @@ static void tcc_result(unsigned code,int error,const uint64_t *args)
         p->p_comm,proc_selfpid(),thread_tid(current_thread()),(int)args[0],
         code==SYS_csops_audittoken,(unsigned)args[1],args[3],error,status,magic,length,copied);
 }
+/* Bounded GUI event-loop completions retain native success/error even after
+ * unrelated startup path errors exhaust the ordinary syscall quota. */
+static struct {uint64_t tid;unsigned window,count;} gui_event_samples[2][16];
+static void gui_event_result(int r,unsigned code,int error,const uint64_t *args)
+{
+    if(r<0||r>1||(code!=SYS_kevent_qos&&code!=SYS_kevent_id))return;
+    int w=gui_window();if(w<0)return;
+    uint64_t tid=thread_tid(current_thread());
+    for(unsigned i=0;i<16;i++){
+        uint64_t old=__atomic_load_n(&gui_event_samples[r][i].tid,__ATOMIC_RELAXED);
+        if(old!=tid&&!(old==0&&__atomic_compare_exchange_n(&gui_event_samples[r][i].tid,&old,tid,0,__ATOMIC_RELAXED,__ATOMIC_RELAXED)))continue;
+        if(gui_event_samples[r][i].window!=(unsigned)w){gui_event_samples[r][i].window=w;gui_event_samples[r][i].count=0;}
+        if(gui_event_samples[r][i].count++>=4)return;
+        b2l_diag_record("B2L EVRESULT: pid=%d tid=%llu window=%d syscall=%u fd_or_id=0x%llx changes=%u events=%u flags=0x%x error=%d\n",
+            proc_selfpid(),tid,w,code,args[0],(unsigned)args[2],(unsigned)args[4],(unsigned)args[7],error);
+        return;
+    }
+}
 void b2l_diag_syscall(unsigned code,int error,const uint64_t *args)
 {
     b2l_diag_checkpoint();
     tcc_result(code,error,args);
     int r=role();if(r<0||!args)return;
+    gui_event_result(r,code,error,args);
     amfi_constraint(code,error,args,r);
     struct process_sample *p=r>=2?container_sample(r):NULL;
     if(r>=2&&!p)return;
