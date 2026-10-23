@@ -6,7 +6,7 @@
  * iOS 26.6.2 IOMobileFramebuffer client contract inspected locally:
  *   3 default IOSurface port; 4 swap id; 5 swap record (0x588 bytes)
  *   record +0x98 swap id, +0x9c surface IDs, +0xac source rects,
- *   +0x10c destination rects, +0x17c enabled-layer mask (four layers).
+ *   +0x10c destination rects, +0x14c updated-layer mask, +0x150 disabled-layer mask (four layers).
  *   6 wait; 7 display id; 8 dimensions; 18 main; 28 dot pitch;
  *   72 notification control. Unsupported selectors return Unsupported.
  *
@@ -215,8 +215,17 @@ static uint32_t b2l_fb_swaps_logged;
 void
 AppleCLCD::swap(const uint8_t *rec)
 {
-	uint32_t mask = get32(rec, 0x17c);
-
+	/* kern_SwapSetLayer stores client+0x164/+0x168; kern_SwapEnd sends
+	 * client+0x18. client+0x194 (wire+0x17c) is unrelated and cleared by
+	 * SwapBegin. Reading it silently discarded every native CPU frame. */
+	uint32_t mask = get32(rec, 0x14c);
+	uint32_t disabled = get32(rec, 0x150);
+	static unsigned records;
+	if (__atomic_fetch_add(&records, 1, __ATOMIC_RELAXED) < 32) {
+		b2l_diag_record("B2L FB RECORD: swap=%u updated=0x%x disabled=0x%x ids=%u,%u,%u,%u\n",
+		    get32(rec, 0x98), mask, disabled, get32(rec, 0x9c),
+		    get32(rec, 0xa0), get32(rec, 0xa4), get32(rec, 0xa8));
+	}
 
 	for (uint32_t layer = 0; layer < B2L_FB_LAYERS; layer++) {
 		uint32_t id = get32(rec, 0x9c + 4 * layer);
@@ -226,7 +235,7 @@ AppleCLCD::swap(const uint8_t *rec)
 		int32_t dx = (int32_t)get32(b, 0), dy = (int32_t)get32(b, 4);
 		int32_t w = (int32_t)get32(b, 8), h = (int32_t)get32(b, 12);
 
-		if (!(mask & (1u << layer)) || id == 0) {
+		if (!(mask & (1u << layer)) || (disabled & (1u << layer)) || id == 0) {
 			continue;
 		}
 		B2LSurface *s = b2l_surface_copy(id);

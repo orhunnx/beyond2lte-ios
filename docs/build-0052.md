@@ -32,7 +32,8 @@ updated wire layouts:
 - Limits selector 13: 0x28 bytes, 16-bit version 1 at +0x22. This differs from
   the A5 client's 0x18/+0x16 contract.
 - IOMobileFramebuffer swap record: 0x588 bytes, swap ID +0x98, surface IDs
-  +0x9c, source rectangles +0xac, destination rectangles +0x10c, mask +0x17c.
+  +0x9c, source rectangles +0xac, destination rectangles +0x10c. The original mask claim of +0x17c was
+  incorrect; build 0061 corrects it to update +0x14c and disable +0x150.
 - Unsupported selectors and multiplane creation return Unsupported. Reply
   buffers are zeroed; real mapped allocation lengths bound pixel access.
 - Framebuffer geometry/range comes from GOP/PE. The display nub uses the
