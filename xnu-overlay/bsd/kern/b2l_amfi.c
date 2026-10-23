@@ -255,6 +255,7 @@ static void register_interface(void)
     b2l_early_trace("B2L AMFI: unsigned XML metadata interface registered; signatures unverified\n");
 }
 STARTUP(EARLY_BOOT,STARTUP_RANK_MIDDLE,register_interface);
+#include "b2l_amfi_constraint.h"
 static const struct mac_policy_ops b2l_amfi_ops={
  .mpo_cred_label_init=label_init,.mpo_cred_label_destroy=label_destroy,
  .mpo_cred_label_associate=label_associate,
@@ -271,5 +272,6 @@ void b2l_amfi_policy_register(void)
     if(!b2l_amfi_active())return;
     int error=mac_policy_register(&b2l_amfi_conf,&b2l_amfi_handle,NULL);
     if(error){b2l_amfi_slot=-1;b2l_amfi_registered=false;}
+    else b2l_amfi_constraint_register();
     printf("B2L AMFI: development credential metadata policy %s (%d)\n",error?"unavailable":"registered",error);
 }

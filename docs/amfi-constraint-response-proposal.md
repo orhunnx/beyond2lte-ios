@@ -1,8 +1,8 @@
 # Proposed unavailable response for AMFI operation 0x66
 
-Status: proposal only. No AMFI MAC policy or operation implementation is added
-by build 0058. Implementation requires explicit approval following the automatic
-review rejection of the new persistent policy registration.
+Status: explicitly approved for implementation in build 0060 after review of
+this exact scope. Builds 0058 and 0059 did not include the AMFI MAC policy.
+See [build-0060.md](build-0060.md) for the implemented response and verification.
 
 ## Exact proposed scope
 
