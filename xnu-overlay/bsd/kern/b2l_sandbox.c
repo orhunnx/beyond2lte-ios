@@ -1,13 +1,17 @@
 /* SPDX-License-Identifier: BSD-2-Clause */
 /* Built-in development policy for the explicitly unsigned B2L port.
  * This registers the name queried by libsystem_sandbox; it does not implement
- * production profile enforcement, container paths or extension tokens. */
+ * production profile enforcement or container paths. Private development
+ * extension capabilities have separate bounded lifetime bookkeeping. */
 #if defined(ARM64_BOARD_CONFIG_B2L) && CONFIG_MACF
 #include <sys/types.h>
 #include <sys/systm.h>
 #include <sys/errno.h>
 #include <sys/kauth.h>
 #include <sys/proc.h>
+#include <sys/proc_private.h>
+#include <sys/random.h>
+#include <kern/locks.h>
 #include <sys/priv.h>
 #include <sys/codesign.h>
 #include <security/mac_policy.h>
@@ -32,6 +36,7 @@ b2l_sandbox_development_enabled(void)
     return b2l_arm64e_compat_enabled() && !cs_process_global_enforcement();
 }
 
+#include "b2l_sandbox_extensions.h"
 #include "b2l_mach_filter.h"
 
 /* At most129 operation and65 privilege lines per boot, regardless of callers.
@@ -82,9 +87,9 @@ b2l_sandbox_syscall(struct proc *process, int operation, user_addr_t argument)
     b2l_sandbox_log_operation(operation);
     switch (operation) {
     case 4: /* container-path query: no fabricated path */
-    case 5: /* extension issue: no fabricated token */
-    case 6: /* extension consume: no fabricated token state */
         return ENOENT;
+    case 5: case 6: case 7: case 0x50:
+        return b2l_extension_syscall(process, operation, argument);
     case 0x43:
         return b2l_sandbox_container_expected(argument);
     default:
@@ -112,6 +117,7 @@ b2l_sandbox_priv_grant(kauth_cred_t credential __unused, int privilege)
 static const struct mac_policy_ops b2l_sandbox_ops = {
     .mpo_policy_syscall = b2l_sandbox_syscall,
     .mpo_priv_grant = b2l_sandbox_priv_grant,
+    .mpo_proc_notify_exit = b2l_extension_process_exit,
 };
 
 static struct mac_policy_conf b2l_sandbox_conf = {

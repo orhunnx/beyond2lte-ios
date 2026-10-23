@@ -4,6 +4,7 @@
  */
 #ifndef B2L_AMFI_HOST_TEST
 #include <kern/startup.h>
+#include <pexpert/pexpert.h>
 #include <libkern/amfi/amfi.h>
 #include <libkern/libkern.h>
 #include <sys/codesign.h>
@@ -187,6 +188,20 @@ static int label_exec(kauth_cred_t old __unused,kauth_cred_t new,
                     b2l_early_trace("B2L EXECMETA: id=%s system_container=%d manager=%d cdhash_error=%d\n",
                         id,b2l_ent_bool(e,"com.apple.security.system-container"),
                         b2l_ent_bool(e,"com.apple.private.security.container-manager"),b2l_ent_copy_cdhash(e,hash,&type));
+                }
+            }
+            /* Original metadata only: TCC runtime results are observed in
+             * b2l_diag.c, with no additional authorization or entitlement. */
+            int requested=0;PE_parse_boot_argn("b2l_diag",&requested,sizeof(requested));
+            if(requested==1&&(!strcmp(id,"com.apple.assetsd")||!strcmp(id,"com.apple.tccd"))){
+                static unsigned tcc_exec_samples;
+                if(__atomic_fetch_add(&tcc_exec_samples,1,__ATOMIC_RELAXED)<16){
+                    void *der=NULL;size_t der_len=0;uint8_t hash[20],type=0;
+                    bool has_der=b2l_ent_copy_der(e,&der,&der_len);
+                    b2l_early_trace("B2L TCCMETA: id=%s photos_allow=%d der=%d der_bytes=%llu cdhash_error=%d\n",
+                        id,b2l_ent_string(e,"com.apple.private.tcc.allow","kTCCServicePhotos"),
+                        has_der,(unsigned long long)der_len,b2l_ent_copy_cdhash(e,hash,&type));
+                    if(der)kfree_data(der,der_len);
                 }
             }
             kfree_data(identity,identity_len);

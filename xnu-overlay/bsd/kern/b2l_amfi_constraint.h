@@ -1,8 +1,9 @@
 /* SPDX-License-Identifier: BSD-2-Clause */
-/* Unavailable response only for iOS 26 AMFI operation 0x66. No predicate,
- * identity, signature or entitlement is evaluated or accepted here. */
+/* Bounded existence-only metadata predicates for iOS 26 operation 0x66.
+ * Unsupported predicates retain the unavailable response. No trust is granted. */
 #ifndef B2L_AMFI_CONSTRAINT_H
 #define B2L_AMFI_CONSTRAINT_H
+#include "b2l_lwcr.h"
 #define B2L_AMFI_CONSTRAINT_MAX 0x4000u
 #define B2L_AMFI_CONSTRAINT_RESULT_SIZE 0x404u
 /* Observed stock AMFI result for unsupported running-process constraints. */
@@ -57,29 +58,39 @@ b2l_amfi_constraint_syscall(struct proc *process, int operation, user_addr_t arg
         return b2l_amfi_constraint_reply(args.result, 5,
             "Unreadable launch constraint range; not evaluated", EFAULT);
     }
-    /* Validate the readable input range without interpreting its bytes.
-     * Fixed chunks bound stack usage independently of user-controlled sizes. */
-    uint8_t bytes[64];
-    for (uint32_t offset = 0; offset < args.constraint_size;) {
-        uint32_t size = args.constraint_size - offset;
-        if (size > sizeof(bytes)) size = sizeof(bytes);
-        error = copyin(args.constraint + offset, bytes, size);
-        if (error) {
-            return b2l_amfi_constraint_reply(args.result, 5,
-                "Failed to read launch constraint; not evaluated", error);
-        }
-        offset += size;
-    }
-    return b2l_amfi_constraint_reply(args.result, B2L_AMFI_CONSTRAINT_UNSUPPORTED,
-        "Launch constraint matching unavailable in B2L development mode; not evaluated",
-        ENOTSUP);
+    uint8_t *bytes = kalloc_data(args.constraint_size, Z_WAITOK);
+    if (!bytes) return b2l_amfi_constraint_reply(args.result, 5,
+        "Constraint allocation failed; not evaluated", ENOMEM);
+    error = copyin(args.constraint, bytes, args.constraint_size);
+    char key[B2L_LWCR_KEY_MAX];
+    int parsed = error ? error : b2l_lwcr_entitlement_exists(bytes, args.constraint_size, key);
+    kfree_data(bytes, args.constraint_size);
+    if (error) return b2l_amfi_constraint_reply(args.result, 5,
+        "Failed to read launch constraint; not evaluated", error);
+    if (parsed == EINVAL) return b2l_amfi_constraint_reply(args.result, 5,
+        "Malformed launch constraint; not evaluated", EINVAL);
+    if (parsed) return b2l_amfi_constraint_reply(args.result, B2L_AMFI_CONSTRAINT_UNSUPPORTED,
+        "Launch constraint matching unavailable in B2L development mode; not evaluated", ENOTSUP);
+    audit_token_t token;
+    memcpy(&token, args.audit_token, sizeof(token));
+    proc_t target = proc_find_audit_token(token);
+    if (!target) return b2l_amfi_constraint_reply(args.result, 1,
+        "Target process audit identity is no longer available", 0);
+    void *entitlements = proc_copy_ent(target);
+    void *value = b2l_ent_copy_object(entitlements, key);
+    bool exists = value != NULL && proc_pidversion(target) == token.val[7];
+    b2l_ent_release(value);
+    b2l_ent_release(entitlements);
+    proc_rele(target);
+    return b2l_amfi_constraint_reply(args.result, exists ? 0 : 1,
+        exists ? "" : "Entitlement key is absent from target metadata", 0);
 }
 static const struct mac_policy_ops b2l_amfi_constraint_ops = {
     .mpo_policy_syscall = b2l_amfi_constraint_syscall,
 };
 static struct mac_policy_conf b2l_amfi_constraint_conf = {
     .mpc_name = "AMFI",
-    .mpc_fullname = "B2L unavailable launch constraint matching API",
+    .mpc_fullname = "B2L existence-only launch constraint metadata API",
     .mpc_ops = &b2l_amfi_constraint_ops,
 };
 static mac_policy_handle_t b2l_amfi_constraint_handle;
@@ -91,7 +102,7 @@ b2l_amfi_constraint_register(void)
     int error = mac_policy_register(&b2l_amfi_constraint_conf,
         &b2l_amfi_constraint_handle, NULL);
     if (!error) b2l_amfi_constraint_registered = true;
-    printf("B2L AMFI: unavailable constraint API %s (%d)\n",
+    printf("B2L AMFI: existence-only constraint metadata API %s (%d)\n",
         error ? "not registered" : "registered", error);
 }
 #endif /* B2L_AMFI_CONSTRAINT_H */

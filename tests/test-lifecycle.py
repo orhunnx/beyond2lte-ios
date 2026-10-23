@@ -37,7 +37,9 @@ typedef struct mount*mount_t;
 static void label_destroy(struct label*);
 static int b2l_amfi_slot=0;
 static bool b2l_amfi_registered,enabled=true,enforced=false;
-static unsigned ent_live,register_calls,earlylogs;
+static unsigned ent_live,register_calls,earlylogs,tcc_logs;
+static int diag_requested;static const char*fixture_id="example.fixture";
+static int PE_parse_boot_argn(const char*n,void*p,int len){assert(!strcmp(n,"b2l_diag")&&len==sizeof(int));memcpy(p,&diag_requested,len);return 1;}
 struct ent {unsigned refs;bool platform;};
 static void*b2l_ent_create(bool platform){struct ent*e=calloc(1,sizeof(*e));assert(e);e->refs=1;e->platform=platform;++ent_live;return e;}
 static void b2l_ent_retain(void*p){if(p)++((struct ent*)p)->refs;}
@@ -61,12 +63,13 @@ static void*next_ent;
 static void*vnode_copy_ent(struct vnode*v,off_t o){(void)v;(void)o;void*e=next_ent;next_ent=NULL;return e;}
 static bool b2l_ent_copy_xml(const void*e,void**out,size_t*n){if(out)*out=NULL;if(n)*n=0;if(!e||!out||!n)return false;*out=malloc(4);memcpy(*out,"XML",4);*n=4;return true;}
 static bool b2l_ent_copy_der(const void*e,void**out,size_t*n){return b2l_ent_copy_xml(e,out,n);}
-static int b2l_ent_copy_identity(const void*e,void**out,size_t*n){if(out)*out=NULL;if(n)*n=0;if(!out||!n)return EINVAL;if(!e)return ENOENT;const char id[]="example.fixture";*out=malloc(sizeof(id));memcpy(*out,id,sizeof(id));*n=sizeof(id);return 0;}
+static int b2l_ent_copy_identity(const void*e,void**out,size_t*n){if(out)*out=NULL;if(n)*n=0;if(!out||!n)return EINVAL;if(!e)return ENOENT;size_t len=strlen(fixture_id)+1;*out=malloc(len);memcpy(*out,fixture_id,len);*n=len;return 0;}
 typedef struct{int identifier;}amfi_t;
 static const amfi_t b2l_amfi={1},other_amfi={2};
 static const amfi_t*amfi;
 static void amfi_interface_register(const amfi_t*t){assert(!amfi);amfi=t;++register_calls;}
-static void b2l_early_trace(const char*s,...){assert(s);++earlylogs;}
+static void b2l_early_trace(const char*s,...){assert(s);++earlylogs;if(strstr(s,"B2L TCCMETA:"))++tcc_logs;}
+static bool b2l_ent_string(const void*e,const char*n,const char*v){assert(e&&!strcmp(n,"com.apple.private.tcc.allow")&&!strcmp(v,"kTCCServicePhotos"));return true;}
 static bool b2l_ent_bool(const void*e,const char*n){(void)e;(void)n;return false;}
 static int b2l_ent_copy_cdhash(const void*e,uint8_t h[20],uint8_t*t){(void)e;(void)h;(void)t;return ENOENT;}
 static void kfree_data(void*p,size_t n){assert(n);free(p);}
@@ -95,6 +98,15 @@ int main(void){
  c=cred_new(NULL);label_associate(p.cred,c);m.flags=0;next_ent=NULL;flags=CS_PLATFORM_BINARY;assert(!label_exec(p.cred,c,&p,&v,0,NULL,NULL,NULL,NULL,&flags,NULL,0,&disjoint));assert(!flags&&!c->label.value);cred_drop(c);m.flags=MNT_ROOTFS;
  /* A fresh rootfs exec can classify again after CLEARPLATFORM. */
  c=cred_new(NULL);next_ent=b2l_ent_create(true);flags=0;assert(!label_exec(p.cred,c,&p,&v,0,NULL,NULL,NULL,NULL,&flags,NULL,0,&disjoint));cred_drop(p.cred);p.cred=c;p.flags=flags;assert(b2l_amfi_is_platform(&p));
+ /* TCC metadata observation is gated and does not change exec flags/labels. */
+ fixture_id="com.apple.assetsd";c=cred_new(NULL);next_ent=b2l_ent_create(true);flags=0;
+ assert(!label_exec(p.cred,c,&p,&v,0,NULL,NULL,NULL,NULL,&flags,NULL,0,&disjoint)&&!tcc_logs);cred_drop(c);
+ diag_requested=1;c=cred_new(NULL);next_ent=b2l_ent_create(true);flags=0;
+ assert(!label_exec(p.cred,c,&p,&v,0,NULL,NULL,NULL,NULL,&flags,NULL,0,&disjoint)&&tcc_logs==1&&flags==CS_PLATFORM_BINARY&&disjoint==1);cred_drop(c);
+ fixture_id="com.apple.tccd";c=cred_new(NULL);next_ent=b2l_ent_create(true);
+ assert(!label_exec(p.cred,c,&p,&v,0,NULL,NULL,NULL,NULL,&flags,NULL,0,&disjoint)&&tcc_logs==2);cred_drop(c);
+ fixture_id="com.apple.tccd.other";c=cred_new(NULL);next_ent=b2l_ent_create(true);
+ assert(!label_exec(p.cred,c,&p,&v,0,NULL,NULL,NULL,NULL,&flags,NULL,0,&disjoint)&&tcc_logs==2);cred_drop(c);
  enforced=true;assert(!b2l_amfi_is_platform(&p));enforced=false;cred_drop(p.cred);assert(ent_live==0);
  puts("Actual C metadata policy: registration gating, cred refs/fork/exec/exit, replacement, clear/reexec, OOM and disjoint PASS");return 0;}
 '''

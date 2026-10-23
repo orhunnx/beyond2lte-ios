@@ -1,0 +1,24 @@
+--- a/bsd/kern/kern_exit.c
++++ b/bsd/kern/kern_exit.c
+@@ -2043,16 +2043,17 @@
+ static void
+ b2l_trace_crash(proc_t p, int rv, struct uthread *ut)
+ {
+-	static unsigned samples[11];
++	static unsigned samples[14];
+ 	const char *names[] = { "SpringBoard", "usermanagerd", "UserEventAgent",
+ 	    "securityd", "ManagedSettings", "mobileactivat", "lsd",
+-	    "cryptexd", "appprotectiond", "passd", "backboardd" };
++	    "cryptexd", "appprotectiond", "passd", "backboardd",
++	    "appplaceholdersy", "familycircled", "assetsd" };
+ 	unsigned slot;
+ 	if (!exception_log_max_pid || proc_getpid(p) > exception_log_max_pid ||
+ 	    p != current_proc() || (!rv && !ut->uu_exception)) return;
+-	for (slot = 0; slot < 11; slot++)
++	for (slot = 0; slot < 14; slot++)
+ 		if (!strncmp(p->p_comm, names[slot], strlen(names[slot]))) break;
+-	if (slot == 11 || __atomic_fetch_add(&samples[slot], 1, __ATOMIC_RELAXED) >= 4) return;
++	if (slot == 14 || __atomic_fetch_add(&samples[slot], 1, __ATOMIC_RELAXED) >= 4) return;
+ 	const char *desc = exit_reason_get_string_desc(p->p_exit_reason);
+ 	b2l_early_trace("B2L CRASH: %s[%d] status=0x%x exception=%u code=0x%llx sub=0x%llx\n",
+ 	    p->p_comm, proc_getpid(p), rv, ut->uu_exception,

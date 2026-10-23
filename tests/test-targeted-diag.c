@@ -10,7 +10,8 @@
 struct proc {char p_comm[32];};typedef struct proc *proc_t;
 static struct proc process={"SpringBoard"};static int requested=1;static uint64_t now=1000000000;
 static unsigned char region[8192];static char output[200000];static size_t used;
-static proc_t current_proc(void){return &process;}static int proc_is64bit(proc_t p){(void)p;return 1;}
+static int process64=1;
+static proc_t current_proc(void){return &process;}static int proc_is64bit(proc_t p){(void)p;return process64;}
 static int pid=28;
 static int proc_selfpid(void){return pid;}static void *current_thread(void){return (void*)1;}
 static uint64_t thread_tid(void *p){(void)p;return 41;}
@@ -45,7 +46,7 @@ static unsigned backtrace(uintptr_t *bt,unsigned n,void *ctl,void *info){(void)c
 #define SYS_renameat 465
 #define SYS_renameatx_np 489
 #include "../xnu-overlay/bsd/kern/b2l_diag.c"
-static void clear(void){used=0;output[0]=0;memset(ipc_samples,0,sizeof(ipc_samples));memset(ipc_seen,0,sizeof(ipc_seen));memset(process_samples,0,sizeof(process_samples));raw_budget=4*1024*1024;}
+static void clear(void){used=0;output[0]=0;memset(ipc_samples,0,sizeof(ipc_samples));memset(ipc_seen,0,sizeof(ipc_seen));memset(process_samples,0,sizeof(process_samples));memset(tcc_samples,0,sizeof(tcc_samples));raw_budget=4*1024*1024;}
 int main(void){
  uint32_t *h=(void*)region;uint64_t ptr=(uintptr_t)region;
  requested=0;b2l_diag_ipc(0,ptr,64,0,1,0,0,0);assert(!used);
@@ -120,5 +121,28 @@ int main(void){
  assert(strstr(output,"constraint_bytes=16385")&&!strstr(output,"part=amfi_constraint"));clear();
  for(unsigned i=0;i<12;i++)b2l_diag_syscall(SYS___mac_syscall,45,macargs);
  assert(amfi_samples>=8);clear();b2l_diag_syscall(SYS___mac_syscall,45,macargs);assert(!strstr(output,"B2L AMFI:"));
+ // TCC metadata diagnostics keep native responses unchanged and never enroll
+ // these processes in the general role/raw IPC capture.
+ clear();strcpy(process.p_comm,"assetsd");assert(role()==-1);
+ memset(region,0,sizeof(region));region[0]=0xfa;region[1]=0xde;region[2]=0x71;region[3]=0x72;region[6]=0x12;region[7]=0x34;
+ uint64_t tccargs[5]={555,16,ptr,8,0};memcpy(snapshot,region,sizeof(region));
+ requested=0;b2l_diag_syscall(SYS_csops_audittoken,34,tccargs);assert(!used);requested=1;
+ process64=0;b2l_diag_syscall(SYS_csops_audittoken,34,tccargs);assert(!used);process64=1;
+ strcpy(process.p_comm,"assetsd-other");b2l_diag_syscall(SYS_csops_audittoken,34,tccargs);assert(!used);
+ strcpy(process.p_comm,"assetsd");b2l_diag_syscall(SYS_csops_audittoken,34,tccargs);
+ assert(strstr(output,"caller=assetsd")&&strstr(output,"target=555 audit=1 op=16")&&strstr(output,"magic=0xfade7172 length=4660 copied=0"));
+ assert(!memcmp(snapshot,region,sizeof(region))&&!strstr(output,"IPCDATA"));clear();
+ tccargs[1]=7;tccargs[3]=7;b2l_diag_syscall(SYS_csops,0,tccargs);assert(strstr(output,"magic=0x0 length=0 copied=-1"));clear();
+ tccargs[3]=8;tccargs[2]=UINT64_MAX;b2l_diag_syscall(SYS_csops,34,tccargs);assert(strstr(output,"copied=14"));clear();
+ tccargs[2]=ptr;tccargs[1]=0;tccargs[3]=4;h[0]=0x24000001;
+ b2l_diag_syscall(SYS_csops,0,tccargs);assert(strstr(output,"status=0x24000001")&&strstr(output,"copied=0"));clear();
+ strcpy((char*)region,"OTHER");macargs[0]=ptr;macargs[1]=0x99;
+ b2l_diag_syscall(SYS___mac_syscall,45,macargs);assert(!used);
+ strcpy((char*)region,"AMFI");b2l_diag_syscall(SYS___mac_syscall,0,macargs);assert(!used);
+ b2l_diag_syscall(SYS___mac_syscall,45,macargs);assert(strstr(output,"TCCMAC:")&&strstr(output,"policy=AMFI op=153 error=45"));clear();
+ for(unsigned i=0;i<80;i++)b2l_diag_syscall(SYS_csops,0,tccargs);
+ assert(tcc_samples[0]==80);old=used;b2l_diag_syscall(SYS_csops,0,tccargs);assert(old==used);
+ used=0;output[0]=0;strcpy(process.p_comm,"tccd");b2l_diag_syscall(SYS_csops,0,tccargs);
+ assert(strstr(output,"caller=tccd")&&tcc_samples[1]==1);clear();
  puts("PASS actual targeted diagnostics: gating, current-thread snapshots, limits, copy faults, OOL bounds, XPC admission and path errors");
 }

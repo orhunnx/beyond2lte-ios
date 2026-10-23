@@ -259,9 +259,45 @@ static void amfi_constraint(unsigned code,int error,const uint64_t *args,int r)
     bytes(seq,"amfi_args",args[2],sizeof(wire));
     if(cb&&cb<=16384)bytes(seq,"amfi_constraint",wire[4],cb<512?cb:512);
 }
+/* TCC clients use native SecTask DER/identity reads. Observe only the result
+ * boundary, without adding these names to the broader IPC/payload capture. */
+static unsigned tcc_samples[2];
+static void tcc_result(unsigned code,int error,const uint64_t *args)
+{
+    if(!args||(code!=SYS_csops&&code!=SYS_csops_audittoken&&
+       (code!=SYS___mac_syscall||!error)))return;
+    proc_t p=current_proc();if(!p||!proc_is64bit(p))return;
+    int slot=!strcmp(p->p_comm,"assetsd")?0:!strcmp(p->p_comm,"tccd")?1:-1;
+    if(slot<0)return;
+    int requested=0;PE_parse_boot_argn("b2l_diag",&requested,sizeof(requested));
+    if(requested!=1)return;
+    if(code==SYS___mac_syscall){
+        char policy[8];size_t n=0;
+        if(copyinstr(args[0],policy,sizeof(policy),&n)||n!=5||strcmp(policy,"AMFI"))return;
+        if(__atomic_fetch_add(&tcc_samples[slot],1,__ATOMIC_RELAXED)>=64)return;
+        b2l_diag_record("B2L TCCMAC: caller=%s pid=%d tid=%llu policy=AMFI op=%u error=%d\n",
+            p->p_comm,proc_selfpid(),thread_tid(current_thread()),(unsigned)args[1],error);
+        return;
+    }
+    if(__atomic_fetch_add(&tcc_samples[slot],1,__ATOMIC_RELAXED)>=64)return;
+    uint32_t status=0,magic=0,length=0;int copied=-1;
+    if(!error&&args[1]==0&&args[2]&&args[3]>=sizeof(status))
+        copied=copyin(args[2],&status,sizeof(status));
+    else if((!error||error==34)&&(args[1]==7||args[1]==16)&&args[2]&&args[3]>=8){
+        uint8_t h[8];copied=copyin(args[2],h,sizeof(h));
+        if(!copied){
+            magic=(uint32_t)h[0]<<24|(uint32_t)h[1]<<16|(uint32_t)h[2]<<8|h[3];
+            length=(uint32_t)h[4]<<24|(uint32_t)h[5]<<16|(uint32_t)h[6]<<8|h[7];
+        }
+    }
+    b2l_diag_record("B2L TCCCS: caller=%s pid=%d tid=%llu target=%d audit=%u op=%u size=%llu error=%d status=0x%x magic=0x%x length=%u copied=%d\n",
+        p->p_comm,proc_selfpid(),thread_tid(current_thread()),(int)args[0],
+        code==SYS_csops_audittoken,(unsigned)args[1],args[3],error,status,magic,length,copied);
+}
 void b2l_diag_syscall(unsigned code,int error,const uint64_t *args)
 {
     b2l_diag_checkpoint();
+    tcc_result(code,error,args);
     int r=role();if(r<0||!args)return;
     amfi_constraint(code,error,args,r);
     struct process_sample *p=r>=2?container_sample(r):NULL;

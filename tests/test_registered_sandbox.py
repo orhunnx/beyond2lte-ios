@@ -43,7 +43,7 @@ typedef unsigned u_int,mac_policy_handle_t;
 typedef uint64_t user_addr_t,user64_addr_t;
 struct proc {bool is64;};typedef struct proc *proc_t;
 struct cred {unsigned uid;};typedef struct cred *kauth_cred_t;
-struct mac_policy_ops {int (*mpo_policy_syscall)(struct proc *,int,user_addr_t);int(*mpo_priv_grant)(kauth_cred_t,int);};
+struct mac_policy_ops {int (*mpo_policy_syscall)(struct proc *,int,user_addr_t);int(*mpo_priv_grant)(kauth_cred_t,int);void(*mpo_proc_notify_exit)(proc_t);};
 struct mac_policy_conf {const char *mpc_name,*mpc_fullname;const struct mac_policy_ops *mpc_ops;};
 struct __mac_syscall_args {user_addr_t policy;int call;user_addr_t arg;};
 static struct {struct {struct mac_policy_conf *mpc;}entries[2];u_int staticmax,maxindex;}mac_policy_list;
@@ -69,7 +69,7 @@ static int mac_policy_register(struct mac_policy_conf *c,mac_policy_handle_t *h,
  assert(!strcmp(c->mpc_name,"Sandbox")&&c->mpc_fullname&&c->mpc_ops->mpo_policy_syscall&&c->mpc_ops->mpo_priv_grant);
  *h=0;mac_policy_list.entries[0].mpc=c;mac_policy_list.staticmax=1;return 0;
 }
-'''+'\n/* Mach provider itself has a separate ownership/lifetime host test. */\ntypedef int kern_return_t;\nstatic int b2l_mach_filter_register(void){return 0;}\n'+sandbox+legacy+dispatch+r'''
+'''+'\n/* Mach provider itself has a separate ownership/lifetime host test. */\ntypedef int kern_return_t;\nstatic int b2l_mach_filter_register(void){return 0;}\n/* Actual registry is exercised separately in test-sandbox-extensions.py. */\nstatic int b2l_extension_syscall(proc_t p,int op,user_addr_t a){(void)p;(void)op;(void)a;return EINPROGRESS;}\nstatic void b2l_extension_process_exit(proc_t p){(void)p;}\n'+sandbox+legacy+dispatch+r'''
 static int mac_priv_check(kauth_cred_t c,int p){(void)c;(void)p;return priv_restrict_error;}
 static int mac_priv_grant(kauth_cred_t c,int p){
  struct mac_policy_conf *m=mac_policy_list.entries[0].mpc;
@@ -106,12 +106,12 @@ static void test_registration_and_gates(void){
  reset();registration_error=ENOMEM;b2l_sandbox_register();assert(registrations==1&&!b2l_sandbox_registered&&!mac_policy_list.entries[0].mpc);
  registration_error=0;b2l_sandbox_register();assert(registrations==2&&b2l_sandbox_registered);
  /* Existing real policy must not be replaced or overridden by either shim. */
- reset();const struct mac_policy_ops real_ops={other_policy,NULL};struct mac_policy_conf real={"Sandbox","real",&real_ops};mac_policy_list.entries[0].mpc=&real;mac_policy_list.staticmax=1;
+ reset();const struct mac_policy_ops real_ops={other_policy,NULL,NULL};struct mac_policy_conf real={"Sandbox","real",&real_ops};mac_policy_list.entries[0].mpc=&real;mac_policy_list.staticmax=1;
  b2l_sandbox_register();assert(!b2l_sandbox_registered&&mac_policy_list.entries[0].mpc==&real);assert(syscall()==EACCES&&!copyouts);
 }
 static void test_operations_and_copyio(void){
  reset();b2l_sandbox_register();
- for(int op=0;op<128;op++){memory_setup();args.call=op;int e=syscall();assert(e==((op>=4&&op<=6)?ENOENT:0));if(op!=67)assert(!copyouts);}
+ for(int op=0;op<128;op++){memory_setup();args.call=op;int e=syscall();assert(e==(op==4?ENOENT:((op==5||op==6||op==7||op==0x50)?EINPROGRESS:0)));if(op!=67)assert(!copyouts);}
  memory_setup();args.call=-1;assert(!syscall()&&!copyouts);args.call=100000;assert(!syscall());
  memory_setup();strcpy((char *)memory+0x1000,"Other");assert(syscall()==ENOPOLICY&&!copyouts);
  memory_setup();args.arg=1;assert(syscall()==EFAULT&&!copyouts);
