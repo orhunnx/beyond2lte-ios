@@ -1,0 +1,149 @@
+--- a/osfmk/ipc/mach_port.c
++++ b/osfmk/ipc/mach_port.c
+@@ -101,6 +101,9 @@
+ #include <kern/coalition.h>
+ #include <ipc/ipc_service_port.h>
+ #include <kern/mach_filter.h>
++#if defined(ARM64_BOARD_CONFIG_B2L)
++#include <arm64/b2l_diag.h>
++#endif
+ #include <IOKit/IOBSD.h>
+ 
+ #if IMPORTANCE_INHERITANCE
+@@ -2671,8 +2674,29 @@
+ 		port->ip_context = context;
+ 	}
+ 
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	/* Scalar snapshots only while locked. Never dereference these labels after
++	 * unlock: the native port owns their lifetime. No raw kernel pointers. */
++	void *b2l_construct_label = NULL;
++	if (ip_is_any_service_port_type(label.io_type)) {
++		b2l_construct_label = label.iol_service->ispl_sblabel;
++	} else if (ip_is_bootstrap_port_type(label.io_type)) {
++		b2l_construct_label = label.iol_bootstrap->ispl_sblabel;
++	} else if (label.io_type == IOT_CONNECTION_PORT) {
++		b2l_construct_label = label.iol_connection;
++	}
++	uint64_t b2l_construct_key = b2l_construct_label ?
++	    VM_KERNEL_ADDRPERM((uintptr_t)b2l_construct_label) : 0;
++	uint32_t b2l_construct_type = label.io_type;
++	uint64_t b2l_construct_port = VM_KERNEL_ADDRPERM((uintptr_t)port);
++#endif
+ 	/* Unlock port */
+ 	ip_mq_unlock(port);
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	b2l_diag_mach_construct(*name, options->flags,
++	    port_type_flag == MPO_CONNECTION_PORT ? options->service_port_name : MACH_PORT_NULL,
++	    b2l_construct_type, b2l_construct_port, b2l_construct_key, KERN_SUCCESS);
++#endif
+ 
+ 	return KERN_SUCCESS;
+ }
+@@ -2957,36 +2981,58 @@
+ 	struct ipc_conn_port_label *conn_port_sblabel = NULL;
+ 
+ 	kern_return_t ret;
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	uint32_t b2l_service_type = UINT32_MAX, b2l_connection_type = UINT32_MAX;
++	uint64_t b2l_service_key = 0, b2l_connection_key = 0;
++	uint64_t b2l_service_port = 0, b2l_connection_port = 0;
++#define B2L_MACH_VALIDATE_RETURN(value, stage) do { \
++	kern_return_t b2l_result = (value); \
++	b2l_diag_mach_validate(connection_port_name, service_port_name, \
++	    b2l_service_type, b2l_service_port, b2l_service_key, b2l_connection_type, \
++	    b2l_connection_port, b2l_connection_key, b2l_result, (stage)); \
++	return b2l_result; \
++} while (0)
++#else
++#define B2L_MACH_VALIDATE_RETURN(value, stage) return (value)
++#endif
+ 
+ 	if (space == IS_NULL) {
+-		return KERN_INVALID_TASK;
++		B2L_MACH_VALIDATE_RETURN(KERN_INVALID_TASK, 0);
+ 	}
+ 
+ 	if (!MACH_PORT_VALID(connection_port_name) || !MACH_PORT_VALID(service_port_name)) {
+-		return KERN_INVALID_NAME;
++		B2L_MACH_VALIDATE_RETURN(KERN_INVALID_NAME, 0);
+ 	}
+ 
+ 	if (!filter_policy_id) {
+-		return KERN_INVALID_ARGUMENT;
++		B2L_MACH_VALIDATE_RETURN(KERN_INVALID_ARGUMENT, 0);
+ 	}
+ 
+ 	if (!mach_msg_filter_at_least(MACH_MSG_FILTER_CALLBACKS_VERSION_1)) {
+-		return KERN_NOT_SUPPORTED;
++		B2L_MACH_VALIDATE_RETURN(KERN_NOT_SUPPORTED, 0);
+ 	}
+ 
+ 	ret = ipc_port_translate_receive(space, service_port_name, &service_port);
+ 	if (ret) {
+-		return ret;
++		B2L_MACH_VALIDATE_RETURN(ret, 1);
+ 	}
+ 
+ 	label = ip_label_get(service_port);
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	b2l_service_type = label.io_type;
++	b2l_service_port = VM_KERNEL_ADDRPERM((uintptr_t)service_port);
++#endif
+ 	if (!ip_is_any_service_port_type(label.io_type)) {
+ 		ip_mq_unlock_label_put(service_port, &label);
+-		return KERN_INVALID_CAPABILITY;
++		B2L_MACH_VALIDATE_RETURN(KERN_INVALID_CAPABILITY, 2);
+ 	}
+ 
+ 	/* Port is locked and active */
+ 	service_port_sblabel = label.iol_service->ispl_sblabel;
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	b2l_service_key = service_port_sblabel ?
++	    VM_KERNEL_ADDRPERM((uintptr_t)service_port_sblabel) : 0;
++#endif
+ 	if (service_port_sblabel) {
+ 		mach_msg_filter_retain_sblabel_callback(service_port_sblabel);
+ 	}
+@@ -2995,19 +3041,27 @@
+ 	if (!service_port_sblabel) {
+ 		/* Nothing to check */
+ 		*filter_policy_id = 0;
+-		return KERN_SUCCESS;
++		B2L_MACH_VALIDATE_RETURN(KERN_SUCCESS, 3);
+ 	}
+ 
+ 	ret = ipc_port_translate_receive(space, connection_port_name, &connection_port);
+ 	if (ret) {
+ 		mach_msg_filter_dealloc_service_port_sblabel_callback(service_port_sblabel);
+-		return ret;
++		B2L_MACH_VALIDATE_RETURN(ret, 4);
+ 	}
+ 
+ 	/* Port is locked and active */
+ 	label = ip_label_get(connection_port);
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	b2l_connection_type = label.io_type;
++	b2l_connection_port = VM_KERNEL_ADDRPERM((uintptr_t)connection_port);
++#endif
+ 	if (label.io_type == IOT_CONNECTION_PORT && label.iol_connection) {
+ 		conn_port_sblabel = label.iol_connection;
++#if defined(ARM64_BOARD_CONFIG_B2L)
++		b2l_connection_key = conn_port_sblabel ?
++		    VM_KERNEL_ADDRPERM((uintptr_t)conn_port_sblabel) : 0;
++#endif
+ 		mach_msg_filter_retain_sblabel_callback(conn_port_sblabel);
+ 	}
+ 	ip_mq_unlock_label_put(connection_port, &label);
+@@ -3016,7 +3070,10 @@
+ 	ret = mach_msg_filter_get_connection_port_filter_policy_callback(service_port_sblabel,
+ 	    conn_port_sblabel, filter_policy_id);
+ 
+-	return ret;
++	/* Callback consumed both references. Only the earlier scalar snapshots
++	 * are consulted by this diagnostic, after native locks were dropped. */
++	B2L_MACH_VALIDATE_RETURN(ret, 5);
++#undef B2L_MACH_VALIDATE_RETURN
+ }
+ 
+ #if CONFIG_SERVICE_PORT_INFO

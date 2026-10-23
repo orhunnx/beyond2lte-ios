@@ -57,6 +57,37 @@ static uint64_t progress_seconds(void)
 {
     uint64_t ns=0;absolutetime_to_nanoseconds(mach_absolute_time(),&ns);return ns/1000000000;
 }
+/* Native Mach provenance observation only. All callers have already dropped
+ * native port locks and pass immutable scalar snapshots. Budgets are separate
+ * from GUI IPC traffic, so early bootstrap cannot consume these records. */
+static unsigned mach_construct_samples[2], mach_validate_samples[2];
+static bool mach_sample_take(unsigned *counter,unsigned limit)
+{
+    unsigned old=__atomic_load_n(counter,__ATOMIC_RELAXED);
+    while(old<limit){
+        if(__atomic_compare_exchange_n(counter,&old,old+1,false,__ATOMIC_RELAXED,__ATOMIC_RELAXED))return true;
+    }
+    return false; /* Saturates: prolonged loops can never wrap and reopen it. */
+}
+void b2l_diag_mach_construct(uint32_t name,uint32_t flags,uint32_t parent,
+    uint32_t type,uint64_t port_key,uint64_t label_key,int result)
+{
+    int r=progress_role();if(r<0||r>1)return;
+    if(!mach_sample_take(&mach_construct_samples[r],64))return;
+    b2l_diag_record("B2L MACH CONSTRUCT: sec=%llu role=%d pid=%d tid=%llu name=0x%x flags=0x%x parent=0x%x type=%u port=0x%llx label=0x%llx result=%d\n",
+        progress_seconds(),r,proc_selfpid(),thread_tid(current_thread()),name,flags,parent,type,port_key,label_key,result);
+}
+void b2l_diag_mach_validate(uint32_t connection,uint32_t service,
+    uint32_t service_type,uint64_t service_port_key,uint64_t service_key,uint32_t connection_type,
+    uint64_t connection_port_key,uint64_t connection_key,int result,unsigned stage)
+{
+    int r=progress_role();if(r<0||r>1)return;
+    if(!mach_sample_take(&mach_validate_samples[r],32))return;
+    const char *relation=!service_key?(!connection_key?"none":"connection-only"):
+        !connection_key?"service-only":service_key==connection_key?"same":"different";
+    b2l_diag_record("B2L MACH VALIDATE: sec=%llu role=%d pid=%d tid=%llu connection=0x%x service=0x%x service_type=%u service_port=0x%llx service_label=0x%llx connection_type=%u connection_port=0x%llx connection_label=0x%llx labels=%s stage=%u result=%d\n",
+        progress_seconds(),r,proc_selfpid(),thread_tid(current_thread()),connection,service,service_type,service_port_key,service_key,connection_type,connection_port_key,connection_key,relation,stage,result);
+}
 static void progress_note(int r,unsigned event,uint64_t a,uint64_t b,uint64_t c,int error)
 {
     if(r<0||r>=B2L_PROGRESS_ROLES)return;

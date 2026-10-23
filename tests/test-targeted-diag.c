@@ -91,7 +91,36 @@ static void test_periodic_progress(void)
  }while(__atomic_load_n(&progress_done,__ATOMIC_ACQUIRE)!=12);
  for(unsigned i=0;i<12;i++)assert(!pthread_join(workers[i],NULL));clear();
 }
+static unsigned line_count(const char *text){unsigned n=0;while((text=strchr(text,'\n'))){n++;text++;}return n;}
+static void test_mach_provenance_diagnostics(void)
+{
+ memset(mach_construct_samples,0,sizeof(mach_construct_samples));memset(mach_validate_samples,0,sizeof(mach_validate_samples));clear();
+ requested=0;strcpy(process.p_comm,"SpringBoard");
+ b2l_diag_mach_construct(1,0x283f,0xfffffffe,12,0x1234,0,0);assert(!used);
+ requested=1;process64=0;b2l_diag_mach_construct(1,0,0,0,0,0,0);assert(!used);process64=1;
+ strcpy(process.p_comm,"SpringBoardX");b2l_diag_mach_construct(1,0,0,0,0,0,0);assert(!used);
+ strcpy(process.p_comm,"SpringBoard");
+ b2l_diag_mach_construct(0x123,0x283f,0xfffffffe,12,0x1234,0,0);
+ assert(strstr(output,"name=0x123 flags=0x283f parent=0xfffffffe type=12 port=0x1234 label=0x0 result=0"));clear();
+ b2l_diag_mach_validate(0x123,0x456,10,0x333,0x555,12,0x1234,0,4,5);
+ assert(strstr(output,"service_port=0x333 service_label=0x555 connection_type=12 connection_port=0x1234 connection_label=0x0 labels=service-only stage=5 result=4"));clear();
+ b2l_diag_mach_validate(1,2,10,3,5,12,4,5,0,5);assert(strstr(output,"labels=same stage=5 result=0"));clear();
+ b2l_diag_mach_validate(1,2,10,3,5,12,4,6,4,5);assert(strstr(output,"labels=different"));clear();
+ b2l_diag_mach_validate(1,2,10,3,0,12,4,0,0,3);assert(strstr(output,"labels=none"));clear();
+ memset(mach_construct_samples,0,sizeof(mach_construct_samples));memset(mach_validate_samples,0,sizeof(mach_validate_samples));
+ for(unsigned role=0;role<2;role++){
+  strcpy(process.p_comm,role?"backboardd":"SpringBoard");
+  for(unsigned i=0;i<100;i++){b2l_diag_mach_construct(i,0,0,0,0,0,0);b2l_diag_mach_validate(i,0,0,0,0,0,0,0,4,0);}
+ }
+ assert(line_count(output)==2*(64+32)&&used<60000);clear();
+ assert(mach_construct_samples[0]==64&&mach_construct_samples[1]==64&&mach_validate_samples[0]==32&&mach_validate_samples[1]==32);
+ strcpy(process.p_comm,"SpringBoard");mach_construct_samples[0]=UINT32_MAX;mach_validate_samples[0]=UINT32_MAX;
+ b2l_diag_mach_construct(1,0,0,0,0,0,0);b2l_diag_mach_validate(1,0,0,0,0,0,0,0,4,0);
+ assert(!used&&mach_construct_samples[0]==UINT32_MAX&&mach_validate_samples[0]==UINT32_MAX);
+ pid=28;test_tid=41;now=1000000000;
+}
 int main(void){
+ test_mach_provenance_diagnostics();
  uint32_t *h=(void*)region;uint64_t ptr=(uintptr_t)region;
  requested=0;b2l_diag_ipc(0,ptr,64,0,1,0,0,0);assert(!used);
  requested=1;strcpy(process.p_comm,"other");b2l_diag_wait("syscall",1,2,3);assert(!used);

@@ -5,6 +5,9 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
+/* Keys below are already obfuscated scalar snapshots, never label pointers. */
+void b2l_diag_mach_construct(uint32_t,uint32_t,uint32_t,uint32_t,uint64_t,uint64_t,int);
+void b2l_diag_mach_validate(uint32_t,uint32_t,uint32_t,uint64_t,uint64_t,uint32_t,uint64_t,uint64_t,int,unsigned);
 void b2l_diag_progress(void);
 void b2l_diag_record(const char*,...) __attribute__((format(printf,1,2)));
 void b2l_diag_wait(const char*,uint64_t,uint64_t,uint64_t);
