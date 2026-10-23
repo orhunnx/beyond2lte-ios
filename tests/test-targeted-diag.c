@@ -28,6 +28,7 @@ struct backtrace_user_info {int btui_error;};
 #define BTUINFO_INIT {0}
 static unsigned backtrace_user(uintptr_t *bt,unsigned n,void *c,struct backtrace_user_info *i){(void)c;(void)i;assert(n>=2);bt[0]=0x100000000;bt[1]=0x180000000;return 2;}
 static unsigned backtrace(uintptr_t *bt,unsigned n,void *ctl,void *info){(void)ctl;(void)info;assert(n>=2);bt[0]=0xffff000000001000;bt[1]=0xffff000000002000;return 2;}
+#define SYS___mac_syscall 381
 #define SYS_csops 169
 #define SYS_csops_audittoken 170
 #define SYS_open 5
@@ -103,5 +104,21 @@ int main(void){
  assert(strstr(output,"tracked=1")&&strstr(output,"SONCEKBT")&&!strstr(output,"SONCEUBT"));
  b2l_diag_checkpoint();assert(strstr(output,"SONCEUBT"));old=used;
  b2l_diag_checkpoint();assert(used==old);
+ // Capture native launch-constraint results independently of generic error
+ // budget, without changing any user argument or result byte.
+ clear();strcpy(process.p_comm,"backboardd");memset(region,0,sizeof(region));
+ strcpy((char*)region,"AMFI");uint64_t *wire=(void*)(region+64);
+ wire[4]=ptr+256;wire[5]=16;wire[6]=ptr+1024;wire[7]=0x404;
+ memcpy(region+256,"constraint-data",16);uint32_t failure=3;memcpy(region+1024,&failure,4);
+ uint64_t macargs[3]={ptr,0x66,ptr+64};unsigned char snapshot[8192];memcpy(snapshot,region,sizeof(region));
+ b2l_diag_syscall(SYS___mac_syscall,45,macargs);
+ assert(strstr(output,"B2L AMFI:")&&strstr(output,"result_code=3")&&strstr(output,"part=amfi_constraint"));
+ assert(!memcmp(snapshot,region,sizeof(region)));clear();
+ macargs[2]=UINT64_MAX;b2l_diag_syscall(SYS___mac_syscall,14,macargs);
+ assert(strstr(output,"args_copy=14")&&!strstr(output,"part=amfi_args"));clear();
+ macargs[2]=ptr+64;wire[5]=16385;b2l_diag_syscall(SYS___mac_syscall,45,macargs);
+ assert(strstr(output,"constraint_bytes=16385")&&!strstr(output,"part=amfi_constraint"));clear();
+ for(unsigned i=0;i<12;i++)b2l_diag_syscall(SYS___mac_syscall,45,macargs);
+ assert(amfi_samples>=8);clear();b2l_diag_syscall(SYS___mac_syscall,45,macargs);assert(!strstr(output,"B2L AMFI:"));
  puts("PASS actual targeted diagnostics: gating, current-thread snapshots, limits, copy faults, OOL bounds, XPC admission and path errors");
 }

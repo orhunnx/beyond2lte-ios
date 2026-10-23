@@ -17,3 +17,8 @@ assert r['messages'][1]['parts']['inline']['copy_errors']==[68]
 extra=m.decode("B2L IPCRCV: pid=72 actual=0x1040 base=0x1000\nB2L SONCE: event=1 pid=72\nB2L SONCEUBT: event=1 frame=0 pc=0x123\n")
 assert len(extra['delivery_records'])==1 and len(extra['right_lifetime_records'])==2
 print('PASS IPC decoder: exact bytes/tokens, missing ranges and copy faults')
+
+amfi=m.decode("B2L AMFI: seq=3 pid=62 tid=1 call=0x66 error=103 args_copy=0 constraint_bytes=2 result_code=0\nB2L IPCDATA: seq=3 part=amfi_constraint captured=2\nB2L IPCDATA: seq=3 part=amfi_constraint off=0 hex=3000\n")
+assert amfi['messages'][0]['fields']['kind']=='amfi_constraint'
+assert amfi['messages'][0]['fields']['error']=='103'
+assert amfi['messages'][0]['parts']['amfi_constraint']['hex']=='3000'

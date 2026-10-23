@@ -240,10 +240,30 @@ void b2l_diag_checkpoint(void)
         return;
     }
 }
+/* Capture only bounded launch-constraint inputs/results, after native return.
+ * Diagnostics never alter the syscall result or claim a constraint match. */
+static unsigned amfi_samples;
+static void amfi_constraint(unsigned code,int error,const uint64_t *args,int r)
+{
+    if(r!=1||code!=SYS___mac_syscall||args[1]!=0x66)return;
+    char policy[8];size_t n=0;
+    if(copyinstr(args[0],policy,sizeof(policy),&n)||n!=5||strcmp(policy,"AMFI"))return;
+    if(__atomic_fetch_add(&amfi_samples,1,__ATOMIC_RELAXED)>=8)return;
+    uint64_t wire[8]={0};int e=copyin(args[2],wire,sizeof(wire));
+    uint32_t result=UINT32_MAX,cb=(uint32_t)wire[5],rb=(uint32_t)wire[7];int rc=-1;
+    if(!e&&rb>=4)rc=copyin(wire[6],&result,sizeof(result));
+    uint64_t seq=__atomic_add_fetch(&message_sequence,1,__ATOMIC_RELAXED);
+    b2l_diag_record("B2L AMFI: seq=%llu pid=%d tid=%llu call=0x66 error=%d args_copy=%d constraint_bytes=%u result_bytes=%u result_copy=%d result_code=%u\n",
+        seq,proc_selfpid(),thread_tid(current_thread()),error,e,cb,rb,rc,result);
+    if(e)return;
+    bytes(seq,"amfi_args",args[2],sizeof(wire));
+    if(cb&&cb<=16384)bytes(seq,"amfi_constraint",wire[4],cb<512?cb:512);
+}
 void b2l_diag_syscall(unsigned code,int error,const uint64_t *args)
 {
     b2l_diag_checkpoint();
     int r=role();if(r<0||!args)return;
+    amfi_constraint(code,error,args,r);
     struct process_sample *p=r>=2?container_sample(r):NULL;
     if(r>=2&&!p)return;
     /* Log successful AND failed native results, including the CDHash cases

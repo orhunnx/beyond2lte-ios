@@ -14,6 +14,10 @@ def decode(text):
         m=re.search(r'B2L IPC: seq=(\d+) (.*)',line)
         if m:
             seq=int(m[1]);fields=dict(re.findall(r'(\w+)=([^ ]+)',m[2]));messages[seq]=dict(sequence=seq,fields=fields,parts={})
+        m=re.search(r'B2L AMFI: seq=(\d+) (.*)',line)
+        if m:
+            seq=int(m[1]);fields=dict(re.findall(r'(\w+)=([^ ]+)',m[2]));fields['kind']='amfi_constraint'
+            messages[seq]=dict(sequence=seq,fields=fields,parts={})
         m=re.search(r'B2L IPCDATA: seq=(\d+) part=(\w+) (.*)',line)
         if m:
             seq=int(m[1]);p=parts.setdefault((seq,m[2]),dict(chunks={},copy_errors=[],capture_limit=None))

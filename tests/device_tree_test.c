@@ -67,6 +67,14 @@ static size_t decode(const unsigned char *buf, size_t size, size_t off,
         assert(strcmp(name,"chip-id") && strcmp(name,"unique-chip-id") && strcmp(name,"board-id"));
         if (!strcmp(name,"product-name")) assert(len==sizeof("Samsung Galaxy S10+") && !memcmp(buf+off,"Samsung Galaxy S10+",len));
         if (!strcmp(name,"device_type")) assert(len && buf[off+len-1]==0);
+        if (!strcmp(name,"device_type") && node_name && !strcmp(node_name,"disp0")) {
+            assert(depth==2 && !strcmp(parent_path,"/arm-io"));
+            /* Shipped IOMobileFramebuffer counts this raw data value before
+             * it starts IOService matching; a generic display is ignored. */
+            assert(len==sizeof("display-subsystem") && !memcmp(buf+off,"display-subsystem",len));
+        }
+        if (!strcmp(name,"device_type") && node_name && !strcmp(node_name,"framebuffer"))
+            assert(depth==1 && len==sizeof("display") && !memcmp(buf+off,"display",len));
         if (!strcmp(name,"cluster-type")) assert(len==4 && read32(buf+off)=='S');
         if ((!strcmp(name,"reg") || !strcmp(name,"cpu-id")) && len==4) { assert(node_name); assert(read32(buf+off)==(unsigned)(node_name[3]-'0')); }
         off += (len + 3) & ~3U; ++*properties;

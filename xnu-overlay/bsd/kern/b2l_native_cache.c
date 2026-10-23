@@ -134,7 +134,9 @@ static int undo_write(void*vp,uint64_t at,const void*in,size_t n){
 static int undo_sync(void*vp){return VNOP_FSYNC(vp,MNT_WAIT,vfs_context_current());}
 static int undo_open(int create){
  struct vnode_attr va;vfs_context_t ctx=vfs_context_current();
- int e=vnode_open("/private/var/db/.b2l-native-undo-v1",FREAD|FWRITE|O_NOFOLLOW|(create?O_CREAT:0),0600,
+ /* vnode_open maps NOFOLLOW_ANY to O_NOFOLLOW_ANY. Native vn_open_auth
+  * rejects combining it with O_NOFOLLOW; ANY already covers the final link. */
+ int e=vnode_open("/private/var/db/.b2l-native-undo-v1",FREAD|FWRITE|(create?O_CREAT:0),0600,
      VNODE_LOOKUP_NOFOLLOW_ANY,&undo_vp,ctx);
  if(e)return e;
  VATTR_INIT(&va);VATTR_WANTED(&va,va_data_size);VATTR_WANTED(&va,va_uid);VATTR_WANTED(&va,va_nlink);VATTR_WANTED(&va,va_mode);

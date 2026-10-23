@@ -152,7 +152,8 @@ int b2l_build_device_tree(void *buffer, b2l_size capacity,
     if (c->video.base) {
         struct node display = begin(&w, &arm_io, "disp0");
         text_prop(&w, &display, "compatible", "samsung,beyond2lte-display");
-        text_prop(&w, &display, "device_type", "display");
+        /* Native IOMobileFramebuffer counts only display-subsystem DT children. */
+        text_prop(&w, &display, "device_type", "display-subsystem");
         b2l_u64 display_regs[] = {c->video.base, c->video.row_bytes * c->video.height};
         prop(&w, &display, "reg", display_regs, sizeof(display_regs));
         end(&w, &display);
