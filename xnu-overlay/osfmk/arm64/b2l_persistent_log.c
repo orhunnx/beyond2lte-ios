@@ -2,6 +2,7 @@
 #include "b2l_persistent_log.h"
 #include <arm64/b2l_arm64e_compat.h>
 #include <arm64/b2l_early.h>
+#include <arm64/b2l_diag.h>
 #include <kern/thread.h>
 #include <kern/sched_prim.h>
 #include <kern/clock.h>
@@ -23,8 +24,10 @@ static void b2l_log_worker(void*argument __unused,wait_result_t result __unused)
          * ~30s distinguishes an awake scheduler from silent EL0 execution. */
         if(++reports==6){
             uint64_t v[4];b2l_arm64e_compat_snapshot(v);reports=0;
-            b2l_early_trace("B2L LIVE: traps=%llu done=%llu pid=%llu pc=0x%llx flush_errors=%llu last_error=%d\n",
-                v[0],v[1],v[2],v[3],__atomic_load_n(&flush_failures,__ATOMIC_RELAXED),__atomic_load_n(&last_error,__ATOMIC_RELAXED));
+            b2l_diag_progress();
+            uint64_t ns=0;absolutetime_to_nanoseconds(mach_absolute_time(),&ns);
+            b2l_early_trace("B2L LIVE: traps=%llu done=%llu pid=%llu pc=0x%llx flush_errors=%llu last_error=%d sec=%llu\n",
+                v[0],v[1],v[2],v[3],__atomic_load_n(&flush_failures,__ATOMIC_RELAXED),__atomic_load_n(&last_error,__ATOMIC_RELAXED),ns/1000000000);
         }
         assert_wait_timeout((event_t)&disk_writer,THREAD_UNINT,5,NSEC_PER_SEC);
         thread_block(THREAD_CONTINUE_NULL);

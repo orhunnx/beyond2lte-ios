@@ -8,14 +8,17 @@
 #include <string.h>
 #include <stdlib.h>
 #include <assert.h>
+#include <pthread.h>
+#include <sched.h>
 struct proc {char p_comm[32];};typedef struct proc *proc_t;
-static struct proc process={"SpringBoard"};static int requested=1;static uint64_t now=1000000000;
+static _Thread_local struct proc process={"SpringBoard"};static int requested=1;static uint64_t now=1000000000;
 static unsigned char region[8192];static char output[200000];static size_t used;
 static int process64=1;
 static proc_t current_proc(void){return &process;}static int proc_is64bit(proc_t p){(void)p;return process64;}
-static int pid=28;
+static _Thread_local int pid=28;
+static _Thread_local uint64_t test_tid=41;
 static int proc_selfpid(void){return pid;}static void *current_thread(void){return (void*)1;}
-static uint64_t thread_tid(void *p){(void)p;return 41;}
+static uint64_t thread_tid(void *p){(void)p;return test_tid;}
 static uint64_t mach_absolute_time(void){return now;}
 static void absolutetime_to_nanoseconds(uint64_t t,uint64_t *v){*v=t;}
 static int PE_parse_boot_argn(const char*n,void*p,int len){(void)n;(void)len;memcpy(p,&requested,4);return 1;}
@@ -50,6 +53,44 @@ static unsigned backtrace(uintptr_t *bt,unsigned n,void *ctl,void *info){(void)c
 #define SYS_renameatx_np 489
 #include "../xnu-overlay/bsd/kern/b2l_diag.c"
 static void clear(void){used=0;output[0]=0;memset(ipc_samples,0,sizeof(ipc_samples));memset(ipc_seen,0,sizeof(ipc_seen));memset(process_samples,0,sizeof(process_samples));memset(tcc_samples,0,sizeof(tcc_samples));raw_budget=4*1024*1024;memset(tcc_ipc_samples,0,sizeof(tcc_ipc_samples));tcc_raw_budget[0]=65536;tcc_raw_budget[1]=131072;memset(gui_bootstrap_ipc,0,sizeof(gui_bootstrap_ipc));}
+static unsigned progress_start,progress_done;
+static void *progress_writer(void *arg)
+{
+ unsigned i=(unsigned)(uintptr_t)arg;pid=1000+i;test_tid=1000+i;
+ while(!__atomic_load_n(&progress_start,__ATOMIC_ACQUIRE))sched_yield();
+ for(uint64_t n=1;n<4000;n++)progress_note(i%6,7,n,~n,n^UINT64_C(0x12345678),0);
+ __atomic_fetch_add(&progress_done,1,__ATOMIC_RELEASE);return NULL;
+}
+static void test_periodic_progress(void)
+{
+ memset(progress_slots,0,sizeof(progress_slots));progress_overflow=0;
+ strcpy(process.p_comm,"SpringBoard");pid=28;test_tid=41;now=601000000000;
+ requested=0;clear();b2l_diag_wait("mach-recv",0x70b,3,0);b2l_diag_progress();assert(!used);
+ requested=1;clear();b2l_diag_wait("mach-recv",0x70b,3,0);clear();
+ now=1801000000000;b2l_diag_progress();assert(strstr(output,"role=SpringBoard")&&strstr(output,"observed=601 age=1200 event=2"));clear();
+ // A quota-exhausted syscall still updates the resident last-observation cache.
+ sys_samples[0]=10000;uint64_t args[2]={9,10};b2l_diag_syscall(SYS_open,9,args);clear();b2l_diag_progress();
+ assert(strstr(output,"event=3 a=0x5 b=0x9 c=0xa")&&strstr(output,"error=9"));clear();
+ uint64_t v=progress_slots[0][0].version;progress_slots[0][0].version=v|1;
+ b2l_diag_progress();assert(strstr(output,"slots=0 busy=1"));clear();progress_slots[0][0].version=v;
+ // Capacity is explicit and bounded; no overwrite of a different thread's row.
+ memset(progress_slots,0,sizeof(progress_slots));
+ for(unsigned i=0;i<17;i++){test_tid=100+i;progress_note(0,1,i,0,0,0);}
+ assert(progress_overflow==1);test_tid=41;
+ // Concurrent publishers/readers must never combine fields from two versions.
+ memset(progress_slots,0,sizeof(progress_slots));progress_overflow=0;
+ pthread_t workers[12];for(unsigned i=0;i<12;i++)assert(!pthread_create(&workers[i],NULL,progress_writer,(void*)(uintptr_t)i));
+ __atomic_store_n(&progress_start,1,__ATOMIC_RELEASE);
+ do{
+  clear();b2l_diag_progress();char *line=output;
+  while((line=strstr(line,"B2L PROGRESS: "))){
+   unsigned long long sec,pidv,tid,observed,age,event,a,b,c,pc;char name[32];int error;
+   assert(sscanf(line,"B2L PROGRESS: sec=%llu role=%31s pid=%llu tid=%llu observed=%llu age=%llu event=%llu a=0x%llx b=0x%llx c=0x%llx pc=0x%llx error=%d",&sec,name,&pidv,&tid,&observed,&age,&event,&a,&b,&c,&pc,&error)==12);
+   assert(event==7&&pidv==tid&&b==~a&&c==(a^0x12345678));line++;
+  }
+ }while(__atomic_load_n(&progress_done,__ATOMIC_ACQUIRE)!=12);
+ for(unsigned i=0;i<12;i++)assert(!pthread_join(workers[i],NULL));clear();
+}
 int main(void){
  uint32_t *h=(void*)region;uint64_t ptr=(uintptr_t)region;
  requested=0;b2l_diag_ipc(0,ptr,64,0,1,0,0,0);assert(!used);
@@ -192,5 +233,6 @@ int main(void){
  for(unsigned i=0;i<8;i++)b2l_diag_syscall(SYS_kevent_qos,0,evargs);
  used=0;output[0]=0;b2l_diag_syscall(SYS_kevent_qos,0,evargs);assert(!used);
  now=301000000000;b2l_diag_syscall(SYS_kevent_qos,0,evargs);assert(strstr(output,"EVRESULT"));clear();
+ test_periodic_progress();
  puts("PASS actual targeted diagnostics: gating, current-thread snapshots, limits, copy faults, OOL bounds, XPC admission and path errors");
 }

@@ -9,7 +9,7 @@ import argparse,json,re
 from pathlib import Path
 
 def decode(text):
-    messages={};parts={};waits=[];errors=[];delivery=[];rights=[]
+    messages={};parts={};waits=[];errors=[];delivery=[];rights=[];progress=[]
     for line in text.splitlines():
         m=re.search(r'B2L IPC: seq=(\d+) (.*)',line)
         if m:
@@ -27,6 +27,7 @@ def decode(text):
                 try:p['chunks'][int(fields['off'])]=bytes.fromhex(fields['hex'])
                 except (ValueError,KeyError):p['copy_errors'].append('invalid hex record')
             if 'copyin_error' in fields:p['copy_errors'].append(int(fields.get('off',0)))
+        if 'B2L PROGRESS:' in line or 'B2L PROGRESS SUMMARY:' in line:progress.append(line)
         if 'B2L IPCRCV:' in line or 'B2L IPCPORT:' in line:delivery.append(line)
         if 'B2L SONCE:' in line or 'B2L SONCEKBT:' in line or 'B2L SONCEUBT:' in line:rights.append(line)
         if 'B2L WAIT:' in line or 'B2L WAITBT:' in line or 'B2L IOKITWAIT:' in line:waits.append(line)
@@ -41,7 +42,7 @@ def decode(text):
         target['parts'][kind]=dict(captured_bytes=len(data),capture_limit=p['capture_limit'],
             gaps=gaps,copy_errors=p['copy_errors'],hex=data.hex(),
             printable_tokens=[s.decode('ascii') for s in re.findall(rb'[ -~]{4,}',data)])
-    return dict(messages=[messages[k] for k in sorted(messages)],wait_records=waits,syscall_errors=errors,delivery_records=delivery,right_lifetime_records=rights,
+    return dict(messages=[messages[k] for k in sorted(messages)],wait_records=waits,syscall_errors=errors,delivery_records=delivery,right_lifetime_records=rights,progress_records=progress,
         limitations='Payloads are bounded prefixes; gaps/copy errors are explicit. Printable tokens are not decoded XPC semantics.')
 
 def main():

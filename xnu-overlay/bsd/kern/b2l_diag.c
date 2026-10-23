@@ -25,7 +25,7 @@ void b2l_diag_record(const char *fmt,...)
     if((size_t)n>=sizeof(text))text[used-1]='\n';
     b2l_log_append_bytes(text,used);
 }
-static int role(void)
+static int progress_role(void)
 {
     proc_t p=current_proc();if(!p||!proc_is64bit(p))return -1;
     int r=-1;
@@ -33,9 +33,74 @@ static int role(void)
     else if(!strcmp(p->p_comm,"backboardd"))r=1;
     else if(!strncmp(p->p_comm,"containermanage",14))r=2;
     else if(!strcmp(p->p_comm,"lsd"))r=3;
+    else if(!strcmp(p->p_comm,"assetsd"))r=4;
+    else if(!strcmp(p->p_comm,"tccd"))r=5;
     if(r<0)return -1;
     int requested=0;PE_parse_boot_argn("b2l_diag",&requested,sizeof(requested));
     return requested==1?r:-1;
+}
+static int role(void)
+{
+    int r=progress_role();return r<4?r:-1;
+}
+/* Resident last-observation cache, independent of payload/backtrace quotas.
+ * Only the current thread writes its own slot. All shared fields are atomic;
+ * the worker makes bounded version-checked copies, never remote stack reads,
+ * process lookups, thread suspension, allocation, or waits on an IPC lock.
+ * An old observation is not proof the thread is alive or still in that call. */
+#define B2L_PROGRESS_ROLES 6u
+#define B2L_PROGRESS_SLOTS 16u
+struct progress_slot {uint64_t tid,version,sec,pid,event,a,b,c,pc;int error;};
+static struct progress_slot progress_slots[B2L_PROGRESS_ROLES][B2L_PROGRESS_SLOTS];
+static uint64_t progress_overflow;
+static uint64_t progress_seconds(void)
+{
+    uint64_t ns=0;absolutetime_to_nanoseconds(mach_absolute_time(),&ns);return ns/1000000000;
+}
+static void progress_note(int r,unsigned event,uint64_t a,uint64_t b,uint64_t c,int error)
+{
+    if(r<0||r>=B2L_PROGRESS_ROLES)return;
+    uint64_t tid=thread_tid(current_thread());if(!tid)return;
+    for(unsigned i=0;i<B2L_PROGRESS_SLOTS;i++){
+        struct progress_slot *p=&progress_slots[r][i];
+        uint64_t old=__atomic_load_n(&p->tid,__ATOMIC_RELAXED);
+        if(old!=tid&&!(old==0&&__atomic_compare_exchange_n(&p->tid,&old,tid,0,__ATOMIC_RELAXED,__ATOMIC_RELAXED)))continue;
+        uint64_t v=__atomic_load_n(&p->version,__ATOMIC_RELAXED);
+        if((v&1)||!__atomic_compare_exchange_n(&p->version,&v,v+1,0,__ATOMIC_ACQ_REL,__ATOMIC_RELAXED))return;
+        arm_saved_state_t *regs=get_user_regs(current_thread());
+        __atomic_store_n(&p->sec,progress_seconds(),__ATOMIC_RELAXED);
+        __atomic_store_n(&p->pid,proc_selfpid(),__ATOMIC_RELAXED);
+        __atomic_store_n(&p->event,event,__ATOMIC_RELAXED);
+        __atomic_store_n(&p->a,a,__ATOMIC_RELAXED);__atomic_store_n(&p->b,b,__ATOMIC_RELAXED);__atomic_store_n(&p->c,c,__ATOMIC_RELAXED);
+        __atomic_store_n(&p->pc,regs?(uint64_t)get_saved_state_pc(regs):0,__ATOMIC_RELAXED);
+        __atomic_store_n(&p->error,error,__ATOMIC_RELAXED);
+        __atomic_store_n(&p->version,v+2,__ATOMIC_RELEASE);return;
+    }
+    __atomic_fetch_add(&progress_overflow,1,__ATOMIC_RELAXED);
+}
+void b2l_diag_progress(void)
+{
+    int requested=0;PE_parse_boot_argn("b2l_diag",&requested,sizeof(requested));if(requested!=1)return;
+    static const char *const names[]={"SpringBoard","backboardd","container","lsd","assetsd","tccd"};
+    uint64_t now=progress_seconds();unsigned records=0,busy=0;
+    for(unsigned r=0;r<B2L_PROGRESS_ROLES;r++)for(unsigned i=0;i<B2L_PROGRESS_SLOTS;i++){
+        struct progress_slot *p=&progress_slots[r][i],q={0};bool valid=false;
+        for(unsigned attempt=0;attempt<3;attempt++){
+            uint64_t v=__atomic_load_n(&p->version,__ATOMIC_ACQUIRE);
+            if(!v)break;if(v&1)continue;
+#define B2L_PROGRESS_LOAD(field) q.field=__atomic_load_n(&p->field,__ATOMIC_RELAXED)
+            B2L_PROGRESS_LOAD(tid);B2L_PROGRESS_LOAD(sec);B2L_PROGRESS_LOAD(pid);B2L_PROGRESS_LOAD(event);
+            B2L_PROGRESS_LOAD(a);B2L_PROGRESS_LOAD(b);B2L_PROGRESS_LOAD(c);B2L_PROGRESS_LOAD(pc);B2L_PROGRESS_LOAD(error);
+#undef B2L_PROGRESS_LOAD
+            __atomic_thread_fence(__ATOMIC_ACQUIRE);
+            if(v==__atomic_load_n(&p->version,__ATOMIC_RELAXED)){valid=true;break;}
+        }
+        if(!valid){if(__atomic_load_n(&p->version,__ATOMIC_RELAXED))busy++;continue;}
+        if(!q.tid||!q.pid)continue;
+        b2l_diag_record("B2L PROGRESS: sec=%llu role=%s pid=%llu tid=%llu observed=%llu age=%llu event=%llu a=0x%llx b=0x%llx c=0x%llx pc=0x%llx error=%d\n",
+            now,names[r],q.pid,q.tid,q.sec,now>=q.sec?now-q.sec:0,q.event,q.a,q.b,q.c,q.pc,q.error);records++;
+    }
+    b2l_diag_record("B2L PROGRESS SUMMARY: sec=%llu slots=%u busy=%u overflow=%llu\n",now,records,busy,__atomic_load_n(&progress_overflow,__ATOMIC_RELAXED));
 }
 struct sample_slot {uint64_t tid,last;unsigned count,window;};
 static struct sample_slot slots[4][16];
@@ -43,7 +108,9 @@ static struct sample_slot slots[4][16];
  * which never returns still leaves its entry PC/stack in the persistent log. */
 void b2l_diag_wait(const char *kind,uint64_t a,uint64_t b,uint64_t c)
 {
-    int r=role();if(r<0)return;
+    int pr=progress_role();
+    progress_note(pr,!strcmp(kind,"syscall")?1:2,a,b,c,0);
+    int r=pr<4?pr:-1;if(r<0)return;
     uint64_t tid=thread_tid(current_thread()),ns=0;
     absolutetime_to_nanoseconds(mach_absolute_time(),&ns);
     uint64_t sec=ns/1000000000+1;
@@ -135,6 +202,7 @@ static void tcc_ipc(int rx,uint64_t addr,uint32_t n,uint32_t bits,int32_t id,
         bits=h[0];n=h[1];remote=h[2];local=h[3];id=(int32_t)h[5];
         if((bits&0x80000000u)&&n>=28&&!copyin(addr+24,h,4))count=h[0];
     }
+    progress_note(slot+4,rx?5:4,(uint32_t)id,remote,local,0);
     if(__atomic_fetch_add(&tcc_ipc_samples[slot][rx],1,__ATOMIC_RELAXED)>=(slot?256u:128u))return;
     uint64_t seq=__atomic_add_fetch(&message_sequence,1,__ATOMIC_RELAXED);
     b2l_diag_record("B2L IPC: seq=%llu dir=%s role=%d pid=%d tid=%llu id=0x%x bits=0x%x remote=0x%x local=0x%x bytes=%u descriptors=%u\n",
@@ -193,6 +261,7 @@ void b2l_diag_ipc(int rx,uint64_t addr,uint32_t n,uint32_t bits,int32_t id,
      * For MCM/lsd retain every numeric ID within a bounded per-process window;
      * do not infer request semantics from an ID or miss errors via an ID filter.
      * GUI admission stays at its existing small discovery/XPC limit. */
+    progress_note(r,rx?5:4,(uint32_t)id,remote,local,0);
     int window=r<2?gui_window():-1;
     if(r>=2){
         struct process_sample *p=container_sample(r);if(!p)return;
@@ -407,6 +476,7 @@ static void gui_event_result(int r,unsigned code,int error,const uint64_t *args)
 void b2l_diag_syscall(unsigned code,int error,const uint64_t *args)
 {
     b2l_diag_checkpoint();
+    progress_note(progress_role(),3,code,args?args[0]:0,args?args[1]:0,error);
     tcc_result(code,error,args);
     int r=role();if(r<0||!args)return;
     gui_event_result(r,code,error,args);
@@ -450,6 +520,7 @@ void b2l_diag_syscall(unsigned code,int error,const uint64_t *args)
 void b2l_diag_service(const char *className,const char *matchName,uint64_t timeout)
 {
     int r=role();if(r<0||r>1)return;
+    progress_note(r,6,timeout,0,0,0);
     static unsigned samples[2];
     if(__atomic_fetch_add(&samples[r],1,__ATOMIC_RELAXED)>=64)return;
     b2l_diag_record("B2L IOKITWAIT: pid=%d tid=%llu class=%.96s name=%.96s timeout_ns=%llu\n",

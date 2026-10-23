@@ -5,6 +5,7 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
+void b2l_diag_progress(void);
 void b2l_diag_record(const char*,...) __attribute__((format(printf,1,2)));
 void b2l_diag_wait(const char*,uint64_t,uint64_t,uint64_t);
 void b2l_diag_ipc(int,uint64_t,uint32_t,uint32_t,int32_t,uint32_t,uint32_t,uint32_t);
