@@ -64,7 +64,10 @@ The real DEVELOPMENT ARM64 B2L kernel builds successfully.
 79737aff531a2035eb7be2db5377a80b5dc49a1991ca249da040dee79bcc707e.
 The verified 0064 Android firmware/loader prefix is reused byte for byte.
 
-Installation is pending the S10+ recovery USB connection. The next runtime
-capture must establish the actual Photos authorization response and render
-server discovery completion. This build is not a claim that assetsd or the
-home UI is already fixed on the device.
+The connected R58M33609TR beyond2lte recovery identity and BOOT capacity were
+checked. Full previous BOOT was backed up and its image prefix matched 0064.
+Only BOOT was written; full image-prefix readback matched the SHA-256 above
+and reboot was requested. Backup and receipt remain under ignored out/0065.
+The next runtime capture must establish the actual Photos authorization
+response and render server discovery completion. This installation is not a
+claim that assetsd or the home UI is already fixed on the device.
