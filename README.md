@@ -3,9 +3,11 @@
 Boot Apple's open source XNU kernel on the Samsung Galaxy S10+ SM-G975F
 (`beyond2lte`, abbreviated **B2L**, Exynos 9820).
 
-The first milestone is kernel entry, framebuffer console output and real timer
-interrupt delivery on the device. iOS userspace and SpringBoard are later
-milestones. An IPSW is not required for this initial kernel boot image.
+The port boots XNU and iOS userspace on the physical device. SpringBoard UI
+has appeared, and all eight CPUs have passed timer and cross-CPU interrupt
+checks. This is an experimental bring-up: UI responsiveness, service stability
+and hardware coverage remain incomplete. An IPSW is needed for iOS userspace,
+but not for a standalone kernel/console boot.
 
 ## Boot chain
 
@@ -17,19 +19,51 @@ changes, standalone EFI applications and packaging scripts. ACPI and Windows
 implementation files are not copied here. The XNU firmware profile omits ACPI
 and selects the XNU loader as its default boot application. U-Boot is not used.
 
+## Device support and implementation
+
+Latest runtime evidence: **0082**. **0083 is built and installed with a matching
+BOOT readback hash**, but its new fixes and software identity still need a device
+run. **Verified** means observed on this S10+, **Partial** means working with
+known limits, and **Pending** means implemented/tested without runtime acceptance.
+Historical build notes below retain the status at the time of each experiment.
+
+| Component | Device status | How it works / current limits |
+| --- | --- | --- |
+| Boot chain and XNU startup | Verified | S-Boot loads the packaged UEFI firmware. The embedded EFI loader reads XNU from the BOOT trailer, builds Apple `boot_args`/device tree and hands control to XNU. |
+| CPU, scheduler and interrupts | Verified: 8/8 CPUs | Four Cortex-A55, two Cortex-A75 and two Samsung M4 cores run through the B2L platform driver, GICv2 and architected timers. Per-CPU timers and bidirectional SGI1/xcall checks pass; the kernel uses an explicit generic ARMv8 target. See [0082](docs/build-0082.md). |
+| Native UFS storage | Verified | XNU accesses the Exynos UFS controller directly after the EFI handoff, with GPT partition discovery, bounded reads/writes, flush and readback. Storage is not emulated by a host computer. |
+| Root filesystem | Verified: read/write | The Apple OSS HFS driver mounts the journaled HFS root inside USERDATA and performs journal replay. This port uses HFS rather than native iOS APFS. |
+| ARM64e userspace | Partial | Kernel traps emulate supported instructions missing on Exynos, including authenticated control flow and LDAPR. This allows real launchd, dyld and iOS services to execute; it does not provide hardware pointer-authentication security or universal instruction coverage. |
+| Persistent native-code cache | Verified | Four workers learn eligible executed instructions and commit checked A/B records to a roughly 5.52 GiB SYSTEM cache file. A 1.5 MiB RAM hot window and disk index avoid keeping the whole file in RAM. On the next normal boot, XNU applies matching pages to the HFS root before launchd, archives undo data and reclaims applied cells. This is selective reuse, not a complete offline ARM64e conversion. See [cache lifecycle](docs/native-cache.md). |
+| Display and SpringBoard UI | Partial | Native QuartzCore software rendering submits IOSurfaces; the B2L framebuffer path copies supported BGRA layers to physical scanout using the CPU. Apple logo and SpringBoard/lock-screen UI have appeared, but interaction remains very slow and crashes have occurred. See [CPU presentation](docs/build-0061.md). |
+| GPU acceleration | Not implemented | There is no working Mali graphics driver for this iOS stack. Visible frames currently use the CPU presentation path. |
+| Touchscreen | Partial; 0083 fix pending | The native sec_ts/HSI2C driver forwards touch events through the B2L HID bridge to backboardd. Events and touch-stream attachment are observed. 0083 replaces the old 104-byte digitizer wire layout with the native iOS 26 160-byte layout to address the measured backboardd crash. |
+| Physical buttons | Partial | GPIO input becomes HID consumer events for power/volume; Bixby currently maps to Home. The power-off overlay has been observed. Button events do not imply working audio or complete power management. |
+| Kernel and iOS logs | Verified | Framed kernel records persist in a separate 16 MiB SYSTEM tail. Native tracev3, UUIDText, timesync and crash reports can be exported from recovery and decoded offline; redacted/missing strings and uncommitted panic-tail records remain possible. |
+| AMFI, entitlements and containers | Partial | Scoped B2L development providers expose original identity/entitlement metadata and selected native API contracts. They do not establish Apple's production signing chain. 0083 adds exact pinned `extensions.plist` detached-data admission to target the ExtensionKit/DataMigrator retry storm; runtime acceptance is pending. |
+| Sandbox / Photos access | Partial; 0083 fix pending | Development extension capabilities track issuer, target, consumer and lifetime. 0083 grows token/handle storage in chunks to address the observed ENOSPC/Photos failure. This does not implement full production sandbox enforcement or grant blanket TCC access. See [0083](docs/build-0083.md). |
+| KeyStore / passcode state | Development only | A volatile no-passcode KeyStore supplies the limited startup and lock-state contracts used by this unencrypted HFS environment. It is not a SEP, hardware-backed key storage or encrypted iOS data protection. See [KeyStore scope](docs/development-keystore.md) and [lock-state correction](docs/build-0071.md). |
+| Watchdog service | Partial | IOWatchdog accepts the supported userspace check-ins. Hardware watchdog reset/recovery is not implemented by this service. |
+| Software product identity | Pending: 0083 | `hw.product`/`hw.machine` now advertise `iPhone17,2`; `/buttons/home-button-type=2` selects no physical Home button. Samsung driver matching is retained. Previously, the unknown product fell back to the iPod class. The displayed identity still needs runtime confirmation. |
+| System suspend / resume | Not implemented | Deep system sleep is disabled to avoid entering unsupported CPU halt/resume paths. Display blanking and interrupt-driven CPU idle are separate; battery life and sustained thermal behavior are not validated. |
+| WiFi | Address metadata only | The loader privately supplies this device's real WiFi address to MobileGestalt, avoiding a known discovery timeout. There is no working WiFi networking driver in this iOS port; the address is not committed to the repository. |
+| Bluetooth, cellular and audio | Not validated | No working Bluetooth, modem/call or speaker/microphone path is claimed. Installing an iPhone IPSW or advertising its product identity does not add these hardware drivers. |
+| USB / ADB | Recovery only | Logs and BOOT updates use Android recovery's USB/ADB stack. A working iOS USB gadget/ADB connection is not provided by XNU. |
+
 ## Source baseline
 
 - [XNU `rel/xnu-12377`](https://github.com/apple-oss-distributions/xnu/tree/rel/xnu-12377),
   pinned to `ac9718fb1af618d5ce8678d0dc6e8a58f252216f`.
-- Generic ARMv8-A with crypto instructions and 4 KiB pages; the current
-  target uses one Cortex-A55 CPU. The isolated two-core 0032 experiment reset
-  early; 0033 restores the proven single-CPU topology.
+- Explicit generic ARMv8-A with crypto instructions, PAN and 4 KiB pages.
+  The current target enables all eight Exynos 9820 CPUs; 0082 device output and
+  the recovered runtime log verify per-CPU timers and bidirectional SGI1.
 - GICv2 at `0x10101000` / `0x10102000`; virtual timer INTID 27.
 - Actual architected counter frequency read at runtime; expected 26 MHz.
 - Apple PAC, BTI, SPTM and PPL are not used by this initial B2L target.
 
-See [0033](docs/build-0033.md) and the [automatic native cache](docs/native-cache.md)
-for read-only EFI staging and journal-safe pre-init code-page reuse.
+See [0082](docs/build-0082.md), [0083](docs/build-0083.md) and the
+[automatic native cache](docs/native-cache.md) for the current CPU target,
+latest fixes, read-only EFI staging and journal-safe pre-init code-page reuse.
 
 ## Build and package status
 
@@ -39,17 +73,11 @@ firmware profile build locally. Packaging produces a single Android v1
 loader reads that payload through the existing firmware UFS service from GPT
 partition `BOOT`; no separate ESP or SYSTEM/USERDATA transfer is required.
 
-**The first kernel-boot milestone is achieved on the physical device: XNU owns
-its framebuffer console, completes VM startup and reaches BSD root discovery,
-registers its boot
-CPU, and receives real timer/self-SGI interrupts with timed scheduler wakeups.
-Build 0011 reaches a root-device wait for Apple_HFS without a panic. Native
-read-only UFS access is also verified on the device in build 0012. Build 0015
-mounts the populated native USERDATA HFS root read/write, then
-rejects the ARM64e launchd executable with EBADARCH. Later compatibility builds
-reach real iOS userspace; the recovered 0031 log confirms service startup but
-also repeated SpringBoard/user-manager crashes. A usable graphical session
-remains unverified.**
+**Physical-device progress now includes native read/write HFS, iOS userspace,
+visible SpringBoard UI and verified eight-core startup. Stable, responsive
+home-screen use remains unverified.** The table above is the current support
+snapshot; the chronological notes below document earlier bring-up milestones.
+
 [Build 0004](docs/build-0004.md) supplies the required 256-byte seed; its
 device result identified the next DT contract gap. [Build 0005](docs/build-0005.md)
 adds the required /chosen/memory-map and /defaults containers.
