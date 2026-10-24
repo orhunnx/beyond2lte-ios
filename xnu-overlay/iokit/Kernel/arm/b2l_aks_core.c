@@ -42,6 +42,24 @@ enum b2l_aks_result b2l_aks_dispatch(struct b2l_aks_client *s,
         if(c->scalar_input_count&&!system_handle(c->scalar_input[0]))return B2L_AKS_NOT_FOUND;
         if(c->scalar_output_capacity!=1)return B2L_AKS_BAD_ARGUMENT;
         r->scalars[0]=0;r->scalar_count=1;return B2L_AKS_SUCCESS;
+    case 17: /* aks_get_device_state: DER dictionary, not a C structure. */
+    case 35: /* aks_get_device_state_extended: same DER transport. */
+        if(c->scalar_input_count!=1||c->scalar_output_capacity||c->structure_input_size)
+            return B2L_AKS_BAD_ARGUMENT;
+        if(!system_handle(c->scalar_input[0]))return B2L_AKS_NOT_FOUND;
+        {
+            /* Native SBF maps sls=3 to Disabled (no passcode). Its decoder
+             * initializes omitted optional fields to zero. Report only the
+             * established state of our existing volatile no-passcode bag0;
+             * no keys, secrets, UUID, SEP or hardware state are invented.
+             * SET { SEQUENCE { UTF8String "sls", INTEGER 3 } }. */
+            static const uint8_t no_passcode[]={0x31,0x0a,0x30,0x08,0x0c,0x03,
+                's','l','s',0x02,0x01,0x03};
+            if(c->structure_output_capacity<sizeof(no_passcode))return B2L_AKS_NO_SPACE;
+            for(size_t i=0;i<sizeof(no_passcode);i++)r->structure[i]=no_passcode[i];
+            r->structure_size=sizeof(no_passcode);
+            return B2L_AKS_SUCCESS;
+        }
     case 7: /* aks_get_lock_state: 1 handle -> 1 state scalar, no structures. */
         if(c->scalar_input_count!=1||c->scalar_output_capacity!=1||
            c->structure_input_size||c->structure_output_capacity)return B2L_AKS_BAD_ARGUMENT;

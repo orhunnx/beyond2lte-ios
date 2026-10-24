@@ -11,11 +11,31 @@ B2LSecondaryTemplate:
     dc civac, x17
     dsb sy
     ldr x16, .Ltarget
-    br x16
+    b .Lcapture
     .quad 0x3130504d534c3242
 .Ltarget:
     .quad 0
 .Lentered:
     .quad 0
-    .quad 1
+    .quad 2
+/* Capture before the high physical branch, with no stack, calls or MMU. */
+.Lcapture:
+    adr x17, .Lidentity
+    mrs x15, CurrentEL
+    str x15, [x17]
+    mrs x15, MPIDR_EL1
+    str x15, [x17, #8]
+    mrs x15, MIDR_EL1
+    str x15, [x17, #16]
+    dc civac, x17
+    dsb sy
+    adr x17, .Lentered
+    mov x15, #2
+    str x15, [x17]
+    dc civac, x17
+    dsb sy
+    br x16
+.balign 128
+.Lidentity:
+    .quad 0, 0, 0
 B2LSecondaryTemplateEnd:

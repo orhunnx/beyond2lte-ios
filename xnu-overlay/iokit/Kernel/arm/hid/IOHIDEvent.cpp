@@ -31,6 +31,7 @@
 #pragma clang diagnostic pop
 #include "IOHIDEvent.h"
 #include "IOHIDEventData.h"
+#include "b2l_hid_wire.h"
 #include "IOHIDUsageTables.h"
 #include "IOHIDPrivateKeys.h"
 /* B2L: no <math.h> in the kernel; only NAN is used */
@@ -1548,7 +1549,7 @@ size_t IOHIDEvent::getLength()
 //==============================================================================
 IOByteCount IOHIDEvent::getLength(UInt32 * count)
 {
-    IOByteCount length = _data->size;
+    IOByteCount length = b2l_hid_wire_size(_data);
 
     length += sizeof(IOHIDSystemQueueElement);
 
@@ -1579,12 +1580,8 @@ IOByteCount IOHIDEvent::appendBytes(UInt8 * bytes, IOByteCount withLength)
 {
     IOByteCount size = 0;
 
-    size = _data->size;
-
-    if ( size > withLength )
-        return 0;
-
-    bcopy(_data, bytes, size);
+    size = b2l_hid_wire_write(_data, bytes, withLength);
+    if (!size) return 0;
 
     if ( _children )
     {
@@ -1679,14 +1676,19 @@ IOHIDEvent * IOHIDEvent::withBytes(     const void *            bytes,
             break;
         }
 
-        if (!event->initWithType(eventDataType, eventDataSize - sz) ||
-            eventDataSize != event->_data->size ||
-            (total - (attributeLength + offset)) < eventDataSize) {
+        bool digitizer = eventDataType == kIOHIDEventTypeDigitizer;
+        if ((digitizer && eventDataSize != sizeof(b2l_digitizer_wire)) ||
+            (total - (attributeLength + offset)) < eventDataSize ||
+            !event->initWithType(eventDataType, digitizer ? 0 : eventDataSize - sz) ||
+            (!digitizer && eventDataSize != event->_data->size)) {
             event->release();
             break;
         }
-        
-        bcopy(eventData, event->_data, event->_data->size);
+        if (digitizer) {
+            if (!b2l_hid_wire_read(eventData, eventDataSize, event->_data)) {
+                event->release(); break;
+            }
+        } else bcopy(eventData, event->_data, event->_data->size);
         event->_timeStamp = queueElement->timeStamp;
         event->_options = queueElement->options;
         event->_senderID = queueElement->senderID;
@@ -1737,38 +1739,17 @@ IOByteCount IOHIDEvent::readBytes(void * bytes, IOByteCount withLength)
     //bytes += sizeof(IOHIDSystemQueueElement);
     withLength -= sizeof(IOHIDSystemQueueElement);
 
-    return appendBytes((UInt8 *)queueElement->payload, withLength);
+    return sizeof(IOHIDSystemQueueElement) + appendBytes((UInt8 *)queueElement->payload, withLength);
 }
 
 OSData *IOHIDEvent::createBytes()
 {
-    OSData *result = NULL;
-    IOHIDSystemQueueElement queueElement = { 0 };
-    
-    result = OSData::withCapacity((unsigned int)getLength());
-    require(result, exit);
-    
-    queueElement.timeStamp         = _timeStamp;
-    queueElement.options           = _options;
-    queueElement.eventCount        = _eventCount;
-    queueElement.senderID          = _senderID;
-    queueElement.attributeLength   = 0;
-    
-    result->appendBytes(&queueElement, sizeof(queueElement));
-    result->appendBytes(_data, _data->size);
-    
-    require_quiet(_children, exit);
-    
-    for (unsigned int i = 0; i < _children->getCount(); i++) {
-        IOHIDEvent *child = (IOHIDEvent *)_children->getObject(i);
-        if (!child) {
-            continue;
-        }
-        
-        result->appendBytes(child->_data, child->_data->size);
-    }
-    
-exit:
+    size_t length = getLength();
+    void *bytes = IOMallocZeroData(length);
+    if (!bytes) return NULL;
+    size_t written = readBytes(bytes, length);
+    OSData *result = written == length ? OSData::withBytes(bytes, (unsigned int)length) : NULL;
+    IOFreeData(bytes, length);
     return result;
 }
 

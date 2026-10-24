@@ -4,8 +4,11 @@
  * an existing file class/path to a real issuer, optional target and consumer.
  * No VFS permissions, entitlements or code-signing state are changed here.
  * Caller gates this provider to unsigned B2L development mode. */
-#define B2L_EXT_TOKENS 256u
-#define B2L_EXT_HANDLES 1024u
+#define B2L_EXT_CHUNKS 256u
+#define B2L_EXT_TOKEN_CHUNK 64u
+#define B2L_EXT_HANDLE_CHUNK 256u
+#define B2L_EXT_TOKENS b2l_ext_token_capacity
+#define B2L_EXT_HANDLES b2l_ext_handle_capacity
 #define B2L_EXT_PATH 1024u
 #define B2L_EXT_TOKEN 73u
 /* Exact file-extension classes from shipped ContainerManagerCommon plists and
@@ -70,11 +73,47 @@ struct b2l_ext_handle_entry {
     unsigned token_index;
     bool used, ready;
 };
-static struct b2l_ext_token_entry b2l_ext_tokens[B2L_EXT_TOKENS];
-static struct b2l_ext_handle_entry b2l_ext_handles[B2L_EXT_HANDLES];
+static struct b2l_ext_token_entry b2l_ext_initial_tokens[B2L_EXT_TOKEN_CHUNK];
+static struct b2l_ext_handle_entry b2l_ext_initial_handles[B2L_EXT_HANDLE_CHUNK];
+static struct b2l_ext_token_entry *b2l_ext_token_chunks[B2L_EXT_CHUNKS] = { b2l_ext_initial_tokens };
+static struct b2l_ext_handle_entry *b2l_ext_handle_chunks[B2L_EXT_CHUNKS] = { b2l_ext_initial_handles };
+static unsigned b2l_ext_token_capacity = B2L_EXT_TOKEN_CHUNK;
+static unsigned b2l_ext_handle_capacity = B2L_EXT_HANDLE_CHUNK;
+#define B2L_EXT_TOKEN_AT(i) b2l_ext_token_chunks[(i) / B2L_EXT_TOKEN_CHUNK][(i) % B2L_EXT_TOKEN_CHUNK]
+#define B2L_EXT_HANDLE_AT(i) b2l_ext_handle_chunks[(i) / B2L_EXT_HANDLE_CHUNK][(i) % B2L_EXT_HANDLE_CHUNK]
 static uint64_t b2l_ext_serial;
 static LCK_GRP_DECLARE(b2l_ext_lock_group, "b2l_extensions");
 static LCK_SPIN_DECLARE(b2l_ext_lock, &b2l_ext_lock_group);
+
+/* Grow outside the spin lock. Stable chunks are retained until reboot and
+ * reused after release/exit. The hard ceiling bounds kernel memory (~21 MiB),
+ * rather than limiting the whole system to 256 live capabilities. */
+static int
+b2l_ext_grow(bool handles)
+{
+    unsigned width = handles ? B2L_EXT_HANDLE_CHUNK : B2L_EXT_TOKEN_CHUNK;
+    lck_spin_lock(&b2l_ext_lock);
+    unsigned before = handles ? b2l_ext_handle_capacity : b2l_ext_token_capacity;
+    lck_spin_unlock(&b2l_ext_lock);
+    if (before / width >= B2L_EXT_CHUNKS) return ENOSPC;
+    size_t bytes = width * (handles ? sizeof(struct b2l_ext_handle_entry) : sizeof(struct b2l_ext_token_entry));
+    void *chunk = kalloc_data(bytes, Z_WAITOK | Z_ZERO);
+    if (!chunk) return ENOMEM;
+    bool installed = false;
+    lck_spin_lock(&b2l_ext_lock);
+    if (handles && b2l_ext_handle_capacity == before) {
+        b2l_ext_handle_chunks[before / width] = chunk;
+        b2l_ext_handle_capacity += width;
+        installed = true;
+    } else if (!handles && b2l_ext_token_capacity == before) {
+        b2l_ext_token_chunks[before / width] = chunk;
+        b2l_ext_token_capacity += width;
+        installed = true;
+    }
+    lck_spin_unlock(&b2l_ext_lock);
+    if (!installed) kfree_data(chunk, bytes);
+    return 0;
+}
 
 static bool
 b2l_ext_canonical(const char *path)
@@ -113,9 +152,9 @@ b2l_ext_target(const struct b2l_ext_issue_args *a, uint64_t *identity)
 static void
 b2l_ext_drop_handle(unsigned index, bool retire)
 {
-    struct b2l_ext_handle_entry *h = &b2l_ext_handles[index];
+    struct b2l_ext_handle_entry *h = &B2L_EXT_HANDLE_AT(index);
     if (!h->used) return;
-    struct b2l_ext_token_entry *t = &b2l_ext_tokens[h->token_index];
+    struct b2l_ext_token_entry *t = &B2L_EXT_TOKEN_AT(h->token_index);
     if (t->used && t->serial == h->serial && t->refs) {
         t->refs--;
         if (!t->refs && (retire || t->consumed)) memset(t, 0, sizeof(*t));
@@ -175,19 +214,21 @@ b2l_ext_issue(proc_t process, user_addr_t argument)
         token[9 + 2 * i] = hex[random[i] & 15];
     }
     token[72] = 0;
-    unsigned slot = B2L_EXT_TOKENS;
+    unsigned slot;
     uint64_t serial = 0;
+retry_issue:
     lck_spin_lock(&b2l_ext_lock);
+    slot = B2L_EXT_TOKENS;
     for (unsigned i = 0; i < B2L_EXT_TOKENS; i++) {
-        if (b2l_ext_tokens[i].used && !strcmp(b2l_ext_tokens[i].token, token)) {
+        if (B2L_EXT_TOKEN_AT(i).used && !strcmp(B2L_EXT_TOKEN_AT(i).token, token)) {
             lck_spin_unlock(&b2l_ext_lock);
             b2l_ext_issue_trace(process, class_name, a.type, a.flags, EAGAIN);
             return EAGAIN;
         }
-        if (!b2l_ext_tokens[i].used && slot == B2L_EXT_TOKENS) slot = i;
+        if (!B2L_EXT_TOKEN_AT(i).used && slot == B2L_EXT_TOKENS) slot = i;
     }
     if (slot != B2L_EXT_TOKENS) {
-        struct b2l_ext_token_entry *t = &b2l_ext_tokens[slot];
+        struct b2l_ext_token_entry *t = &B2L_EXT_TOKEN_AT(slot);
         serial = ++b2l_ext_serial;
         if (!serial) serial = ++b2l_ext_serial;
         t->issuer = issuer; t->target = target; t->serial = serial;
@@ -195,10 +236,13 @@ b2l_ext_issue(proc_t process, user_addr_t argument)
         memcpy(t->token, token, sizeof(token));
         memcpy(t->path, path, strlen(path) + 1);
     }
+    bool full = slot == B2L_EXT_TOKENS;
     lck_spin_unlock(&b2l_ext_lock);
-    if (slot == B2L_EXT_TOKENS) {
-        b2l_ext_issue_trace(process, class_name, a.type, a.flags, ENOSPC);
-        return ENOSPC;
+    if (full) {
+        error = b2l_ext_grow(false);
+        if (!error) goto retry_issue;
+        b2l_ext_issue_trace(process, class_name, a.type, a.flags, error);
+        return error;
     }
     error = copyout(token, a.token, sizeof(token));
     /* Exit notification can run between target lookup and publication.
@@ -210,7 +254,7 @@ b2l_ext_issue(proc_t process, user_addr_t argument)
         if (!error && current_target != target) error = ESRCH;
     }
     lck_spin_lock(&b2l_ext_lock);
-    struct b2l_ext_token_entry *t = &b2l_ext_tokens[slot];
+    struct b2l_ext_token_entry *t = &B2L_EXT_TOKEN_AT(slot);
     if (t->used && t->serial == serial) {
         if (error) memset(t, 0, sizeof(*t));
         else t->ready = true;
@@ -238,37 +282,44 @@ b2l_ext_consume(proc_t process, user_addr_t argument)
     read_random(&handle, sizeof(handle));
     handle &= INT64_MAX;
     if (!handle) return EAGAIN;
-    unsigned ti = B2L_EXT_TOKENS, hi = B2L_EXT_HANDLES;
+    unsigned ti, hi;
     uint64_t serial = 0;
+retry_consume:
     lck_spin_lock(&b2l_ext_lock);
+    ti = B2L_EXT_TOKENS; hi = B2L_EXT_HANDLES;
     for (unsigned i = 0; i < B2L_EXT_HANDLES; i++) {
-        if (b2l_ext_handles[i].used && b2l_ext_handles[i].handle == handle) {
+        if (B2L_EXT_HANDLE_AT(i).used && B2L_EXT_HANDLE_AT(i).handle == handle) {
             lck_spin_unlock(&b2l_ext_lock); return EAGAIN;
         }
-        if (!b2l_ext_handles[i].used && hi == B2L_EXT_HANDLES) hi = i;
+        if (!B2L_EXT_HANDLE_AT(i).used && hi == B2L_EXT_HANDLES) hi = i;
     }
     for (unsigned i = 0; i < B2L_EXT_TOKENS; i++) {
-        struct b2l_ext_token_entry *t = &b2l_ext_tokens[i];
+        struct b2l_ext_token_entry *t = &B2L_EXT_TOKEN_AT(i);
         if (t->used && t->ready && !strcmp(t->token, token)) { ti = i; break; }
     }
     if (ti == B2L_EXT_TOKENS) error = ENOENT;
-    else if (b2l_ext_tokens[ti].target && b2l_ext_tokens[ti].target != owner) error = EPERM;
-    else if (hi == B2L_EXT_HANDLES) error = ENOSPC;
+    else if (B2L_EXT_TOKEN_AT(ti).target && B2L_EXT_TOKEN_AT(ti).target != owner) error = EPERM;
+    else if (hi == B2L_EXT_HANDLES) {
+        lck_spin_unlock(&b2l_ext_lock);
+        error = b2l_ext_grow(true);
+        if (!error) goto retry_consume;
+        return error;
+    }
     else {
-        struct b2l_ext_token_entry *t = &b2l_ext_tokens[ti];
+        struct b2l_ext_token_entry *t = &B2L_EXT_TOKEN_AT(ti);
         serial = t->serial; t->refs++;
-        b2l_ext_handles[hi] = (struct b2l_ext_handle_entry){handle, owner, serial, ti, true, false};
+        B2L_EXT_HANDLE_AT(hi) = (struct b2l_ext_handle_entry){handle, owner, serial, ti, true, false};
     }
     lck_spin_unlock(&b2l_ext_lock);
     if (error) return error;
     error = copyout(&handle, a.handle, sizeof(handle));
     lck_spin_lock(&b2l_ext_lock);
-    struct b2l_ext_handle_entry *h = &b2l_ext_handles[hi];
+    struct b2l_ext_handle_entry *h = &B2L_EXT_HANDLE_AT(hi);
     if (h->used && h->handle == handle && h->serial == serial) {
         if (error) b2l_ext_drop_handle(hi, false);
         else {
             h->ready = true;
-            b2l_ext_tokens[h->token_index].consumed = true;
+            B2L_EXT_TOKEN_AT(h->token_index).consumed = true;
         }
     } else if (!error) error = ESRCH;
     lck_spin_unlock(&b2l_ext_lock);
@@ -294,9 +345,9 @@ b2l_ext_release(proc_t process, int operation, user_addr_t argument)
     error = ENOENT;
     lck_spin_lock(&b2l_ext_lock);
     for (unsigned i = 0; i < B2L_EXT_HANDLES; i++) {
-        struct b2l_ext_handle_entry *h = &b2l_ext_handles[i];
+        struct b2l_ext_handle_entry *h = &B2L_EXT_HANDLE_AT(i);
         if (!h->used || !h->ready || h->owner != owner) continue;
-        struct b2l_ext_token_entry *t = &b2l_ext_tokens[h->token_index];
+        struct b2l_ext_token_entry *t = &B2L_EXT_TOKEN_AT(h->token_index);
         if (a.path && !strcmp(path, "/") && !b2l_ext_root_class(t->class_id)) continue;
         if ((a.handle && h->handle == a.handle) || (a.path && !strcmp(t->path, path))) {
             b2l_ext_drop_handle(i, true); error = 0;
@@ -330,11 +381,11 @@ b2l_extension_process_exit(proc_t process)
     uint64_t identity = proc_uniqueid(process);
     lck_spin_lock(&b2l_ext_lock);
     for (unsigned i = 0; i < B2L_EXT_HANDLES; i++) {
-        struct b2l_ext_handle_entry *h = &b2l_ext_handles[i];
+        struct b2l_ext_handle_entry *h = &B2L_EXT_HANDLE_AT(i);
         if (h->used && h->owner == identity) b2l_ext_drop_handle(i, true);
     }
     for (unsigned i = 0; i < B2L_EXT_TOKENS; i++) {
-        struct b2l_ext_token_entry *t = &b2l_ext_tokens[i];
+        struct b2l_ext_token_entry *t = &B2L_EXT_TOKEN_AT(i);
         if (t->used && (t->target == identity || (!t->refs && t->issuer == identity))) {
             memset(t, 0, sizeof(*t));
         }

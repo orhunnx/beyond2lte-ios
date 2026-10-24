@@ -72,6 +72,14 @@ bool b2l_amfi_is_platform(proc_t process)
     void*e=proc_copy_ent(process);bool result=b2l_ent_platform(e);
     b2l_ent_release(e);return result;
 }
+bool b2l_amfi_cache_entitled(proc_t process)
+{
+    if (!b2l_amfi_active() || !b2l_amfi_is_platform(process)) return false;
+    void *e = proc_copy_ent(process);
+    bool allowed = b2l_ent_bool(e, "com.apple.private.amfi.can-check-trust-cache");
+    b2l_ent_release(e);
+    return allowed;
+}
 int b2l_amfi_proc_copy_cdhash(proc_t process,uint8_t out[20],uint8_t*type)
 {
  if(out)memset(out,0,20);if(type)*type=0;if(!out||!type)return EINVAL;

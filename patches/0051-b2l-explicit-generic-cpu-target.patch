@@ -1,0 +1,11 @@
+--- a/makedefs/MakeInc.def
++++ b/makedefs/MakeInc.def
+@@ -92,7 +92,7 @@
+ MACHINE_FLAGS_ARM64_T8132 = -DARM64_BOARD_CONFIG_T8132			-mcpu=apple-m4
+ MACHINE_FLAGS_ARM64_T8142 = -DARM64_BOARD_CONFIG_T8142 			-mcpu=apple-m4+memtag+predres2
+ 
+-MACHINE_FLAGS_ARM64_B2L = -DARM64_BOARD_CONFIG_B2L -march=armv8-a+crypto
++MACHINE_FLAGS_ARM64_B2L = -DARM64_BOARD_CONFIG_B2L -mcpu=generic -march=armv8-a+crypto -Xclang -target-feature -Xclang +pan
+ 
+ MACHINE_FLAGS_ARM64_VMAPPLE = -DARM64_BOARD_CONFIG_VMAPPLE              -march=armv8.5a+sme2
+ 

@@ -1,0 +1,30 @@
+--- a/iokit/conf/files
++++ b/iokit/conf/files
+@@ -181,3 +181,5 @@
+ 
+ iokit/Kernel/arm/B2LInput.cpp optional iokitcpp b2l
+ iokit/Kernel/arm/B2LSecTsParser.c optional b2l
++
++iokit/Kernel/arm/B2LAMFI.cpp optional iokitcpp b2l
+--- a/iokit/conf/Makefile.template
++++ b/iokit/conf/Makefile.template
+@@ -259,3 +259,5 @@
+ 
+ # CPU callbacks can run with IRQs/preemption disabled; never borrow SIMD.
+ B2LCPU.cpo_CFLAGS_ADD += -mgeneral-regs-only
++
++B2LAMFI.cpo_CFLAGS_ADD += -mgeneral-regs-only
+--- a/iokit/KernelConfigTables.cpp
++++ b/iokit/KernelConfigTables.cpp
+@@ -79,6 +79,11 @@
+     "     'IOMatchCategory' = IOWatchdog;"
+     "   },"
+     "   {'IOClass'=B2LInput;'IOProviderClass'=IOResources;'IOMatchCategory'=B2LInput;},"
++    "   {"
++    "     'IOClass' = AppleMobileFileIntegrity;"
++    "     'IOProviderClass' = IOResources;"
++    "     'IOMatchCategory' = AppleMobileFileIntegrity;"
++    "   },"
+ #endif
+     "   {"
+     "     'IOClass'         = IOPanicPlatform;"

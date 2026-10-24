@@ -34,10 +34,39 @@ def sha256(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def make_payload_header(kernel_size):
+def read_wifi_mac(path):
+    """Read a private local file; never return its value in error text."""
+    import re
+    text = path.read_text().strip()
+    if not re.fullmatch(r"(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}", text):
+        raise ValueError("WiFi MAC file must contain exactly six colon-separated octets")
+    mac = bytes.fromhex(text.replace(":", ""))
+    if not any(mac) or mac[0] & 1:
+        raise ValueError("WiFi MAC must be a nonzero unicast address")
+    return mac
+
+
+def wifi_metadata(mac=None):
+    if mac is None:
+        return bytes(32)
+    if len(mac) != 6 or not any(mac) or mac[0] & 1:
+        raise ValueError("WiFi metadata requires six nonzero unicast address octets")
+    return b"B2LWIFI1" + mac + bytes(18)
+
+
+def check_wifi_metadata(field):
+    if field == bytes(32):
+        return False
+    if len(field) != 32 or field[:8] != b"B2LWIFI1" or any(field[14:]):
+        raise ValueError("invalid optional BOOT WiFi metadata")
+    wifi_metadata(field[8:14])
+    return True
+
+
+def make_payload_header(kernel_size, wifi_mac=None):
     """Supply the full XNU boot seed directly from the host operating system."""
     header = struct.pack("<8sIIQQ", MAGIC, PAYLOAD_VERSION, HEADER_SIZE, kernel_size, HEADER_SIZE)
-    return header + os.urandom(SEED_SIZE) + bytes(32)
+    return header + os.urandom(SEED_SIZE) + wifi_metadata(wifi_mac)
 
 
 def volume_contains_loader(data, loader):
@@ -117,12 +146,14 @@ def check_boot(path):
         raise ValueError("invalid BOOT trailer header")
     if size < 4096 or size > 128 * 1024 * 1024 or trailer + offset + size != len(data):
         raise ValueError("invalid BOOT trailer size")
+    wifi_present = check_wifi_metadata(data[trailer + 288:trailer + 320])
     macho = trailer + offset
     if struct.unpack_from("<III", data, macho) != (0xfeedfacf, 0x0100000c, 0):
         raise ValueError("XNU must be a thin, plain ARM64 Mach-O image")
     return {"android_kernel_bytes": kernel_size, "trailer_file_offset": trailer,
             "xnu_bytes": size, "boot_bytes": len(data), "ramdisk_bytes": 0,
-            "payload_version": PAYLOAD_VERSION, "seed_bytes": SEED_SIZE}
+            "payload_version": PAYLOAD_VERSION, "seed_bytes": SEED_SIZE,
+            "wifi_mac_present": wifi_present}
 
 
 def main():
@@ -132,6 +163,7 @@ def main():
     p.add_argument("--kernel", type=Path, help="Plain ARM64 mach.development.b2l")
     p.add_argument("--loader", type=Path, help="XnuLoader.efi embedded in that FD")
     p.add_argument("--output-dir", type=Path)
+    p.add_argument("--wifi-mac-file", type=Path, help="Private local six-octet WiFi MAC; keep file and personalized image outside Git")
     p.add_argument("--max-image-bytes", type=lambda x: int(x, 0), help="Explicit offline packaging size ceiling")
     p.add_argument("--boot-partition-bytes", type=lambda x: int(x, 0), help="Confirmed target BOOT capacity, if available")
     p.add_argument("--clang", default=shutil.which("clang"))
@@ -185,7 +217,8 @@ def main():
     expected_trailer = PAGE + align(len(shim) + len(fd) + len(dtb))
     if len(boot) != expected_trailer:
         p.error("unexpected Android BOOT component padding")
-    header = make_payload_header(len(kernel))
+    wifi_mac = read_wifi_mac(a.wifi_mac_file) if a.wifi_mac_file else None
+    header = make_payload_header(len(kernel), wifi_mac)
     final_size = len(boot) + len(header) + len(kernel)
     limit = min(a.max_image_bytes, a.boot_partition_bytes or a.max_image_bytes)
     if final_size > limit:

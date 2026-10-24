@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-2-Clause
- * Six-CPU A55/A75, non-SPTM XNU ARM64 handoff for the existing beyond2lte UEFI.
+ * Eight-CPU A55/A75/M4, non-SPTM XNU ARM64 handoff for the existing beyond2lte UEFI.
  * No partition writes, persistent variables, synthetic entropy, or PAC emulation.
  */
 #include <Uefi.h>
@@ -224,12 +224,12 @@ static EFI_STATUS AllocateSecondary(VOID *Map, EFI_PHYSICAL_ADDRESS *Page)
         if(EFI_ERROR(Status) || b2l_validate_secondary(Map,Size,Stride,Actual,EfiLoaderCode)){
             gBS->FreePages(Actual,4);return EFI_COMPROMISED_DATA;
         }
-        if((UINTN)B2LSecondaryTemplateEnd-(UINTN)B2LSecondaryTemplate!=64 ||
+        if((UINTN)B2LSecondaryTemplateEnd-(UINTN)B2LSecondaryTemplate!=B2L_SECONDARY_TEMPLATE_BYTES ||
             !IdentityRange(Actual,B2L_SECONDARY_BYTES)){
             gBS->FreePages(Actual,4);return EFI_UNSUPPORTED;
         }
         ZeroMem((VOID*)(UINTN)Actual,B2L_SECONDARY_BYTES);
-        CopyMem((VOID*)(UINTN)Actual,B2LSecondaryTemplate,64);
+        CopyMem((VOID*)(UINTN)Actual,B2LSecondaryTemplate,B2L_SECONDARY_TEMPLATE_BYTES);
         if(!b2l_secondary_template((const volatile unsigned long long*)(UINTN)Actual)){
             gBS->FreePages(Actual,4);return EFI_COMPROMISED_DATA;
         }
@@ -265,14 +265,16 @@ EFI_STATUS EFIAPI UefiMain(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
     int ParseResult;
     (VOID)SystemTable;
     ZeroMem(&Dt, sizeof(Dt));
-    Print(L"beyond2lte XNU ARM64 loader (six CPU, low entry)\r\n");
+    Print(L"beyond2lte XNU ARM64 loader (eight CPU, M4 trial)\r\n");
     if (ReadCurrentEl() != 1) {
         Print(L"Unsupported CurrentEL: EL1 is required.\r\n");
         return EFI_UNSUPPORTED;
     }
-    Status = B2lLoadBootPayload(&Kernel, &KernelSize, Dt.random_seed);
+    Status = B2lLoadBootPayload(&Kernel, &KernelSize, Dt.random_seed, Dt.wifi_mac);
     if (!EFI_ERROR(Status)) {
         PayloadSeed = TRUE;
+        Dt.has_wifi_mac = b2l_wifi_mac_valid(Dt.wifi_mac);
+        if (Dt.has_wifi_mac) Print(L"B2L: private WiFi address metadata supplied to /chosen\r\n");
         if (!EFI_ERROR(B2lGetBootUfsLun(&Dt.boot_ufs_lun))) Dt.has_boot_ufs_lun = 1;
         else Print(L"B2L: BOOT UFS device path unrecognized; native storage will remain unavailable.\r\n");
     }
@@ -347,7 +349,7 @@ EFI_STATUS EFIAPI UefiMain(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
     /* Bit zero requests a physical framebuffer mapping even after VM init. */
     Args->video.base |= 1;
     AsciiStrCpyS(Args->command_line, sizeof(Args->command_line),
-                "-v debug=0x14e serial=3 cpus=6 keepsyms=1 -enable_kprintf_spam "
+                "-v debug=0x14e serial=3 cpus=8 keepsyms=1 -enable_kprintf_spam "
                 "rd=b2l-userdata b2l_root_rw=1 b2l_unsealed_root=1 b2l_arm64e_compat=1 cs_enforcement_disable=1 "
                 "launchd_unsecure_cache=1 b2l_system_log=1 b2l_native_cache=1 b2l_diag=1 exception_log_max_pid=4096");
     Entry = Base + Mach.entry - Mach.virtual_base;

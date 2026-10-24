@@ -1,0 +1,250 @@
+--- a/pexpert/pexpert/arm64/board_config.h
++++ b/pexpert/pexpert/arm64/board_config.h
+@@ -307,7 +307,7 @@
+ #ifdef ARM64_BOARD_CONFIG_B2L
+ #include <pexpert/arm64/B2L.h>
+ #define MAX_L2_CLINE                   7
+-#define MAX_CPUS                       6
++#define MAX_CPUS                       8
+ #define MAX_CPU_CLUSTERS               1
+ #define NO_XNU_PLATFORM_ERROR_HANDLER  1
+ #endif
+--- a/pexpert/arm/pe_fiq.c
++++ b/pexpert/arm/pe_fiq.c
+@@ -63,7 +63,7 @@
+ void
+ b2l_send_ipi(unsigned cpu)
+ {
+-    if (cpu >= 6) panic("B2L GIC: invalid IPI CPU");
++    if (cpu >= MAX_CPUS) panic("B2L GIC: invalid IPI CPU");
+     unsigned target = __atomic_load_n(&b2l_gic_targets[cpu], __ATOMIC_ACQUIRE);
+     unsigned sgir = b2l_gic_sgir(target);
+     if (!sgir) panic("B2L GIC: target CPU has not initialized its interface");
+@@ -76,7 +76,7 @@
+ b2l_irq_record(unsigned intid)
+ {
+     unsigned cpu = cpu_number();
+-    if (cpu >= 6) panic("B2L GIC: interrupt on unexpected CPU");
++    if (cpu >= MAX_CPUS) panic("B2L GIC: interrupt on unexpected CPU");
+     if (intid == B2L_TIMER_INTID)
+         __atomic_add_fetch(&b2l_timer_irqs[cpu], 1, __ATOMIC_RELAXED);
+     else if (intid == 1)
+@@ -86,14 +86,14 @@
+ uint64_t
+ b2l_cpu_irq_count(unsigned cpu, boolean_t timer)
+ {
+-    if (cpu >= 6) return 0;
++    if (cpu >= MAX_CPUS) return 0;
+     return __atomic_load_n(timer ? &b2l_timer_irqs[cpu] : &b2l_signal_irqs[cpu], __ATOMIC_ACQUIRE);
+ }
+ 
+ bool
+ b2l_cpu_ipi_ready(unsigned cpu)
+ {
+-    if (cpu >= 6 || !b2l_cpu_irq_count(cpu, FALSE)) return false;
++    if (cpu >= MAX_CPUS || !b2l_cpu_irq_count(cpu, FALSE)) return false;
+     return b2l_cpu_signal_ready(cpu);
+ }
+ 
+@@ -101,7 +101,7 @@
+ b2l_irq_count(boolean_t timer)
+ {
+     uint64_t total = 0;
+-    for (unsigned i = 0; i < 6; ++i) total += b2l_cpu_irq_count(i, timer);
++    for (unsigned i = 0; i < MAX_CPUS; ++i) total += b2l_cpu_irq_count(i, timer);
+     return total;
+ }
+ 
+@@ -109,7 +109,7 @@
+ pe_init_fiq(void)
+ {
+     unsigned cpu = cpu_number();
+-    if (cpu >= 6) panic("B2L GIC: unsupported CPU topology");
++    if (cpu >= MAX_CPUS) panic("B2L GIC: unsupported CPU topology");
+     if (b2l_gicd == 0 && cpu != 0)
+         panic("B2L GIC: CPU0 did not publish controller mappings");
+     if (b2l_gicd == 0) {
+@@ -148,7 +148,7 @@
+     unsigned target = 0, other = 0;
+     for (unsigned offset = 0; !target && offset < 32; offset += 4)
+         target = b2l_gic_target_word(b2l_gic_read(b2l_gicd, 0x800 + offset));
+-    for (unsigned i = 0; i < 6; ++i)
++    for (unsigned i = 0; i < MAX_CPUS; ++i)
+         if (i != cpu) other |= __atomic_load_n(&b2l_gic_targets[i], __ATOMIC_ACQUIRE);
+     if (!b2l_gic_valid_target(target, other))
+         panic("B2L GIC: cpu=%u invalid target=0x%x other=0x%x", cpu, target, other);
+--- a/osfmk/arm64/cpu.c
++++ b/osfmk/arm64/cpu.c
+@@ -1322,7 +1322,7 @@
+ bool
+ b2l_prepare_cpu_start(unsigned cpu)
+ {
+-    if (cpu == 0 || cpu >= 6) return false;
++    if (cpu == 0 || cpu >= MAX_CPUS) return false;
+     cpu_data_t *cdp = CpuDataEntries[cpu].cpu_data_vaddr;
+     if (!cdp || !ResetHandlerData.cpu_data_entries || !cdp->cpu_reset_handler)
+         return false;
+@@ -1331,7 +1331,7 @@
+     CleanPoC_DcacheRegion((vm_offset_t)&cpu_ttep, sizeof(cpu_ttep));
+     CleanPoC_DcacheRegion((vm_offset_t)&CpuDataEntries[cpu], sizeof(CpuDataEntries[cpu]));
+     CleanPoC_DcacheRegion((vm_offset_t)cdp, sizeof(*cdp));
+-    extern uint64_t b2l_smp_mailbox[6][16];
++    extern uint64_t b2l_smp_mailbox[MAX_CPUS][16];
+     CleanPoC_DcacheRegion((vm_offset_t)b2l_smp_mailbox[cpu], sizeof(b2l_smp_mailbox[cpu]));
+     __builtin_arm_dsb(DSB_SY);
+     return true;
+@@ -1340,7 +1340,7 @@
+ bool
+ b2l_cpu_signal_ready(unsigned cpu)
+ {
+-    if (cpu >= 6) return false;
++    if (cpu >= MAX_CPUS) return false;
+     cpu_data_t *cdp = CpuDataEntries[cpu].cpu_data_vaddr;
+     return cdp && !(os_atomic_load(&cdp->cpu_signal, acquire) & SIGPdisabled);
+ }
+@@ -1355,10 +1355,10 @@
+ #endif
+ 
+ #if defined(B2L)
+-uint64_t b2l_smp_mailbox[6][16] __attribute__((aligned(128)));
++uint64_t b2l_smp_mailbox[MAX_CPUS][16] __attribute__((aligned(128)));
+ uint64_t b2l_smp_progress(unsigned cpu)
+ {
+-    if (cpu == 0 || cpu >= 6) return 0;
++    if (cpu == 0 || cpu >= MAX_CPUS) return 0;
+     /* Each secondary writes its own dedicated line; CPU0 never dirties it. */
+     __asm__ volatile("dc ivac, %0; dsb sy" :: "r"(b2l_smp_mailbox[cpu]) : "memory");
+     return *(volatile uint64_t *)b2l_smp_mailbox[cpu];
+@@ -1371,7 +1371,7 @@
+ {
+     int cpu = b2l_cpu_from_mpidr(__builtin_arm_rsr64("MPIDR_EL1"));
+     if (cpu <= 0) return;
+-    extern uint64_t b2l_smp_mailbox[6][16];
++    extern uint64_t b2l_smp_mailbox[MAX_CPUS][16];
+     uint64_t *m = b2l_smp_mailbox[cpu];
+     uintptr_t sp; __asm__ volatile("mov %0, sp" : "=r"(sp));
+     m[1] = (uintptr_t)__builtin_return_address(0); m[2] = arg; m[3] = sp;
+@@ -1381,18 +1381,18 @@
+ }
+ bool b2l_smp_rejected(void)
+ {
+-    extern uint64_t b2l_smp_mailbox[6][16];
++    extern uint64_t b2l_smp_mailbox[MAX_CPUS][16];
+     __asm__ volatile("dc ivac, %0; dsb sy" :: "r"(b2l_smp_mailbox[0]) : "memory");
+     return __atomic_load_n(&b2l_smp_mailbox[0][10], __ATOMIC_ACQUIRE) == 254;
+ }
+ void b2l_smp_dump(void)
+ {
+-    extern uint64_t b2l_smp_mailbox[6][16];
++    extern uint64_t b2l_smp_mailbox[MAX_CPUS][16];
+     extern void b2l_early_trace(const char *, ...);
+     if (b2l_smp_rejected())
+         b2l_early_trace("B2L REJECT: MPIDR=0x%llx MIDR=0x%llx\n",
+             b2l_smp_mailbox[0][8], b2l_smp_mailbox[0][9]);
+-    for (unsigned cpu = 1; cpu < 6; ++cpu) {
++    for (unsigned cpu = 1; cpu < MAX_CPUS; ++cpu) {
+         uint64_t stage = b2l_smp_progress(cpu);
+         if (!stage) continue;
+         volatile uint64_t *m = b2l_smp_mailbox[cpu];
+--- a/osfmk/arm64/machine_routines.c
++++ b/osfmk/arm64/machine_routines.c
+@@ -1452,7 +1452,7 @@
+ #if defined(B2L)
+     int target = b2l_cpu_from_mpidr(mpidr_el1_value);
+     if (target < 0) panic("B2L CPU: unsupported local affinity 0x%llx", mpidr_el1_value);
+-    mpidr_el1_value = (uint32_t)target;
++    mpidr_el1_value = (uint32_t)b2l_cpu_firmware_id((unsigned)target);
+ #endif
+ 	cpu_id = ml_get_cpu_number((uint32_t)mpidr_el1_value);
+ 
+@@ -1472,7 +1472,7 @@
+ #if defined(B2L)
+     int target = b2l_cpu_from_mpidr(mpidr_el1_value);
+     if (target < 0) panic("B2L CPU: unsupported local affinity 0x%llx", mpidr_el1_value);
+-    mpidr_el1_value = (uint32_t)target;
++    mpidr_el1_value = (uint32_t)b2l_cpu_firmware_id((unsigned)target);
+ #endif
+ 	cluster_id = ml_get_cluster_number((uint32_t)mpidr_el1_value);
+ 
+--- a/osfmk/arm64/start.s
++++ b/osfmk/arm64/start.s
+@@ -177,9 +177,19 @@
+     adrp x16, EXT(b2l_smp_mailbox)@page
+     add x16, x16, EXT(b2l_smp_mailbox)@pageoff
+     mrs x17, MPIDR_EL1
++    tst x17, #0xfe
++    b.ne .Lb2l_stage_done\@
++    tbz x17, #0, .Lb2l_stage_arm\@
++    ubfx x17, x17, #8, #8
++    cmp x17, #2
++    b.hs .Lb2l_stage_done\@
++    add x17, x17, #6
++    b .Lb2l_stage_index\@
++.Lb2l_stage_arm\@:
+     ubfx x17, x17, #8, #8
+     cmp x17, #6
+     b.hs .Lb2l_stage_done\@
++.Lb2l_stage_index\@:
+     add x16, x16, x17, lsl #7
+     str lr, [x16, #8]
+     str x0, [x16, #16]
+@@ -245,6 +255,8 @@
+ 	mrs		x15, MPIDR_EL1						// Load MPIDR to get CPU number
+ #if defined(B2L)
+     ubfx x0, x15, #8, #8
++    and x15, x15, #0xff
++    orr x0, x0, x15, lsl #8
+ #elif HAS_CLUSTER
+ 	and		x0, x15, #0xFFFF					// CPU number in Affinity0, cluster ID in Affinity1
+ #else
+@@ -408,16 +420,18 @@
+ 	mrs x1, CurrentEL
+ 	cmp x1, #4
+ 	b.ne Lb2l_secondary_bad_el
+-    /* EL1 Aff1 core index -> firmware/DT CPU number. Check all affinity
+-     * fields and actual implementer/part before touching any CPU data. */
++    /* Explicit EL1 affinity and MIDR gate, before CPU-data lookup.
++     * ARM raw0x000..0x500 -> FW0..5; M4 raw0x001/0x101 -> FW0x100/101. */
+     mrs x1, MPIDR_EL1
+-    tst x1, #0xff
+-    b.ne Lb2l_secondary_bad_affinity
+     ubfx x17, x1, #16, #8
+     cbnz x17, Lb2l_secondary_bad_affinity
+     ubfx x17, x1, #32, #8
+     cbnz x17, Lb2l_secondary_bad_affinity
++    and x16, x1, #0xff
++    cmp x16, #1
++    b.hi Lb2l_secondary_bad_affinity
+     ubfx x1, x1, #8, #8
++    cbnz x16, Lb2l_check_m4
+     sub x17, x1, #1
+     cmp x17, #5
+     b.hs Lb2l_secondary_bad_affinity
+@@ -433,6 +447,17 @@
+     b Lb2l_part_accepted
+ Lb2l_check_a75:
+     cmp x17, #B2L_A75_PART
++    b.ne Lb2l_secondary_bad_affinity
++    b Lb2l_part_accepted
++Lb2l_check_m4:
++    cmp x1, #2
++    b.hs Lb2l_secondary_bad_affinity
++    mrs x17, MIDR_EL1
++    ubfx x16, x17, #24, #8
++    cmp x16, #0x53
++    b.ne Lb2l_secondary_bad_affinity
++    ubfx x17, x17, #4, #12
++    cmp x17, #B2L_M4_PART
+     b.ne Lb2l_secondary_bad_affinity
+ Lb2l_part_accepted:
+     B2L_SMP_STAGE 1
+--- a/osfmk/arm64/Makefile
++++ b/osfmk/arm64/Makefile
+@@ -47,6 +47,7 @@
+ # Headers used to compile xnu
+ EXPORT_MD_LIST = \
+ 	b2l_arm64e_compat.h \
++	b2l_cpu_affinity.h \
+ 	b2l_early.h \
+ 	b2l_diag.h \
+ 	b2l_mach_filter.h \

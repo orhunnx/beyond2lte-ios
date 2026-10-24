@@ -1,0 +1,42 @@
+--- a/osfmk/kern/debug.c
++++ b/osfmk/kern/debug.c
+@@ -733,15 +733,17 @@
+ 
+ #if defined(__arm64__) && (DEVELOPMENT || DEBUG)
+ 	if (!PE_arm_debug_and_trace_initialized()) {
+-		/*
+-		 * In practice this can only happen if we panicked very early,
+-		 * when only the boot CPU is online and before it has finished
+-		 * initializing the debug and trace infrastructure. We're going
+-		 * to hang soon, so let's at least make sure the message passed
+-		 * to panic() is actually logged.
+-		 */
++		/* DebuggerWithContext passes no panic format or varargs for
++		 * DBOP_DEBUGGER. B2L can also enter here after boot because its
++		 * Apple debug/trace infrastructure remains unavailable. */
+ 		char buf[EARLY_PANIC_BUFLEN];
+-		vsnprintf(buf, EARLY_PANIC_BUFLEN, db_panic_str, *db_panic_args);
++		if (db_panic_str != NULL && db_panic_args != NULL) {
++			vsnprintf(buf, sizeof(buf), db_panic_str, *db_panic_args);
++		} else {
++			/* The debugger message is data, never a format string. */
++			snprintf(buf, sizeof(buf), "%s",
++			    db_message != NULL ? db_message : "Debugger entry (no message)");
++		}
+ 		paniclog_append_noflush("%s\n", buf);
+ 	}
+ #endif
+@@ -965,6 +967,13 @@
+ #endif
+ 	previous_interrupts_state = ml_set_interrupts_enabled(FALSE);
+ 	disable_preemption();
++
++#if defined(B2L)
++	/* Scalar-only, bounded diagnostics before debugger hooks can fault. */
++	b2l_early_trace("B2L DEBUGGER: reason=%u caller=0x%lx context=%u options=0x%llx message=%.160s\n",
++	    reason, debugger_caller, ctx != NULL, debugger_options_mask,
++	    message != NULL ? message : "(null)");
++#endif
+ 
+ 	/* track depth of debugger/panic entry */
+ 	CPUDEBUGGERCOUNT++;

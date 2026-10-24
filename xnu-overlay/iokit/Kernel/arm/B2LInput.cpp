@@ -26,6 +26,11 @@ class B2LInput : public IOService {
     volatile uint8_t *gpio,*i2c;
     bool stable[4],candidate[4],touch;
     unsigned debounce[4],failures,keyLogs,transferLogs,timeoutUS;
+    uint64_t pollCount,eventCount,updateCount,bulkCount,transferFailures;
+    uint64_t lastPollStart,lastDiagnostic,maxPollGapUS,maxPollWorkUS;
+    unsigned maxPending;
+    uint64_t transferTimeUS,maxTransferUS;
+    static uint64_t uptimeUS(){uint64_t ns=0;absolutetime_to_nanoseconds(mach_absolute_time(),&ns);return ns/1000;}
     uint8_t lastCommand;
     B2L_SEC_TS_POINTER pointer;
     static void poll(OSObject*,IOTimerEventSource*);
@@ -33,12 +38,23 @@ class B2LInput : public IOService {
     void w(unsigned off,uint32_t v){*(volatile uint32_t*)(i2c+off)=v;__asm__ volatile("dsb oshst":::"memory");}
     void quiesce(){w(0x20,0);w(0x24,r(0x24));w(0x44,r(0x44)&~(1u<<31));w(0,r(0)&~0xc0u);}
     void resetController(){w(0,r(0)|(1u<<31));w(0,r(0)&~(1u<<31));w(0,8);w(8,0x00ffffff);w(0x40,r(0x40)|(1u<<31));}
-    void transferFailure(bool read,unsigned n,unsigned at){
-        if(transferLogs++<12)b2l_diag_record("B2L TOUCH: cmd=0x%x read=%d bytes=%u done=%u timeout_us=%u ctrl=0x%x int=0x%x err=0x%x trans=0x%x fifo=0x%x addr=0x%x fs1=0x%x fs2=0x%x\n",
-            lastCommand,read,n,at,timeoutUS,r(0),r(0x24),r(0x2c),r(0x50),r(0x30),r(0x70),r(0x60),r(0x64));
+    void transferFailure(bool read,unsigned n,unsigned at,unsigned budgetUS,uint64_t elapsedUS){
+        if(transferLogs++<12)b2l_diag_record("B2L TOUCH: cmd=0x%x read=%d bytes=%u done=%u timeout_us=%u elapsed_us=%llu ctrl=0x%x int=0x%x err=0x%x trans=0x%x fifo=0x%x addr=0x%x fs1=0x%x fs2=0x%x\n",
+            lastCommand,read,n,at,budgetUS,elapsedUS,r(0),r(0x24),r(0x2c),r(0x50),r(0x30),r(0x70),r(0x60),r(0x64));
+    }
+    void noteTransfer(uint64_t begin){
+        uint64_t elapsed=uptimeUS()-begin;
+        transferTimeUS+=elapsed;
+        if(elapsed>maxTransferUS)maxTransferUS=elapsed;
     }
     bool message(uint8_t *buf,unsigned n,bool read){
         if(!buf||!n||n>256)return false;
+        /* A loop count is not a time limit: MMIO, interrupts and scheduling
+         * also consume time. Preserve the probe budget and give a 31-record
+         * bulk the original 100 ms transport budget; small runtime transfers
+         * use 20 ms. Check the monotonic clock even while draining a FIFO. */
+        const unsigned budgetUS=(n>8 && timeoutUS<100000)?100000:timeoutUS;
+        const uint64_t begin=uptimeUS();
         w(0x48,r(0x48)&~(1u<<31));
         unsigned level=n<8?n:8;
         w(4,3u|(level<<4)|(level<<16));
@@ -48,16 +64,28 @@ class B2LInput : public IOService {
         w(0x24,r(0x24));w(0x20,0x80);
         w(0x44,(r(0x44)&~0x8003ffffu)|0x80020000u|(read?0x10000u:0)|n);
         unsigned at=0;
-        for(unsigned t=0;t<timeoutUS;++t){
-            uint32_t fifo=r(0x30);
-            if(at<n){
-                if(read&&!(fifo&(1u<<24)))buf[at++]=(uint8_t)r(0x38);
-                else if(!read&&(fifo&0x7f)<16)w(0x34,buf[at++]);
+        while(uptimeUS()-begin<budgetUS){
+            unsigned before=at;
+            while(at<n && uptimeUS()-begin<budgetUS){
+                uint32_t fifo=r(0x30);
+                if(read){
+                    if(fifo&(1u<<24))break;
+                    buf[at++]=(uint8_t)r(0x38);
+                }else{
+                    if((fifo&0x7f)>=16)break;
+                    w(0x34,buf[at++]);
+                }
             }
-            if(at==n&&(r(0x24)&0x80)&&(read||(r(0x30)&0x100))){quiesce();return true;}
-            IODelay(1);
+            if(uptimeUS()-begin>=budgetUS)break;
+            if(at==n && (r(0x24)&0x80) && (read||(r(0x30)&0x100))){
+                quiesce();noteTransfer(begin);return true;
+            }
+            /* Do not stall between bytes already available in the FIFO. */
+            if(at==before || at==n)IODelay(1);
         }
-        transferFailure(read,n,at);resetController();quiesce();return false;
+        noteTransfer(begin);
+        transferFailure(read,n,at,budgetUS,uptimeUS()-begin);
+        resetController();quiesce();return false;
     }
     bool writeCommand(uint8_t *data,unsigned n){lastCommand=data[0];resetController();return message(data,n,false);}
     bool command(uint8_t cmd,uint8_t *data,unsigned n){lastCommand=cmd;resetController();return message(&cmd,1,false)&&message(data,n,true);}
@@ -126,6 +154,10 @@ bool B2LInput::start(IOService *provider){
 }
 void B2LInput::poll(OSObject *owner,IOTimerEventSource *sender){
     B2LInput *s=(B2LInput*)owner;
+    uint64_t begin=uptimeUS();
+    if(s->lastPollStart && begin-s->lastPollStart>s->maxPollGapUS)
+        s->maxPollGapUS=begin-s->lastPollStart;
+    s->lastPollStart=begin;++s->pollCount;
     const unsigned masks[4]={1u<<4,1u<<3,1u<<4,1u<<6};
     for(unsigned k=0;k<4;++k){
         unsigned off=k?4:0x44;
@@ -138,21 +170,50 @@ void B2LInput::poll(OSObject *owner,IOTimerEventSource *sender){
         }
     }
     if(s->touch){
-        bool ok=true;
-        for(unsigned i=0;i<4;++i){
-            uint8_t event[8]={0};
-            if(!s->command(0x60,event,sizeof(event))){ok=false;break;}
-            if(!event[0])break;
-            if(B2LSecTsParseEvent(event,&s->pointer)==B2LSecTsUpdated)
+        /* Same bounded READ_ONE / READ_ALL sequence as B2LTouchDxe. Read
+         * up to 32 FIFO records per tick instead of four individual commands.
+         * Deliver the first event before the bulk read so a failed bulk read
+         * cannot silently swallow a valid press/release already consumed. */
+        uint8_t events[32][B2L_SEC_TS_EVENT_SIZE]={{0}};
+        bool ok=s->command(0x60,events[0],B2L_SEC_TS_EVENT_SIZE);
+        if(ok && events[0][0]){
+            ++s->eventCount;
+            if(B2LSecTsParseEvent(events[0],&s->pointer)==B2LSecTsUpdated){
+                ++s->updateCount;
                 b2l_hid_touch(0,s->pointer.Active,s->pointer.X,s->pointer.Y);
-            if(!B2LSecTsRemainingEvents(event))break;
+            }
+            unsigned remaining=B2LSecTsRemainingEvents(events[0]);
+            if(remaining>s->maxPending)s->maxPending=remaining;
+            unsigned count=remaining<31?remaining:31;
+            if(count){
+                ++s->bulkCount;
+                ok=s->command(0x61,&events[1][0],count*B2L_SEC_TS_EVENT_SIZE);
+                if(ok)for(unsigned i=1;i<=count;++i){
+                    ++s->eventCount;
+                    if(B2LSecTsParseEvent(events[i],&s->pointer)==B2LSecTsUpdated){
+                        ++s->updateCount;
+                        b2l_hid_touch(0,s->pointer.Active,s->pointer.X,s->pointer.Y);
+                    }
+                }
+            }
         }
+        if(!ok)++s->transferFailures;
         if(ok)s->failures=0;
         else if(++s->failures>=3){
             s->touch=false;s->quiesce();
             b2l_hid_touch(0,0,s->pointer.X,s->pointer.Y);
             IOLog("B2L INPUT: sec_ts disabled after 3 transfer failures; GPIO remains active\n");
         }
+    }
+    uint64_t end=uptimeUS(),work=end-begin;
+    if(work>s->maxPollWorkUS)s->maxPollWorkUS=work;
+    if(end-s->lastDiagnostic>=10000000){
+        s->lastDiagnostic=end;
+        b2l_diag_record("B2L INPUT PERF: sec=%llu polls=%llu wire=%llu updates=%llu bulk=%llu max_pending=%u transfer_failures=%llu max_gap_us=%llu max_work_us=%llu max_transfer_us=%llu bus_us=%llu enabled=%d\n",
+            end/1000000,s->pollCount,s->eventCount,s->updateCount,s->bulkCount,
+            s->maxPending,s->transferFailures,s->maxPollGapUS,s->maxPollWorkUS,
+            s->maxTransferUS,s->transferTimeUS,s->touch);
+        s->maxPending=0;s->maxPollGapUS=0;s->maxPollWorkUS=0;s->maxTransferUS=0;
     }
     sender->setTimeoutMS(20);
 }

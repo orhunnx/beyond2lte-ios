@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: BSD-2-Clause
  * Exynos 9820 first-boot target. Generic ARMv8 instructions, no Apple PAC/BTI.
  * GICv2 and 26 MHz architected counter are described by the stock DTB.
- * SMP trial exposes MPIDR0..5 (four A55 and two A75); M4 cores stay absent.
+ * SMP trial adds the two M4 cores to the proven four A55 and two A75.
  */
 #ifndef _PEXPERT_ARM64_B2L_H
 #define _PEXPERT_ARM64_B2L_H

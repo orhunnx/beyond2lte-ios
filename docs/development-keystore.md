@@ -32,9 +32,15 @@ A5 provides the comparison design. Its broad selector success behavior and
 placeholder serialized bag are not copied. Current iOS argument shapes are
 checked independently. Device acceptance still requires a new runtime screen.
 
-The implemented external selectors are only 0, 7 and 14. Device-state DER
-queries 17/35 and notification registration remain unsupported. Numeric
-selector/result logs saturate globally after 24 calls and contain no payloads.
+Build0071 adds read-only device-state DER queries17/35 for the same opened,
+volatile bag0: one handle scalar, no structure input or scalar output, and a
+12-byte DER dictionary containing only `sls=3` (native Disabled/no-passcode).
+The native decoder defaults omitted optional fields to zero. Scalar7 retains
+its separate unlocked-since-boot bit4. See [0071 details](build-0071.md) for
+why the former unsupported response caused SpringBoard to display passcode UI.
+The implemented selectors are0,7,14,17,35. Notification registration and all
+cryptographic/persistent bag operations remain unsupported. Numeric
+selector/result logs saturate globally after24 calls and contain no payloads.
 
 ## Validation boundary
 

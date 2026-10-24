@@ -27,16 +27,17 @@ using kern_return_t=int;
 using thread_t=int;
 constexpr int KERN_SUCCESS=0;
 class B2LCPU;
-static B2LCPU *b2l_cpus[6];
+constexpr unsigned MAX_CPUS=8;
+static B2LCPU *b2l_cpus[MAX_CPUS];
 static unsigned providers_ready, registered_cpus, launched, announced;
 static unsigned current_cpu;
 static bool fail_launch;
-static std::vector<unsigned> order;
+static std::vector<unsigned> order,waited;
 static void (*scheduled)(void *, wait_result_t);
 static void b2l_early_trace(const char *, ...) {}
 [[noreturn]] static void panic(const char *, ...) { throw std::runtime_error("panic"); }
 static unsigned cpu_number() { return current_cpu; }
-static void ml_set_max_cpus(unsigned n) { assert(n==6 && order.empty()); ++announced; }
+static void ml_set_max_cpus(unsigned n) { assert(n==8 && order.empty()); ++announced; }
 static void thread_deallocate(thread_t) {}
 static void prepareSecondaryPage() { assert(announced==1 && order.empty()); }
 static int kernel_thread_start(void(*fn)(void*,wait_result_t),void*,thread_t *out) {
@@ -48,43 +49,45 @@ class B2LCPU {
 public:
  explicit B2LCPU(unsigned i):id(i){}
  bool publish(unsigned id);
- void registerProcessor() { assert(announced==1);order.push_back(id);++registered_cpus; }
+ void registerProcessor() { assert(announced==1);if(id>1)assert(!waited.empty()&&waited.back()==id-1);order.push_back(id);++registered_cpus; }
+ static void waitForStartup(unsigned id) {assert(order.size()==id+1);waited.push_back(id);}
  static void finishStartup(void*,wait_result_t);
 };
 bool B2LCPU::publish(unsigned id) {
 '''
 post = r'''
 int main() {
- unsigned perm[6]={0,1,2,3,4,5};
- B2LCPU objects[6]={B2LCPU(0),B2LCPU(1),B2LCPU(2),B2LCPU(3),B2LCPU(4),B2LCPU(5)};
+ unsigned perm[8]={0,1,2,3,4,5,6,7};
+ B2LCPU objects[8]={B2LCPU(0),B2LCPU(1),B2LCPU(2),B2LCPU(3),B2LCPU(4),B2LCPU(5),B2LCPU(6),B2LCPU(7)};
  unsigned tested=0;
  do {
-  std::fill_n(b2l_cpus,6,nullptr);providers_ready=registered_cpus=launched=announced=0;
-  order.clear();scheduled=nullptr;current_cpu=0;
-  for(unsigned i=0;i<6;++i) {
+  std::fill_n(b2l_cpus,8,nullptr);providers_ready=registered_cpus=launched=announced=0;
+  order.clear();waited.clear();scheduled=nullptr;current_cpu=0;
+  for(unsigned i=0;i<8;++i) {
    assert(objects[perm[i]].publish(perm[i]));
    assert(order.empty() && !registered_cpus);
-   assert(launched==(i==5?1U:0U));
+   assert(launched==(i==7?1U:0U));
   }
   assert(scheduled);scheduled(nullptr,0);
-  assert(registered_cpus==6 && (order==std::vector<unsigned>{0,1,2,3,4,5}));
+  assert(registered_cpus==8 && (order==std::vector<unsigned>{0,1,2,3,4,5,6,7}));
+  assert((waited==std::vector<unsigned>{1,2,3,4,5,6,7}));
   unsigned before=providers_ready;
   try {objects[0].publish(0);assert(false);}catch(const std::runtime_error&){}
   assert(providers_ready==before && launched==1);
   ++tested;
- } while(std::next_permutation(perm,perm+6));
- assert(tested==720);
+ } while(std::next_permutation(perm,perm+8));
+ assert(tested==40320);
  // Reject incomplete topology and a coordinator running on an unexpected CPU.
- providers_ready=5;order.clear();
+ providers_ready=7;order.clear();
  try {B2LCPU::finishStartup(nullptr,0);assert(false);}catch(const std::runtime_error&){}
- assert(order.empty());providers_ready=6;current_cpu=1;
+ assert(order.empty());providers_ready=8;current_cpu=1;
  try {B2LCPU::finishStartup(nullptr,0);assert(false);}catch(const std::runtime_error&){}
  assert(order.empty());
  // Scheduling failure must not silently claim CPU registration completion.
- std::fill_n(b2l_cpus,6,nullptr);providers_ready=registered_cpus=launched=0;
+ std::fill_n(b2l_cpus,8,nullptr);providers_ready=registered_cpus=launched=0;
  scheduled=nullptr;fail_launch=true;current_cpu=0;
- for(unsigned i=0;i<5;++i)assert(objects[i].publish(i));
- try {objects[5].publish(5);assert(false);}catch(const std::runtime_error&){}
+ for(unsigned i=0;i<7;++i)assert(objects[i].publish(i));
+ try {objects[7].publish(7);assert(false);}catch(const std::runtime_error&){}
  assert(!scheduled && !launched && !registered_cpus);
 }
 '''
@@ -94,4 +97,4 @@ with tempfile.TemporaryDirectory(prefix='b2l-smp-order-') as td:
     subprocess.run(['clang++','-std=c++17','-Wall','-Wextra','-Werror',
                     '-fsanitize=address,undefined',str(p/'test.cpp'),'-o',str(p/'test')],check=True)
     subprocess.run([str(p/'test')],check=True)
-print('Actual SMP coordinator: 720 arrival orders, duplicates, bad topology/CPU and launch failure passed')
+print('Actual SMP coordinator: 40320 arrival orders, duplicates, bad topology/CPU and launch failure passed')

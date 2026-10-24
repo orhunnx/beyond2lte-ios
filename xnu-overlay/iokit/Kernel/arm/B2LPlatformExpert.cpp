@@ -6,6 +6,8 @@
 #include <IOKit/IOPlatformExpert.h>
 #include <IOKit/IODeviceTreeSupport.h>
 #include <IOKit/IOLib.h>
+#include <libkern/c++/OSData.h>
+#include <pexpert/pexpert.h>
 
 class B2LPlatformExpert : public IODTPlatformExpert {
 	OSDeclareDefaultStructors(B2LPlatformExpert);
@@ -24,8 +26,15 @@ B2LPlatformExpert::start(IOService *provider)
 	if (!IODTPlatformExpert::start(provider)) {
 		return false;
 	}
+    IORegistryEntry *chosen=IORegistryEntry::fromPath("/chosen",gIODTPlane);
+    OSData *wifi=chosen?OSDynamicCast(OSData,chosen->getProperty("mac-address-wifi0")):nullptr;
+    IOLog("B2L: WiFi MAC metadata %s (address redacted)\n",wifi&&wifi->getLength()==6?"present, 6 bytes":"absent");
+    if(chosen)chosen->release();
+    uint32_t sleepDisabled=0;
+    if(PE_get_default("sleep-disabled",&sleepDisabled,sizeof(sleepDisabled)) && sleepDisabled)
+        IOLog("B2L PM: system sleep disabled until CPU suspend/resume support is available\n");
 	registerService();
-	IOLog("B2L: platform expert registered\n");
+	IOLog("B2L: platform expert registered; software product iPhone17,2, Samsung B2L hardware\n");
 	return true;
 }
 

@@ -42,6 +42,19 @@ int main(){
  uint64_t handle=0;a={};a.scalarInput=&handle;a.scalarInputCount=1;a.scalarOutput=&guarded[1];a.scalarOutputCount=1;
  assert(b2l_aks_external(&state,7,&a)==0&&guarded[1]==4);
  handle=1;a.scalarOutputCount=1;assert(b2l_aks_external(&state,7,&a)==kIOReturnNotFound);empty(a);
+ /* The actual adapter must copy only12 DER bytes, even for native4096 capacity. */
+ for(unsigned sel=17;sel<=35;sel+=18){
+  uint8_t bytes[4098];memset(bytes,0xa5,sizeof bytes);handle=0;
+  a={};a.scalarInput=&handle;a.scalarInputCount=1;a.structureOutput=bytes+1;a.structureOutputSize=4096;
+  assert(b2l_aks_external(&state,sel,&a)==0&&a.structureOutputSize==12&&!a.scalarOutputCount);
+  assert(bytes[0]==0xa5&&bytes[13]==0xa5&&bytes[4097]==0xa5);
+  assert(bytes[1]==0x31&&bytes[12]==3);
+  a.structureOutputSize=11;assert(b2l_aks_external(&state,sel,&a)==kIOReturnNoSpace);empty(a);
+  Descriptor wire;wire.length=12;a={};a.scalarInput=&handle;a.scalarInputCount=1;a.structureOutputDescriptor=&wire;
+  assert(b2l_aks_external(&state,sel,&a)==0&&a.structureOutputDescriptorSize==12&&a.structureOutputSize==0);
+  wire.shortWrite=true;a.structureOutputDescriptorSize=0;
+  assert(b2l_aks_external(&state,sel,&a)==kIOReturnNoSpace);empty(a);
+ }
  /* Missing buffers, oversized counts and all async paths fail before dispatch. */
  for(int k=0;k<10;k++){
    a={};a.scalarOutputCount=1;

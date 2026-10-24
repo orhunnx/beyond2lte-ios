@@ -2,6 +2,7 @@
 #ifndef B2L_DEVICE_TREE_H
 #define B2L_DEVICE_TREE_H
 #include "BootArgs.h"
+#include "BootMetadata.h"
 /* rel/xnu-12377 prng_random requires this full bootloader seed length. */
 #define B2L_SEED_BYTES 256U
 struct b2l_dt_config {
@@ -12,6 +13,8 @@ struct b2l_dt_config {
     b2l_u32 counter_frequency;
     b2l_u32 boot_ufs_lun, has_boot_ufs_lun;
     unsigned char random_seed[B2L_SEED_BYTES];
+    unsigned char wifi_mac[B2L_WIFI_MAC_BYTES];
+    b2l_u32 has_wifi_mac;
     struct b2l_boot_video video;
 };
 /* Apple flattened device tree: native little endian, property names 32 bytes,

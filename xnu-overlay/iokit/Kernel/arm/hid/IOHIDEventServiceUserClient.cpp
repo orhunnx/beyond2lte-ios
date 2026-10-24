@@ -635,6 +635,10 @@ void IOHIDEventServiceUserClient::enqueueEventGated( IOHIDEvent * event)
         if (result == false) {
             _lastDroppedEventTime = _lastEventTime;
             ++_droppedEventCount;
+            /* Bounded loss evidence; do not turn overload into a log storm. */
+            if (_droppedEventCount <= 8 || !(_droppedEventCount & (_droppedEventCount - 1)))
+                IOLog("B2L HID QUEUE: sender=0x%llx dropped=%u events=%llu type=%u\n",
+                    _owner->getRegistryEntryID(), _droppedEventCount, _eventCount, (unsigned)_lastEventType);
             IOHID_DEBUG(kIOHIDDebugCode_HIDEventServiceEnqueueFail, event->getTimeStampOfType(kIOHIDEventTimestampTypeDefault), event->getOptions() & kIOHIDEventOptionContinuousTime, 0, 0);
         }
     }

@@ -46,15 +46,16 @@ int b2l_build_device_tree(void *buffer, b2l_size capacity,
                          const struct b2l_dt_config *c, b2l_size *used)
 {
     struct writer w = { buffer, capacity, 0, 0 };
-    struct node root, chosen, memory_map, manifest, product, defaults, memory, cpus, cpu, arm_io, gic, aliases;
+    struct node root, chosen, memory_map, manifest, product, buttons, defaults, memory, cpus, cpu, arm_io, gic, aliases;
     b2l_u32 two = 2, one = 1, zero = 0, cpu_reg, cluster_type = 'S';
     b2l_u64 ranges[] = { 0, 0x10000000ULL, 0x20000000ULL };
     b2l_u64 gic_regs[] = { 0x101000, 0x1000, 0x102000, 0x1000 };
     b2l_u64 mem_regs[2];
     unsigned cpu_id;
-    static const char *const cpu_names[] = {"cpu0","cpu1","cpu2","cpu3","cpu4","cpu5"};
+    static const char *const cpu_names[] = {"cpu0","cpu1","cpu2","cpu3","cpu4","cpu5","cpu6","cpu7"};
     if (!buffer || !c || !used || !c->counter_frequency || capacity < 8 ||
-        (c->has_boot_ufs_lun && c->boot_ufs_lun > 7)) return -1;
+        (c->has_boot_ufs_lun && c->boot_ufs_lun > 7) ||
+        (c->has_wifi_mac && !b2l_wifi_mac_valid(c->wifi_mac))) return -1;
     cpu_reg = (b2l_u32)(c->mpidr & 0x0000ffffULL);
     /* This isolated SMP target only supports the proven boot MPIDR 0. */
     if (cpu_reg != 0) return -1;
@@ -62,12 +63,16 @@ int b2l_build_device_tree(void *buffer, b2l_size capacity,
         (!b2l_secondary_address(c->secondary_base) || c->secondary_size!=B2L_SECONDARY_BYTES))return -1;
     mem_regs[0] = c->memory_base; mem_regs[1] = c->memory_size;
     root = begin(&w, 0, "device-tree");
-    text_prop(&w, &root, "model", "Samsung Galaxy S10+ (beyond2lte)");
+    /* hw.product/hw.machine feed MobileGestalt ProductType and DeviceClass.
+     * Keep Samsung compatible for the actual B2L driver match. */
+    text_prop(&w, &root, "model", "iPhone17,2");
     text_prop(&w, &root, "compatible", "samsung,beyond2lte");
     prop(&w, &root, "#address-cells", &two, 4);
     prop(&w, &root, "#size-cells", &two, 4);
     chosen = begin(&w, &root, "chosen");
     prop(&w, &chosen, "random-seed", c->random_seed, sizeof(c->random_seed));
+    if(c->has_wifi_mac)
+        prop(&w, &chosen, "mac-address-wifi0", c->wifi_mac, B2L_WIFI_MAC_BYTES);
     prop(&w, &chosen, "dram-base", &c->memory_base, 8);
     prop(&w, &chosen, "dram-size", &c->memory_size, 8);
     prop(&w, &chosen, "debug-enabled", &one, 4);
@@ -108,13 +113,21 @@ int b2l_build_device_tree(void *buffer, b2l_size capacity,
     end(&w, &chosen);
     /* The board has a product node even though it is not an Apple product. */
     product = begin(&w, &root, "product");
-    text_prop(&w, &product, "product-name", "Samsung Galaxy S10+");
-    text_prop(&w, &product, "model", "SM-G975F");
+    text_prop(&w, &product, "product-name", "iPhone 16 Pro Max");
+    text_prop(&w, &product, "model", "iPhone17,2");
     text_prop(&w, &product, "board-config", "beyond2lte");
     end(&w, &product);
+    /* Native MG HomeButtonType reads this four-byte CFData as a number.
+     * Absent metadata defaults to mechanical Home (0). This device has none. */
+    buttons = begin(&w, &root, "buttons");
+    prop(&w, &buttons, "home-button-type", &two, sizeof(two));
+    end(&w, &buttons);
     /* pmap requires /defaults; absent tuning/range properties retain its
      * built-in defaults instead of claiming nonexistent protected regions. */
     defaults = begin(&w, &root, "defaults");
+    /* Native PM must not enter CPU_OFF/S2R before the board has a resume path.
+     * Display blanking and ordinary interrupt-driven CPU idle remain separate. */
+    prop(&w, &defaults, "sleep-disabled", &one, sizeof(one));
     end(&w, &defaults);
     memory = begin(&w, &root, "memory");
     text_prop(&w, &memory, "device_type", "memory");
@@ -123,8 +136,8 @@ int b2l_build_device_tree(void *buffer, b2l_size capacity,
     cpus = begin(&w, &root, "cpus");
     prop(&w, &cpus, "#address-cells", &one, 4);
     prop(&w, &cpus, "#size-cells", &zero, 4);
-    for (cpu_id = 0; cpu_id < 6; ++cpu_id) {
-        cpu_reg = cpu_id;
+    for (cpu_id = 0; cpu_id < 8; ++cpu_id) {
+        cpu_reg = cpu_id < 6 ? cpu_id : 0x100 + cpu_id - 6;
         cpu = begin(&w, &cpus, cpu_names[cpu_id]);
         text_prop(&w, &cpu, "device_type", "cpu");
         text_prop(&w, &cpu, "compatible", "b2l,boot-cpu");
@@ -132,6 +145,9 @@ int b2l_build_device_tree(void *buffer, b2l_size capacity,
         prop(&w, &cpu, "reg", &cpu_reg, 4);
         prop(&w, &cpu, "cpu-id", &cpu_reg, 4);
         prop(&w, &cpu, "cluster-id", &zero, 4);
+        prop(&w, &cpu, "die-cluster-id", &zero, 4);
+        b2l_u32 logical_core=cpu_id;
+        prop(&w, &cpu, "cluster-core-id", &logical_core, 4);
         prop(&w, &cpu, "cluster-type", &cluster_type, 4);
         prop(&w, &cpu, "timebase-frequency", &c->counter_frequency, 4);
         prop(&w, &cpu, "fixed-frequency", &c->counter_frequency, 4);

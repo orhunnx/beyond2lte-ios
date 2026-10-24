@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: BSD-2-Clause
- * Exynos 9820 MPIDR0..5 Cortex-A55/A75 bring-up through the stock SMC conduit.
- * M4 MPIDRs0x100/0x101 remain absent. No CPU_OFF, suspend or DVFS policy.
+ * Exynos 9820 eight-CPU A55/A75/M4 trial through the stock SMC conduit.
+ * Firmware targets0..5 and0x100/0x101. No CPU_OFF, suspend or DVFS policy.
  */
 #include <pexpert/arm64/board_config.h>
 #if defined(B2L)
@@ -17,6 +17,7 @@ extern "C" int get_preemption_level(void);
 #include <pexpert/pexpert.h>
 #include <pexpert/device_tree.h>
 #include "b2l_secondary.h"
+#include <arm64/b2l_cpu_affinity.h>
 
 extern "C" void b2l_secondary_entry(void);
 extern "C" uint64_t b2l_smp_progress(unsigned cpu);
@@ -29,7 +30,7 @@ extern "C" bool b2l_prepare_cpu_start(unsigned cpu);
 extern "C" bool b2l_smp_rejected(void);
 extern "C" processor_t b2l_bind_cpu(processor_t processor);
 
-static_assert(MAX_CPUS == 6, "CPU0..5 A55/A75 experiment only");
+static_assert(MAX_CPUS == 8, "eight-CPU A55/A75/M4 experiment");
 class B2LCPU;
 static B2LCPU *b2l_cpus[MAX_CPUS];
 static unsigned providers_ready, registered_cpus;
@@ -113,6 +114,7 @@ public:
     void haltCPU(void) APPLE_KEXT_OVERRIDE;
     const OSSymbol *getCPUName(void) APPLE_KEXT_OVERRIDE;
     static void finishStartup(void *, wait_result_t);
+    static void waitForStartup(unsigned);
 };
 OSDefineMetaClassAndStructors(B2LCPU, IOCPU);
 
@@ -122,15 +124,15 @@ bool B2LCPU::start(IOService *provider)
     OSNumber *logical = OSDynamicCast(OSNumber, provider->getProperty("logical-cpu-id"));
     OSData *reg = OSDynamicCast(OSData, provider->getProperty("reg"));
     if (!logical || !reg || reg->getLength() != sizeof(uint32_t) ||
-        top->num_cpus != 6 || top->boot_cpu != &top->cpus[0] ||
+        top->num_cpus != MAX_CPUS || top->boot_cpu != &top->cpus[0] ||
         top->cpus[0].phys_id != 0 ||
-        logical->unsigned32BitValue() >= 6) return false;
+        logical->unsigned32BitValue() >= MAX_CPUS) return false;
     unsigned id = logical->unsigned32BitValue();
     const ml_topology_cpu_t *cpu = &top->cpus[id];
-    if (cpu->phys_id != id || cpu->cluster_id != 0 || *(const uint32_t *)reg->getBytesNoCopy() != cpu->phys_id)
+    if (cpu->phys_id != (unsigned)b2l_cpu_firmware_id(id) || cpu->cluster_id != 0 || *(const uint32_t *)reg->getBytesNoCopy() != cpu->phys_id)
         return false;
     if (!IOCPU::start(provider)) return false;
-    cpuName = OSSymbol::withCStringNoCopy(id < 4 ? "Exynos 9820 Cortex-A55" : "Exynos 9820 Cortex-A75");
+    cpuName = OSSymbol::withCStringNoCopy(id < 4 ? "Exynos 9820 Cortex-A55" : id < 6 ? "Exynos 9820 Cortex-A75" : "Exynos 9820 Samsung M4");
     if (!cpuName) return false;
     setCPUNumber(id);
     /* IOService matching is asynchronous. Collect all providers before a
@@ -140,8 +142,8 @@ bool B2LCPU::start(IOService *provider)
             __ATOMIC_RELEASE, __ATOMIC_RELAXED))
         panic("B2L SMP: duplicate CPU provider %u", id);
     unsigned count = __atomic_add_fetch(&providers_ready, 1, __ATOMIC_ACQ_REL);
-    b2l_early_trace("B2L SMP: provider CPU%u ready (%u/6)\n", id, count);
-    if (count == 6) {
+    b2l_early_trace("B2L SMP: provider CPU%u ready (%u/8)\n", id, count);
+    if (count == MAX_CPUS) {
         thread_t coordinator;
         kern_return_t kr = kernel_thread_start(&B2LCPU::finishStartup, nullptr, &coordinator);
         if (kr != KERN_SUCCESS) panic("B2L CPU: coordinator failed (%d)", kr);
@@ -183,8 +185,11 @@ void B2LCPU::registerProcessor(void)
 void B2LCPU::initCPU(bool boot)
 {
     unsigned id = getCPUNumber();
-    if (!boot || id >= 6 || (unsigned)cpu_number() != id)
+    if (!boot || id >= MAX_CPUS || (unsigned)cpu_number() != id)
         panic("B2L CPU: unsupported resume or wrong startup CPU");
+    uint64_t raw=__builtin_arm_rsr64("MPIDR_EL1"),midr=__builtin_arm_rsr64("MIDR_EL1");
+    if(b2l_cpu_from_identity(raw,midr)!=(int)id || !b2l_cpu_midr_matches(id,midr))
+        panic("B2L CPU: identity mismatch CPU%u MPIDR=0x%llx MIDR=0x%llx",id,raw,midr);
     startupContext("initCPU-enter", id, false);
     ml_broadcast_cpu_event(CPU_BOOTED, id);
     /* Secondary init runs at splsched with IRQs masked. Queue self-SGI
@@ -199,7 +204,7 @@ void B2LCPU::initCPU(bool boot)
 
 kern_return_t B2LCPU::startCPU(vm_offset_t start, vm_offset_t arg)
 {
-    if (start || arg || getCPUNumber() == 0 || getCPUNumber() >= 6 ||
+    if (start || arg || getCPUNumber() == 0 || getCPUNumber() >= MAX_CPUS ||
         __atomic_load_n(&cpuInitialized, __ATOMIC_ACQUIRE))
         panic("B2L CPU: unsupported CPU_ON request");
     vm_offset_t entry = ml_static_vtop((vm_offset_t)&b2l_secondary_entry);
@@ -214,13 +219,14 @@ kern_return_t B2LCPU::startCPU(vm_offset_t start, vm_offset_t arg)
         panic("B2L SMP: secondary trampoline changed");
     secondary_page[B2L_SECONDARY_TARGET_WORD]=entry;
     secondary_page[B2L_SECONDARY_STAGE_WORD]=0;
+    for(unsigned i=0;i<3;++i)secondary_page[B2L_SECONDARY_IDENTITY_WORD+i]=0;
     __asm__ volatile("dsb sy":::"memory");
     if (secondary_page[B2L_SECONDARY_TARGET_WORD]!=entry)
         panic("B2L SMP: low entry target readback failed");
-    b2l_early_trace("B2L SMP: CPU_ON begin target=%u entry=0x%llx destination=0x%llx\n",
-        target,secondary_pa,(uint64_t)entry);
+    b2l_early_trace("B2L SMP: CPU_ON begin target=%u firmware=0x%x entry=0x%llx destination=0x%llx\n",
+        target,(unsigned)b2l_cpu_firmware_id(target),secondary_pa,(uint64_t)entry);
     startupContext("CPU_ON-enter", target, false);
-    int32_t result = b2l_cpu_on(target, secondary_pa, 0);
+    int32_t result = b2l_cpu_on((uint64_t)b2l_cpu_firmware_id(target), secondary_pa, 0);
     startupContext("CPU_ON-return", target, false);
     b2l_early_trace("B2L SMP: CPU_ON result=%d low-stage=%llu secondary-stage=%llu\n",
         result,secondary_page[B2L_SECONDARY_STAGE_WORD],b2l_smp_progress(target));
@@ -231,37 +237,74 @@ kern_return_t B2LCPU::startCPU(vm_offset_t start, vm_offset_t arg)
 
 void B2LCPU::signalCPU(IOCPU *target)
 {
-    if (!target || target->getCPUNumber() >= 6)
+    if (!target || target->getCPUNumber() >= MAX_CPUS)
         panic("B2L CPU: invalid IPI target");
     b2l_send_ipi(target->getCPUNumber());
 }
 
+void B2LCPU::waitForStartup(unsigned id)
+{
+    B2LCPU *c=__atomic_load_n(&b2l_cpus[id],__ATOMIC_ACQUIRE);
+    uint64_t deadline,lastStage=UINT64_MAX,lastLow=UINT64_MAX,lastLog=0;
+    nanoseconds_to_deadline(5*NSEC_PER_SEC,&deadline);
+    for(;;){
+        uint64_t low=secondary_page[B2L_SECONDARY_STAGE_WORD];
+        uint64_t stage=b2l_smp_progress(id),now=mach_absolute_time();
+        unsigned initialized=__atomic_load_n(&c->cpuInitialized,__ATOMIC_ACQUIRE);
+        bool ipi=b2l_cpu_ipi_ready(id);
+        uint64_t timer=b2l_cpu_irq_count(id,TRUE);
+        if(stage!=lastStage || low!=lastLow || !lastLog || now-lastLog>=B2L_COUNTER_HZ){
+            b2l_early_trace("B2L SMP WAIT: cpu=%u low=%llu secondary=%llu EL=%llu MPIDR=0x%llx MIDR=0x%llx init=%u ipi=%u timer=%llu\n",
+                id,low,stage,secondary_page[B2L_SECONDARY_IDENTITY_WORD]>>2,
+                secondary_page[B2L_SECONDARY_IDENTITY_WORD+1],secondary_page[B2L_SECONDARY_IDENTITY_WORD+2],
+                initialized,(unsigned)ipi,timer);
+            lastStage=stage;lastLow=low;lastLog=now;
+        }
+        if(b2l_smp_rejected())panic("B2L SMP: CPU%u rejected affinity before next CPU_ON",id);
+        /* Idle CPUs need not have an armed timer yet. Timer proof runs
+         * below while the coordinator is explicitly bound to each CPU. */
+        if(initialized && ipi)break;
+        if(now>deadline)panic("B2L SMP: CPU%u incomplete low=%llu secondary=%llu init=%u ipi=%u timer=%llu\n"
+            "B2L LOW: EL=%llu MPIDR=0x%llx MIDR=0x%llx target=0x%llx before next CPU_ON",
+            id,low,stage,initialized,(unsigned)ipi,timer,
+            secondary_page[B2L_SECONDARY_IDENTITY_WORD]>>2,
+            secondary_page[B2L_SECONDARY_IDENTITY_WORD+1],
+            secondary_page[B2L_SECONDARY_IDENTITY_WORD+2],
+            secondary_page[B2L_SECONDARY_TARGET_WORD]);
+        IOSleep(1);
+    }
+    b2l_early_trace("B2L SMP: CPU%u startup acknowledged before next CPU_ON\n",id);
+}
+
 void B2LCPU::finishStartup(void *, wait_result_t)
 {
-    if (cpu_number() != 0 || __atomic_load_n(&providers_ready, __ATOMIC_ACQUIRE) != 6)
+    if (cpu_number() != 0 || __atomic_load_n(&providers_ready, __ATOMIC_ACQUIRE) != MAX_CPUS)
         panic("B2L SMP: coordinator before complete CPU provider topology");
     /* Announce known topology, without claiming any secondary is online. */
-    ml_set_max_cpus(6);
+    ml_set_max_cpus(MAX_CPUS);
     prepareSecondaryPage();
-    for (unsigned id = 0; id < 6; ++id) {
+    for (unsigned id = 0; id < MAX_CPUS; ++id) {
         B2LCPU *c = __atomic_load_n(&b2l_cpus[id], __ATOMIC_ACQUIRE);
         if (!c) panic("B2L SMP: missing provider %u", id);
         c->registerProcessor();
+        /* Do not overwrite the shared low-entry diagnostic or start the next
+         * M4 until this core has reached C and serviced its self-SGI. */
+        if(id)waitForStartup(id);
     }
-    uint64_t deadline, last_stage[6];
-    for (unsigned i = 0; i < 6; ++i) last_stage[i] = UINT64_MAX;
+    uint64_t deadline, last_stage[MAX_CPUS];
+    for (unsigned i = 0; i < MAX_CPUS; ++i) last_stage[i] = UINT64_MAX;
     nanoseconds_to_deadline(20 * NSEC_PER_SEC, &deadline);
     for (;;) {
         if (b2l_smp_rejected()) panic("B2L SMP: unexpected secondary affinity rejected before CPU-data lookup");
-        for (unsigned i = 1; i < 6; ++i) {
+        for (unsigned i = 1; i < MAX_CPUS; ++i) {
             uint64_t stage = b2l_smp_progress(i);
             if (stage != last_stage[i]) {
                 b2l_early_trace("B2L SMP: CPU%u secondary-stage=%llu\n", i, stage);
                 last_stage[i] = stage;
             }
         }
-        bool ready = __atomic_load_n(&registered_cpus, __ATOMIC_ACQUIRE) == 6;
-        for (unsigned i = 0; ready && i < 6; ++i) {
+        bool ready = __atomic_load_n(&registered_cpus, __ATOMIC_ACQUIRE) == MAX_CPUS;
+        for (unsigned i = 0; ready && i < MAX_CPUS; ++i) {
             B2LCPU *c = __atomic_load_n(&b2l_cpus[i], __ATOMIC_ACQUIRE);
             ready = c && __atomic_load_n(&c->cpuInitialized, __ATOMIC_ACQUIRE) &&
                 b2l_cpu_ipi_ready(i);
@@ -273,7 +316,7 @@ void B2LCPU::finishStartup(void *, wait_result_t)
     }
     /* Real timers on every CPU, plus CPU0 -> each secondary and each -> CPU0.
      * Only one xcall is outstanding; reset its acknowledgement before send. */
-    for (unsigned sender = 0; sender < 6; ++sender) {
+    for (unsigned sender = 0; sender < MAX_CPUS; ++sender) {
         processor_t previous = b2l_bind_cpu(b2l_cpus[sender]->machProcessor);
         thread_block(THREAD_CONTINUE_NULL);
         if ((unsigned)cpu_number() != sender) panic("B2L CPU: IPI proof thread not bound");
@@ -283,7 +326,7 @@ void B2LCPU::finishStartup(void *, wait_result_t)
             if (mach_absolute_time() > deadline) panic("B2L CPU: per-CPU timer proof timeout");
             IOSleep(1);
         }
-        unsigned first = sender ? 0 : 1, end = sender ? 1 : 6;
+        unsigned first = sender ? 0 : 1, end = sender ? 1 : MAX_CPUS;
         for (unsigned target = first; target < end; ++target) {
             __atomic_store_n(&xcall_observed[target], 0, __ATOMIC_RELEASE);
             kern_return_t kr = cpu_xcall((int)target, (broadcastFunc)xcall_proof,
@@ -301,8 +344,8 @@ void B2LCPU::finishStartup(void *, wait_result_t)
     ml_cpu_init_completed();
     b2l_cpus[0]->cpusRunning();
     IOService::publishResource(gIOAllCPUInitializedKey, kOSBooleanTrue);
-    b2l_early_trace("B2L CPU: 6/6 CPUs initialized, per-CPU timer and bidirectional SGI1 verified\n");
-    IOLog("B2L CPU: 6/6 CPUs initialized, per-CPU timer and bidirectional SGI1 verified\n");
+    b2l_early_trace("B2L CPU: 8/8 CPUs initialized, per-CPU timer and bidirectional SGI1 verified\n");
+    IOLog("B2L CPU: 8/8 CPUs initialized, per-CPU timer and bidirectional SGI1 verified\n");
     thread_terminate(current_thread());
 }
 

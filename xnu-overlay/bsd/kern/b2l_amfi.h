@@ -11,6 +11,7 @@ extern "C" {
 #endif
 bool b2l_amfi_active(void);
 bool b2l_amfi_is_platform(struct proc *);
+bool b2l_amfi_cache_entitled(struct proc *);
 bool b2l_amfi_vnode_is_platform(struct vnode *);
 int b2l_amfi_proc_copy_dict(struct proc *, void **);
 int b2l_amfi_vnode_copy_dict(struct vnode *, int64_t, void **);

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: BSD-2-Clause-Patent
 // Read the XNU payload from an Android v1 BOOT partition through firmware UFS.
 #include "BootPayload.h"
+#include "BootMetadata.h"
 #include "BootDevicePath.h"
 #include <Protocol/BlockIo.h>
 #include <Protocol/DiskIo.h>
@@ -30,11 +31,12 @@ STATIC UINT64 Le64(CONST UINT8 *P) {
   return (UINT64)Le32(P) | (UINT64)Le32(P + 4) << 32;
 }
 
-EFI_STATUS B2lLoadBootPayload(VOID **Kernel, UINTN *KernelSize, UINT8 Seed[B2L_BOOT_SEED_SIZE]) {
+EFI_STATUS B2lLoadBootPayload(VOID **Kernel, UINTN *KernelSize, UINT8 Seed[B2L_BOOT_SEED_SIZE], UINT8 WifiMac[6]) {
   EFI_HANDLE *Handles = NULL;
   UINTN Count = 0;
   EFI_STATUS Status;
-  if (Kernel == NULL || KernelSize == NULL || Seed == NULL) return EFI_INVALID_PARAMETER;
+  if (Kernel == NULL || KernelSize == NULL || Seed == NULL || WifiMac == NULL) return EFI_INVALID_PARAMETER;
+  ZeroMem(WifiMac, B2L_WIFI_MAC_BYTES);
   *Kernel = NULL;
   *KernelSize = 0;
   mBootUfsLun = MAX_UINT32;
@@ -85,6 +87,9 @@ EFI_STATUS B2lLoadBootPayload(VOID **Kernel, UINTN *KernelSize, UINT8 Seed[B2L_B
     if (Le32(Payload + 8) != 2 || Le32(Payload + 12) != PAYLOAD_HEADER_SIZE ||
         KernelOffset != PAYLOAD_HEADER_SIZE || Length < 4096 || Length > PAYLOAD_LIMIT ||
         KernelOffset > Capacity - Offset || Length > Capacity - Offset - KernelOffset) break;
+    // Decode only after recognizing and bounding our complete BOOT header.
+    UINT8 CandidateMac[B2L_WIFI_MAC_BYTES];
+    if (b2l_boot_wifi_decode(Payload + 32 + B2L_BOOT_SEED_SIZE, CandidateMac) < 0) break;
     Buffer = AllocatePool((UINTN)Length);
     if (Buffer == NULL) { Status = EFI_OUT_OF_RESOURCES; break; }
     ReadStatus = Disk->ReadDisk(Disk, MediaId, Offset + KernelOffset, (UINTN)Length, Buffer);
@@ -94,6 +99,7 @@ EFI_STATUS B2lLoadBootPayload(VOID **Kernel, UINTN *KernelSize, UINT8 Seed[B2L_B
       break;
     }
     CopyMem(Seed, Payload + 32, B2L_BOOT_SEED_SIZE);
+    CopyMem(WifiMac, CandidateMac, B2L_WIFI_MAC_BYTES);
     *Kernel = Buffer;
     *KernelSize = (UINTN)Length;
     EFI_DEVICE_PATH_PROTOCOL *Path;

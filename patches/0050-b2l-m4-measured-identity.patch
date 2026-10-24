@@ -1,0 +1,187 @@
+--- a/osfmk/arm64/cpu.c
++++ b/osfmk/arm64/cpu.c
+@@ -1369,7 +1369,7 @@
+ /* Per-CPU diagnostic record, with no allocation, mutex or thread dependency. */
+ void b2l_smp_checkpoint(unsigned stage, uintptr_t arg)
+ {
+-    int cpu = b2l_cpu_from_mpidr(__builtin_arm_rsr64("MPIDR_EL1"));
++    int cpu = b2l_cpu_from_identity(__builtin_arm_rsr64("MPIDR_EL1"),__builtin_arm_rsr64("MIDR_EL1"));
+     if (cpu <= 0) return;
+     extern uint64_t b2l_smp_mailbox[MAX_CPUS][16];
+     uint64_t *m = b2l_smp_mailbox[cpu];
+@@ -1382,7 +1382,7 @@
+ bool b2l_smp_rejected(void)
+ {
+     extern uint64_t b2l_smp_mailbox[MAX_CPUS][16];
+-    __asm__ volatile("dc ivac, %0; dsb sy" :: "r"(b2l_smp_mailbox[0]) : "memory");
++    __asm__ volatile("dc ivac, %0; dsb sy" :: "r"(&b2l_smp_mailbox[0][8]) : "memory");
+     return __atomic_load_n(&b2l_smp_mailbox[0][10], __ATOMIC_ACQUIRE) == 254;
+ }
+ void b2l_smp_dump(void)
+--- a/osfmk/arm64/machine_routines.c
++++ b/osfmk/arm64/machine_routines.c
+@@ -1450,7 +1450,7 @@
+ 	/* We identify the CPU based on the constant bits of MPIDR_EL1. */
+ 	MRS(mpidr_el1_value, "MPIDR_EL1");
+ #if defined(B2L)
+-    int target = b2l_cpu_from_mpidr(mpidr_el1_value);
++    int target = b2l_cpu_from_identity(mpidr_el1_value,__builtin_arm_rsr64("MIDR_EL1"));
+     if (target < 0) panic("B2L CPU: unsupported local affinity 0x%llx", mpidr_el1_value);
+     mpidr_el1_value = (uint32_t)b2l_cpu_firmware_id((unsigned)target);
+ #endif
+@@ -1470,7 +1470,7 @@
+ 	/* We identify the cluster based on the constant bits of MPIDR_EL1. */
+ 	MRS(mpidr_el1_value, "MPIDR_EL1");
+ #if defined(B2L)
+-    int target = b2l_cpu_from_mpidr(mpidr_el1_value);
++    int target = b2l_cpu_from_identity(mpidr_el1_value,__builtin_arm_rsr64("MIDR_EL1"));
+     if (target < 0) panic("B2L CPU: unsupported local affinity 0x%llx", mpidr_el1_value);
+     mpidr_el1_value = (uint32_t)b2l_cpu_firmware_id((unsigned)target);
+ #endif
+--- a/osfmk/arm64/start.s
++++ b/osfmk/arm64/start.s
+@@ -173,23 +173,56 @@
+  *	x21 - CPU data pointer
+  */
+ #if defined(B2L)
++.macro B2L_CPU_INDEX logical, scratch, reject
++    mrs \scratch, MIDR_EL1
++    ubfx \scratch, \scratch, #24, #8
++    cmp \scratch, #0x53
++    b.eq .Lb2l_index_m4\@
++    cmp \scratch, #0x41
++    b.ne \reject
++    mrs \logical, MPIDR_EL1
++    ubfx \scratch, \logical, #16, #8
++    cbnz \scratch, \reject
++    ubfx \scratch, \logical, #32, #8
++    cbnz \scratch, \reject
++    tst \logical, #0xff
++    b.ne \reject
++    ubfx \logical, \logical, #8, #8
++    cmp \logical, #6
++    b.hs \reject
++    mrs \scratch, MIDR_EL1
++    ubfx \scratch, \scratch, #4, #12
++    cmp \logical, #4
++    b.hs .Lb2l_index_a75\@
++    cmp \scratch, #B2L_A55_PART
++    b.ne \reject
++    b .Lb2l_index_done\@
++.Lb2l_index_a75\@:
++    cmp \scratch, #B2L_A75_PART
++    b.ne \reject
++    b .Lb2l_index_done\@
++.Lb2l_index_m4\@:
++    mrs \logical, MPIDR_EL1
++    ubfx \scratch, \logical, #16, #8
++    cbnz \scratch, \reject
++    ubfx \scratch, \logical, #32, #8
++    cbnz \scratch, \reject
++    and \logical, \logical, #0xffff
++    sub \logical, \logical, #0x100
++    cmp \logical, #2
++    b.hs \reject
++    add \logical, \logical, #6
++    mrs \scratch, MIDR_EL1
++    ubfx \scratch, \scratch, #4, #12
++    cmp \scratch, #B2L_M4_PART
++    b.ne \reject
++.Lb2l_index_done\@:
++.endmacro
++
+ .macro B2L_SMP_STAGE value
++    B2L_CPU_INDEX x17, x16, .Lb2l_stage_done\@
+     adrp x16, EXT(b2l_smp_mailbox)@page
+     add x16, x16, EXT(b2l_smp_mailbox)@pageoff
+-    mrs x17, MPIDR_EL1
+-    tst x17, #0xfe
+-    b.ne .Lb2l_stage_done\@
+-    tbz x17, #0, .Lb2l_stage_arm\@
+-    ubfx x17, x17, #8, #8
+-    cmp x17, #2
+-    b.hs .Lb2l_stage_done\@
+-    add x17, x17, #6
+-    b .Lb2l_stage_index\@
+-.Lb2l_stage_arm\@:
+-    ubfx x17, x17, #8, #8
+-    cmp x17, #6
+-    b.hs .Lb2l_stage_done\@
+-.Lb2l_stage_index\@:
+     add x16, x16, x17, lsl #7
+     str lr, [x16, #8]
+     str x0, [x16, #16]
+@@ -254,9 +287,12 @@
+ 	add		x19, x19, EXT(ResetHandlerData)@pageoff
+ 	mrs		x15, MPIDR_EL1						// Load MPIDR to get CPU number
+ #if defined(B2L)
+-    ubfx x0, x15, #8, #8
+-    and x15, x15, #0xff
+-    orr x0, x0, x15, lsl #8
++    /* MIDR distinguishes ARM raw0x100 from M4 raw0x100. */
++    B2L_CPU_INDEX x0, x15, Lb2l_secondary_bad_affinity
++    cmp x0, #6
++    b.lo Lb2l_reset_id_ready
++    add x0, x0, #250 /* logical6/7 -> firmware0x100/0x101 */
++Lb2l_reset_id_ready:
+ #elif HAS_CLUSTER
+ 	and		x0, x15, #0xFFFF					// CPU number in Affinity0, cluster ID in Affinity1
+ #else
+@@ -421,44 +457,9 @@
+ 	cmp x1, #4
+ 	b.ne Lb2l_secondary_bad_el
+     /* Explicit EL1 affinity and MIDR gate, before CPU-data lookup.
+-     * ARM raw0x000..0x500 -> FW0..5; M4 raw0x001/0x101 -> FW0x100/101. */
+-    mrs x1, MPIDR_EL1
+-    ubfx x17, x1, #16, #8
+-    cbnz x17, Lb2l_secondary_bad_affinity
+-    ubfx x17, x1, #32, #8
+-    cbnz x17, Lb2l_secondary_bad_affinity
+-    and x16, x1, #0xff
+-    cmp x16, #1
+-    b.hi Lb2l_secondary_bad_affinity
+-    ubfx x1, x1, #8, #8
+-    cbnz x16, Lb2l_check_m4
+-    sub x17, x1, #1
+-    cmp x17, #5
+-    b.hs Lb2l_secondary_bad_affinity
+-    mrs x17, MIDR_EL1
+-    ubfx x16, x17, #24, #8
+-    cmp x16, #0x41
+-    b.ne Lb2l_secondary_bad_affinity
+-    ubfx x17, x17, #4, #12
+-    cmp x1, #4
+-    b.hs Lb2l_check_a75
+-    cmp x17, #B2L_A55_PART
+-    b.ne Lb2l_secondary_bad_affinity
+-    b Lb2l_part_accepted
+-Lb2l_check_a75:
+-    cmp x17, #B2L_A75_PART
+-    b.ne Lb2l_secondary_bad_affinity
+-    b Lb2l_part_accepted
+-Lb2l_check_m4:
+-    cmp x1, #2
+-    b.hs Lb2l_secondary_bad_affinity
+-    mrs x17, MIDR_EL1
+-    ubfx x16, x17, #24, #8
+-    cmp x16, #0x53
+-    b.ne Lb2l_secondary_bad_affinity
+-    ubfx x17, x17, #4, #12
+-    cmp x17, #B2L_M4_PART
+-    b.ne Lb2l_secondary_bad_affinity
++     * ARM and M4 expose different affinity layouts; raw0x100 overlaps. */
++    B2L_CPU_INDEX x1, x17, Lb2l_secondary_bad_affinity
++    cbz x1, Lb2l_secondary_bad_affinity
+ Lb2l_part_accepted:
+     B2L_SMP_STAGE 1
+ 	msr SPSel, #1
+@@ -474,7 +475,8 @@
+     str x17, [x16, #72]
+     mov x17, #254
+     str x17, [x16, #80]
+-    dc civac, x16
++    add x17, x16, #64 /* identity/reject live in the second64-byte line */
++    dc civac, x17
+     dsb sy
+ Lb2l_affinity_park:
+     wfe

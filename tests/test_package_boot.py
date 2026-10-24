@@ -94,6 +94,30 @@ class BootTrailerTests(unittest.TestCase):
         self.assertEqual(result["payload_version"], 2)
         self.assertEqual(result["seed_bytes"], 256)
 
+    def test_private_wifi_metadata_is_validated_and_not_disclosed(self):
+        mac = bytes([2, 0, 0, 0, 0, 1])  # synthetic local fixture
+        header = pack.make_payload_header(4096, mac)
+        self.assertEqual(header[288:302], b"B2LWIFI1" + mac)
+        result = self.verify(self.android_prefix() + header + self.kernel())
+        self.assertTrue(result["wifi_mac_present"])
+        self.assertNotIn("02:00:00:00:00:01", str(result))
+        for offset in (288, 302, 319):
+            bad = bytearray(header)
+            bad[offset] ^= 1
+            with self.assertRaises(ValueError):
+                self.verify(self.android_prefix() + bad + self.kernel())
+        for invalid in (bytes(6), bytes([1,0,0,0,0,1]), bytes(5), bytes(7)):
+            with self.assertRaises(ValueError):
+                pack.make_payload_header(4096, invalid)
+        with tempfile.TemporaryDirectory() as directory:
+            private = Path(directory) / "mac.txt"
+            private.write_text("02:00:00:00:00:01\n")
+            self.assertEqual(pack.read_wifi_mac(private), mac)
+            private.write_text("untrusted-file-content")
+            with self.assertRaisesRegex(ValueError, "exactly six") as error:
+                pack.read_wifi_mac(private)
+            self.assertNotIn("untrusted-file-content", str(error.exception))
+
     def test_legacy_64_byte_seed_requires_repackaging(self):
         header = struct.pack("<8sIIQQ", b"B2LXNU01", 1, 128, 4096, 128) + bytes(range(64)) + bytes(32)
         with self.assertRaisesRegex(ValueError, "legacy.*64.*256"):

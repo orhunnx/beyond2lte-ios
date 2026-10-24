@@ -23,8 +23,25 @@ int main(void){
  n=1;assert(b2l_aks_dispatch(&s,&c,&r)==B2L_AKS_NOT_FOUND);zero_reply(&r);
  n=UINT64_MAX;assert(b2l_aks_dispatch(&s,&c,&r)==B2L_AKS_NOT_FOUND);
  n=0;c.selector=7;assert(b2l_aks_dispatch(&s,&c,&r)==B2L_AKS_SUCCESS&&r.scalars[0]==4);
+ for(unsigned sel=17;sel<=35;sel+=18){
+   c=(struct b2l_aks_call){sel,&n,1,0,0,0,4096};n=0;
+   assert(b2l_aks_dispatch(&s,&c,&r)==B2L_AKS_SUCCESS&&r.scalar_count==0&&r.structure_size==12);
+   /* Independent TLV walk for native field identity/type/value. */
+   assert(r.structure[0]==0x31&&r.structure[1]+2==r.structure_size);
+   assert(r.structure[2]==0x30&&r.structure[3]+4==r.structure_size);
+   assert(r.structure[4]==0x0c&&r.structure[5]==3&&!memcmp(r.structure+6,"sls",3));
+   assert(r.structure[9]==2&&r.structure[10]==1&&r.structure[11]==3);
+   for(size_t i=12;i<256;i++)assert(r.structure[i]==0);
+   for(size_t cap=0;cap<12;cap++){c.structure_output_capacity=cap;assert(b2l_aks_dispatch(&s,&c,&r)==B2L_AKS_NO_SPACE);zero_reply(&r);}
+   c.structure_output_capacity=12;n=1;assert(b2l_aks_dispatch(&s,&c,&r)==B2L_AKS_NOT_FOUND);zero_reply(&r);
+   n=UINT64_MAX;assert(b2l_aks_dispatch(&s,&c,&r)==B2L_AKS_NOT_FOUND);zero_reply(&r);
+   n=0;c.scalar_input_count=0;assert(b2l_aks_dispatch(&s,&c,&r)==B2L_AKS_BAD_ARGUMENT);zero_reply(&r);
+   c.scalar_input_count=1;c.scalar_output_capacity=1;assert(b2l_aks_dispatch(&s,&c,&r)==B2L_AKS_BAD_ARGUMENT);zero_reply(&r);
+   c.scalar_output_capacity=0;c.structure_input=&n;c.structure_input_size=1;assert(b2l_aks_dispatch(&s,&c,&r)==B2L_AKS_BAD_ARGUMENT);zero_reply(&r);
+ }
+ c=(struct b2l_aks_call){0};
  c.selector=6;assert(b2l_aks_dispatch(&s,&c,&r)==B2L_AKS_UNSUPPORTED);zero_reply(&r);
- /* Exhaust actual shapes; only the three documented shapes may succeed. */
+ /* Exhaust actual shapes; zero structure capacity: only the three original shapes may succeed. */
  for(unsigned sel=0;sel<256;sel++)for(unsigned in=0;in<6;in++)for(unsigned out=0;out<6;out++)for(unsigned st=0;st<3;st++){
    uint64_t a[6]={0};uint8_t bytes[2]={0};struct b2l_aks_client q={1,0};
    struct b2l_aks_call x={sel,a,in,bytes,st,out,0};memset(&r,0xa5,sizeof r);

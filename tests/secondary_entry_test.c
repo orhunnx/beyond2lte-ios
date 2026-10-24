@@ -36,13 +36,13 @@ int main(int argc,char **argv){
  assert(!b2l_secondary_address(0xceffc001));assert(b2l_secondary_address(0xffffc000));
  memset(map,0,sizeof(map));desc(map,7,UINT64_MAX-4095,8192);
  assert(b2l_choose_secondary(map,48,48,&pa)==-1);
- /* Validate the actual cross-assembled 64-byte template and high target. */
- unsigned long long words[8];FILE *f=fopen(argv[1],"rb");assert(f);
- assert(fread(words,1,64,f)==64 && fgetc(f)==EOF);fclose(f);
+ /* Validate the actual cross-assembled 152-byte template and high target. */
+ unsigned long long words[19];FILE *f=fopen(argv[1],"rb");assert(f);
+ assert(fread(words,1,152,f)==152 && fgetc(f)==EOF);fclose(f);
  assert(b2l_secondary_template(words));assert(!words[5] && !words[6]);
  words[5]=0x900506000ULL;assert(words[5]==0x900506000ULL && b2l_secondary_template(words));
  words[6]=1;assert(b2l_secondary_template(words));
- for(unsigned i=0;i<8;++i)if(i!=5 && i!=6)for(unsigned bit=0;bit<64;++bit){
+ for(unsigned i=0;i<16;++i)if(i!=5 && i!=6)for(unsigned bit=0;bit<64;++bit){
   words[i]^=1ULL<<bit;assert(!b2l_secondary_template(words));words[i]^=1ULL<<bit;
  }
  puts("Low secondary allocation: reservations, ownership, aliases, overflow and actual 64-bit ARM64 template passed");

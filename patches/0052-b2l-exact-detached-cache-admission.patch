@@ -1,0 +1,26 @@
+--- a/bsd/kern/kern_descrip.c
++++ b/bsd/kern/kern_descrip.c
+@@ -2845,6 +2845,7 @@
+ }
+ 
+ #if defined(ARM64_BOARD_CONFIG_B2L)
++#include "b2l_amfi_detached.h"
+ /* Unsigned development registration never attaches a cs_blob or signs VM pages. */
+ static int
+ b2l_unsigned_cache_extent(off_t file_size, off_t file_start,
+@@ -4146,6 +4147,15 @@
+ 		}
+ 
+ #if defined(ARM64_BOARD_CONFIG_B2L)
++        if (cmd == F_ADDSIGS && b2l_amfi_active()) {
++            error = b2l_detached_cache_map(p, vp, &fs);
++            if (error != ENOTSUP) {
++                vnode_put(vp);
++                if (error) goto outdrop;
++                break;
++            }
++            error = 0; /* Unknown files keep the stock F_ADDSIGS path. */
++        }
+ 		if (cmd == F_ADDFILESIGS_RETURN && !cs_system_enforcement()) {
+ 			off_t file_size = 0, extent = 0;
+ 			error = vnode_vtype(vp) == VREG ? vnode_size(vp, &file_size, &context) : EINVAL;

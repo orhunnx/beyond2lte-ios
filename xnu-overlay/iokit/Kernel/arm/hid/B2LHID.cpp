@@ -17,6 +17,7 @@
  * every N seconds, to test the event path without input hardware.
  */
 #include <IOKit/IOLib.h>
+#include <kern/clock.h>
 #include <IOKit/IOService.h>
 #include <IOKit/IOTimerEventSource.h>
 #include <libkern/c++/OSArray.h>
@@ -504,9 +505,17 @@ B2LHIDTouch::touch(int finger, bool down, int x, int y)
 	IOLockUnlock(fLock);
 
 	if (was != down) {
-		IOLog("B2L HID: touch %d %s at %d,%d\n", finger, down ? "down" : "up", x, y);
+		uint64_t ns=0;absolutetime_to_nanoseconds(now,&ns);
+		IOLog("B2L HID: touch %d %s at %d,%d t_us=%llu\n", finger, down ? "down" : "up", x, y, ns/1000);
 	}
 	dispatchEvent(collection);
+	uint64_t dispatchNS=0;
+	absolutetime_to_nanoseconds(mach_absolute_time()-now,&dispatchNS);
+	if(dispatchNS>=50000000){
+		static unsigned slowSamples;
+		if(__atomic_fetch_add(&slowSamples,1,__ATOMIC_RELAXED)<16)
+			IOLog("B2L HID: slow touch dispatch us=%llu sender=0x%llx\n",dispatchNS/1000,getRegistryEntryID());
+	}
 	collection->release();
 }
 
