@@ -7,6 +7,8 @@
 #include <sys/systm.h>
 #include <sys/syscall.h>
 #include <kern/thread.h>
+#include <kern/thread_group.h>
+#include <machine/cpu_number.h>
 #include <kern/backtrace.h>
 #include <kern/clock.h>
 #include <arm/thread.h>
@@ -50,7 +52,7 @@ static int role(void)
  * An old observation is not proof the thread is alive or still in that call. */
 #define B2L_PROGRESS_ROLES 6u
 #define B2L_PROGRESS_SLOTS 16u
-struct progress_slot {uint64_t tid,version,sec,pid,event,a,b,c,pc;int error;};
+struct progress_slot {uint64_t tid,version,sec,pid,event,a,b,c,pc,tg;int error;unsigned cpu;};
 static struct progress_slot progress_slots[B2L_PROGRESS_ROLES][B2L_PROGRESS_SLOTS];
 static uint64_t progress_overflow;
 static uint64_t progress_seconds(void)
@@ -105,6 +107,8 @@ static void progress_note(int r,unsigned event,uint64_t a,uint64_t b,uint64_t c,
         __atomic_store_n(&p->a,a,__ATOMIC_RELAXED);__atomic_store_n(&p->b,b,__ATOMIC_RELAXED);__atomic_store_n(&p->c,c,__ATOMIC_RELAXED);
         __atomic_store_n(&p->pc,regs?(uint64_t)get_saved_state_pc(regs):0,__ATOMIC_RELAXED);
         __atomic_store_n(&p->error,error,__ATOMIC_RELAXED);
+        __atomic_store_n(&p->cpu,(unsigned)cpu_number(),__ATOMIC_RELAXED);
+        __atomic_store_n(&p->tg,thread_group_id(thread_group_get(current_thread())),__ATOMIC_RELAXED);
         __atomic_store_n(&p->version,v+2,__ATOMIC_RELEASE);return;
     }
     __atomic_fetch_add(&progress_overflow,1,__ATOMIC_RELAXED);
@@ -121,15 +125,15 @@ void b2l_diag_progress(void)
             if(!v)break;if(v&1)continue;
 #define B2L_PROGRESS_LOAD(field) q.field=__atomic_load_n(&p->field,__ATOMIC_RELAXED)
             B2L_PROGRESS_LOAD(tid);B2L_PROGRESS_LOAD(sec);B2L_PROGRESS_LOAD(pid);B2L_PROGRESS_LOAD(event);
-            B2L_PROGRESS_LOAD(a);B2L_PROGRESS_LOAD(b);B2L_PROGRESS_LOAD(c);B2L_PROGRESS_LOAD(pc);B2L_PROGRESS_LOAD(error);
+            B2L_PROGRESS_LOAD(a);B2L_PROGRESS_LOAD(b);B2L_PROGRESS_LOAD(c);B2L_PROGRESS_LOAD(pc);B2L_PROGRESS_LOAD(error);B2L_PROGRESS_LOAD(cpu);B2L_PROGRESS_LOAD(tg);
 #undef B2L_PROGRESS_LOAD
             __atomic_thread_fence(__ATOMIC_ACQUIRE);
             if(v==__atomic_load_n(&p->version,__ATOMIC_RELAXED)){valid=true;break;}
         }
         if(!valid){if(__atomic_load_n(&p->version,__ATOMIC_RELAXED))busy++;continue;}
         if(!q.tid||!q.pid)continue;
-        b2l_diag_record("B2L PROGRESS: sec=%llu role=%s pid=%llu tid=%llu observed=%llu age=%llu event=%llu a=0x%llx b=0x%llx c=0x%llx pc=0x%llx error=%d\n",
-            now,names[r],q.pid,q.tid,q.sec,now>=q.sec?now-q.sec:0,q.event,q.a,q.b,q.c,q.pc,q.error);records++;
+        b2l_diag_record("B2L PROGRESS: sec=%llu role=%s pid=%llu tid=%llu observed=%llu age=%llu event=%llu a=0x%llx b=0x%llx c=0x%llx pc=0x%llx error=%d cpu=%u tg=%llu\n",
+            now,names[r],q.pid,q.tid,q.sec,now>=q.sec?now-q.sec:0,q.event,q.a,q.b,q.c,q.pc,q.error,q.cpu,q.tg);records++;
     }
     b2l_diag_record("B2L PROGRESS SUMMARY: sec=%llu slots=%u busy=%u overflow=%llu\n",now,records,busy,__atomic_load_n(&progress_overflow,__ATOMIC_RELAXED));
 }

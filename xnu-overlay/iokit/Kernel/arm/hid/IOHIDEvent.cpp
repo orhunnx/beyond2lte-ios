@@ -76,7 +76,7 @@ bool IOHIDEvent::initWithCapacity(IOByteCount capacity)
 
     _data->size = (uint32_t)_capacity;
     _children = NULL;
-    (void)_parent;
+    _parent = NULL;
     
     return true;
 }
@@ -1414,6 +1414,7 @@ IOHIDEvent * IOHIDEvent::genericGestureEvent(UInt64 timeStamp, IOHIDGenericGestu
 //==============================================================================
 void IOHIDEvent::appendChild(IOHIDEvent *childEvent)
 {
+    childEvent->_parent = this; /* weak: parent owns its retained children */
     if (!_children) {
         const OSObject *events[] = { childEvent };
 
@@ -1540,8 +1541,8 @@ void IOHIDEvent::setDoubleValue( IOHIDEventField         key,
 //==============================================================================
 size_t IOHIDEvent::getLength()
 {
-    _eventCount = 0;
-    return getLength(&_eventCount);
+    UInt32 count = 0;
+    return getLength(&count);
 }
 
 //==============================================================================
@@ -1550,6 +1551,7 @@ size_t IOHIDEvent::getLength()
 IOByteCount IOHIDEvent::getLength(UInt32 * count)
 {
     IOByteCount length = b2l_hid_wire_size(_data);
+    UInt32 subtreeCount = 1;
 
     length += sizeof(IOHIDSystemQueueElement);
 
@@ -1562,13 +1564,15 @@ IOByteCount IOHIDEvent::getLength(UInt32 * count)
 
         for(i=0 ;i<childCount; i++) {
             if ( (child = (IOHIDEvent *)_children->getObject(i)) ) {
-                length += child->getLength(count) - sizeof(IOHIDSystemQueueElement);
+                /* iOS26 current format gives EVERY event its own queue header. */
+                length += child->getLength(&subtreeCount);
             }
         }
     }
 
+    _eventCount = subtreeCount;
     if ( count )
-        *count = *count + 1;
+        *count += subtreeCount;
 
     return length;
 }
@@ -1580,6 +1584,7 @@ IOByteCount IOHIDEvent::appendBytes(UInt8 * bytes, IOByteCount withLength)
 {
     IOByteCount size = 0;
 
+    _data->depth = _parent ? _parent->_data->depth + 1 : 0;
     size = b2l_hid_wire_write(_data, bytes, withLength);
     if (!size) return 0;
 
@@ -1592,7 +1597,9 @@ IOByteCount IOHIDEvent::appendBytes(UInt8 * bytes, IOByteCount withLength)
 
         for(i=0 ;i<childCount; i++) {
             if ( (child = (IOHIDEvent *)_children->getObject(i)) ) {
-                size += child->appendBytes(bytes + size, withLength - size);
+                IOByteCount written = child->readBytes(bytes + size, withLength - size);
+                if (!written) return 0;
+                size += written;
             }
         }
     }
@@ -1603,112 +1610,59 @@ IOByteCount IOHIDEvent::appendBytes(UInt8 * bytes, IOByteCount withLength)
 //==============================================================================
 // IOHIDEvent::withBytes
 //==============================================================================
-IOHIDEvent * IOHIDEvent::withBytes(     const void *            bytes,
-                                        IOByteCount             size)
+IOHIDEvent * IOHIDEvent::withBytes(const void *bytes, IOByteCount size)
 {
-    IOHIDSystemQueueElement *   queueElement= NULL;
-    IOHIDEvent *                parent      = NULL;
-    UInt32                      index       = 0;
-    UInt32                      total       = 0;
-    UInt32                      offset      = 0;
-    UInt32                      sz          = 0;
-    UInt32                      attributeLength = 0;
-    UInt32                      eventCount = 0;
-    UInt32                      eventDataSize = 0;
-    UInt32                      eventDataType = 0;
-
-    if ( !bytes || !size || ( sizeof(IOHIDSystemQueueElement) > size ) ) {
-        return NULL;
-    }
-
-    queueElement    = (IOHIDSystemQueueElement *)bytes;
-    total           = (UInt32)size - sizeof(IOHIDSystemQueueElement);
-
-
-    eventCount = queueElement->eventCount;
-    attributeLength = queueElement->attributeLength;
-    // to prevent complier reordering
-    // local assignment should be enforced
-    // before validation (55894984)
-    COMPILER_BARRIER();
-
-    for (index=0; index < eventCount && offset<total; index++)
-    {
-        if (os_add_overflow(attributeLength, offset, &sz)) {
-            break;
-        }
-        
-        // Can bad value of offset cause overflow ??
-        // we already checked that above
-        
-        if ( (attributeLength + offset) > total ) {
-            break;
-        }
-        
-        if ((total - (attributeLength + offset)) < sizeof(IOHIDEventData) ) {
-            break;
-        }
-        
-
-        IOHIDEventData *eventData = (IOHIDEventData *)(queueElement->payload + attributeLength + offset);
-        
-        if (!eventData) {
-            break;
-        }
-        
-        eventDataType = eventData->type;
-        eventDataSize = eventData->size;
-        COMPILER_BARRIER();
-        
-        if ( eventDataType >= kIOHIDEventTypeCount ) {
-            break;
-        }
-
-        // Back calculate additional capacity needed
-        IOHIDEventGetSize(eventDataType, sz);
-        if (sz > eventDataSize) {
-            break;
-        }
-        
+    if (!bytes || size < sizeof(IOHIDSystemQueueElement)) return NULL;
+    const UInt8 *input = (const UInt8 *)bytes;
+    IOHIDSystemQueueElement header;
+    memcpy(&header, input, sizeof(header));
+    UInt32 count = header.eventCount;
+    /* Every event needs at least its own header and generic data. */
+    if (!count || count > size / (sizeof(header) + sizeof(IOHIDEventData))) return NULL;
+    IOHIDEvent *root = NULL, *previous = NULL;
+    IOByteCount offset = 0;
+    for (UInt32 i = 0; i < count; ++i) {
+        if (size - offset < sizeof(header)) goto fail;
+        memcpy(&header, input + offset, sizeof(header));
+        offset += sizeof(header);
+        if (header.attributeLength > size - offset) goto fail;
+        offset += header.attributeLength;
+        if (size - offset < sizeof(IOHIDEventData)) goto fail;
+        IOHIDEventData data;
+        memcpy(&data, input + offset, sizeof(data));
+        if (data.type >= kIOHIDEventTypeCount || data.size > size - offset) goto fail;
+        UInt32 minimum = 0;
+        IOHIDEventGetSize(data.type, minimum);
+        bool digitizer = data.type == kIOHIDEventTypeDigitizer;
+        if (data.size < minimum ||
+            (digitizer && data.size != sizeof(b2l_digitizer_wire))) goto fail;
+        IOHIDEvent *parent = previous;
+        while (parent && parent->_data->depth >= data.depth) parent = parent->_parent;
+        if ((!i && data.depth) || (i && (!parent || data.depth != parent->_data->depth + 1))) goto fail;
         IOHIDEvent *event = new IOHIDEvent;
-
-        if ( !event ) {
-            break;
-        }
-
-        bool digitizer = eventDataType == kIOHIDEventTypeDigitizer;
-        if ((digitizer && eventDataSize != sizeof(b2l_digitizer_wire)) ||
-            (total - (attributeLength + offset)) < eventDataSize ||
-            !event->initWithType(eventDataType, digitizer ? 0 : eventDataSize - sz) ||
-            (!digitizer && eventDataSize != event->_data->size)) {
-            event->release();
-            break;
+        if (!event) goto fail;
+        if (!event->initWithType(data.type, digitizer ? 0 : data.size - minimum) ||
+            (!digitizer && data.size != event->_data->size)) {
+            event->release(); goto fail;
         }
         if (digitizer) {
-            if (!b2l_hid_wire_read(eventData, eventDataSize, event->_data)) {
-                event->release(); break;
+            if (!b2l_hid_wire_read(input + offset, data.size, event->_data)) {
+                event->release(); goto fail;
             }
-        } else bcopy(eventData, event->_data, event->_data->size);
-        event->_timeStamp = queueElement->timeStamp;
-        event->_options = queueElement->options;
-        event->_senderID = queueElement->senderID;
-
-        if ( !parent ) {
-            parent = event;
-        }
-        else {
-            //Append event here;
-            parent->appendChild(event);
-            event->release();
-        }
-        
-        if ( ((UInt32) (offset + eventDataSize) ) <= offset ) {
-            break;
-        }
-        offset += eventDataSize;
+        } else memcpy(event->_data, input + offset, data.size);
+        event->_timeStamp = header.timeStamp;
+        event->_options = header.options;
+        event->_senderID = header.senderID;
+        if (!root) root = event;
+        else { parent->appendChild(event); event->release(); }
+        previous = event;
+        offset += data.size;
     }
-
-    return parent;
+    if (offset != size) goto fail;
+    return root;
+fail:
+    if (root) root->release();
+    return NULL;
 }
 
 //==============================================================================

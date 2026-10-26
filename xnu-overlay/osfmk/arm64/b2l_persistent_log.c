@@ -24,10 +24,13 @@ static void b2l_log_worker(void*argument __unused,wait_result_t result __unused)
          * ~30s distinguishes an awake scheduler from silent EL0 execution. */
         if(++reports==6){
             uint64_t v[4];b2l_arm64e_compat_snapshot(v);reports=0;
+            uint64_t perf[6];b2l_arm64e_perf_snapshot(perf);
+            b2l_early_trace("B2L EMU PERF: samples=%llu wrapper_ns=%llu vm_ns=%llu hash_ns=%llu paired=%llu pair_fallback=%llu\n",
+                perf[0],perf[1],perf[2],perf[3],perf[4],perf[5]);
             b2l_diag_progress();
             uint64_t ns=0;absolutetime_to_nanoseconds(mach_absolute_time(),&ns);
-            b2l_early_trace("B2L LIVE: traps=%llu done=%llu pid=%llu pc=0x%llx flush_errors=%llu last_error=%d sec=%llu\n",
-                v[0],v[1],v[2],v[3],__atomic_load_n(&flush_failures,__ATOMIC_RELAXED),__atomic_load_n(&last_error,__ATOMIC_RELAXED),ns/1000000000);
+            b2l_early_trace("B2L LIVE: traps=%llu done=%llu pid=%llu pc=0x%llx flush_errors=%llu last_error=%d sec=%llu pacga=%s\n",
+                v[0],v[1],v[2],v[3],__atomic_load_n(&flush_failures,__ATOMIC_RELAXED),__atomic_load_n(&last_error,__ATOMIC_RELAXED),ns/1000000000,b2l_arm64e_pacga_name());
         }
         assert_wait_timeout((event_t)&disk_writer,THREAD_UNINT,5,NSEC_PER_SEC);
         thread_block(THREAD_CONTINUE_NULL);

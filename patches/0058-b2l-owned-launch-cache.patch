@@ -1,0 +1,24 @@
+diff --git a/bsd/kern/kern_exec.c b/bsd/kern/kern_exec.c
+--- a/bsd/kern/kern_exec.c
++++ b/bsd/kern/kern_exec.c
+@@ -6758,6 +6758,7 @@
+ __attribute__((noinline))
+ #if defined(ARM64_BOARD_CONFIG_B2L)
+ #include "b2l_exec_graphics_diag.h"
++#include "b2l_exec_bootstrap_cache.h"
+ #endif
+ 
+ static int
+@@ -6892,6 +6893,12 @@
+ 		imgp->ip_argspace -= new_ptr_size; /* to hold argv[] entry */
+ 		imgp->ip_argc++;
+ 	}
++
++	/* B2L: use the verified derived cache only for its native loader. */
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	error = b2l_exec_bootstrap_cache(imgp, new_ptr_size);
++	if (error) goto bad;
++#endif
+ 
+ 	/* Save space for argv[] NULL terminator */
+ 	if (imgp->ip_argspace < new_ptr_size) {

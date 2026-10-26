@@ -59,7 +59,14 @@ python3 "$repo_root/scripts/apply-board-patches.py" "$xnu_path" \
   "$repo_root/patches/0049-b2l-eight-cpu-m4-trial.patch" \
   "$repo_root/patches/0050-b2l-m4-measured-identity.patch" \
   "$repo_root/patches/0051-b2l-explicit-generic-cpu-target.patch" \
-  "$repo_root/patches/0052-b2l-exact-detached-cache-admission.patch"
+  "$repo_root/patches/0052-b2l-exact-detached-cache-admission.patch" \
+  "$repo_root/patches/0053-b2l-three-tier-edge-scheduler.patch" \
+  "$repo_root/patches/0054-b2l-isolate-storage-scheduling-group.patch" \
+  "$repo_root/patches/0055-b2l-discontiguous-owned-ram.patch" \
+  "$repo_root/patches/0056-b2l-scalar-pacga-siphash.patch" \
+  "$repo_root/patches/0057-b2l-scoped-coregraphics-backtrace.patch" \
+  "$repo_root/patches/0058-b2l-owned-launch-cache.patch" \
+  "$repo_root/patches/0059-b2l-typed-critical-exit.patch"
 # New files have separate provenance and are kept as an overlay.
 while IFS= read -r -d '' source_file; do
   relative="${source_file#"$repo_root/xnu-overlay/"}"
@@ -70,6 +77,7 @@ while IFS= read -r -d '' source_file; do
   fi
 done < <(find "$repo_root/xnu-overlay" -type f -print0)
 rsync -a "$repo_root/xnu-overlay/" "$xnu_path/"
+python3 "$repo_root/scripts/build-userspace-bootstrap.py" --output "$xnu_path/bsd/kern/b2l_userspace_payload.h"
 for source_file in "$repo_root/common/cache/"*; do
   destination="$xnu_path/bsd/kern/$(basename "$source_file")"
   if [[ -f "$destination" ]] && ! cmp -s "$source_file" "$destination"; then

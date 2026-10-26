@@ -21,6 +21,8 @@ public:
     bool start(IOService *provider) APPLE_KEXT_OVERRIDE;
     IOReturn setProperties(OSObject *properties) APPLE_KEXT_OVERRIDE;
 };
+#include "B2LMemoryIO.h"
+
 OSDefineMetaClassAndStructors(IOWatchdog,IOService);
 bool IOWatchdog::start(IOService *provider)
 {
@@ -85,7 +87,7 @@ static IOReturn b2l_wdt_call(uint32_t selector,IOExternalMethodArguments *a)
     if(needStructOut){
         const uint8_t zero[2]={0,0};
         if(a->structureOutputDescriptor){
-            if(a->structureOutputDescriptor->writeBytes(0,zero,2)!=2)return kIOReturnNoSpace;
+            if(b2l_descriptor_write(a->structureOutputDescriptor, 0,zero,2)!=2)return kIOReturnNoSpace;
             a->structureOutputDescriptorSize=2;
         }else{
             if(!a->structureOutput)return kIOReturnBadArgument;

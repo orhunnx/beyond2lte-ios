@@ -15,6 +15,11 @@ static _Thread_local struct proc process={"SpringBoard"};static int requested=1;
 static unsigned char region[8192];static char output[200000];static size_t used;
 static int process64=1;
 static proc_t current_proc(void){return &process;}static int proc_is64bit(proc_t p){(void)p;return process64;}
+static _Thread_local unsigned test_cpu=6;
+static _Thread_local uintptr_t test_tg=123;
+static void *thread_group_get(void *t){(void)t;return (void*)test_tg;}
+static uint64_t thread_group_id(void *tg){return (uintptr_t)tg;}
+static unsigned cpu_number(void){return test_cpu;}
 static _Thread_local int pid=28;
 static _Thread_local uint64_t test_tid=41;
 static int proc_selfpid(void){return pid;}static void *current_thread(void){return (void*)1;}
@@ -67,7 +72,7 @@ static void test_periodic_progress(void)
  strcpy(process.p_comm,"SpringBoard");pid=28;test_tid=41;now=601000000000;
  requested=0;clear();b2l_diag_wait("mach-recv",0x70b,3,0);b2l_diag_progress();assert(!used);
  requested=1;clear();b2l_diag_wait("mach-recv",0x70b,3,0);clear();
- now=1801000000000;b2l_diag_progress();assert(strstr(output,"role=SpringBoard")&&strstr(output,"observed=601 age=1200 event=2"));clear();
+ now=1801000000000;b2l_diag_progress();assert(strstr(output,"role=SpringBoard")&&strstr(output,"observed=601 age=1200 event=2")&&strstr(output,"cpu=6 tg=123"));clear();
  // A quota-exhausted syscall still updates the resident last-observation cache.
  sys_samples[0]=10000;uint64_t args[2]={9,10};b2l_diag_syscall(SYS_open,9,args);clear();b2l_diag_progress();
  assert(strstr(output,"event=3 a=0x5 b=0x9 c=0xa")&&strstr(output,"error=9"));clear();

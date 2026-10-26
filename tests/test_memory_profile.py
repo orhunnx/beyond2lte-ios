@@ -11,23 +11,22 @@ prep=importlib.util.module_from_spec(spec);spec.loader.exec_module(prep)
 OLD='  {"Upper bank guard", 0x980000000ULL, 0x080000000ULL, AddMem, MEM_RES, SYS_MEM_CAP, Reserv, WRITE_THROUGH},'
 NEW='  {"B2L EL2 early memory", 0x9FD800000ULL, 0x02800000ULL, AddMem, MEM_RES, SYS_MEM_CAP, Reserv, WRITE_THROUGH},'
 class Tests(unittest.TestCase):
-    def test_only_budget_guard_changes(self):
-        original='lowbank_and_firstupper_guard_unchanged\n'+OLD+'\nFD_stack_GOP_EL2_log_MMIO_unchanged\n'
+    def test_exact_reservations_replace_budget_guards(self):
+        original='  {"Samsung U-H EL2", 0x87000000, 0x200000, AddMem, MEM_RES, SYS_MEM_CAP, Reserv, WRITE_BACK},\n  // DDR Regions\n'+OLD+'\n'
         result=prep.xnu_memory_profile(original)
-        self.assertEqual(result[:result.index('// B2L XNU RAM profile:')],original[:original.index(OLD)])
-        self.assertTrue(result.endswith(NEW+'\nFD_stack_GOP_EL2_log_MMIO_unchanged\n'))
         self.assertEqual(result,prep.xnu_memory_profile(result))
         self.assertNotIn(OLD,result)
-        for bad in ('',original.replace('0x080000000ULL','0x070000000ULL'),original+OLD):
-            with self.assertRaises(ValueError): prep.xnu_memory_profile(bad)
+        self.assertIn('"B2L DT el2_earlymem", 0x9FD800000ULL, 0x2800000ULL',result)
+        self.assertIn('"B2L DT sec_rdx_bootdev", 0x880000000ULL, 0xAD00000ULL',result)
+        self.assertIn('"Samsung U-H EL2"',result)
+        self.assertIn('"B2L absent DDR", 0xBAB00000ULL',result)
+        with self.assertRaises(ValueError):prep.xnu_memory_profile('unknown profile')
     def test_real_external_source_if_supplied(self):
         source=os.environ.get('B2L_EXTERNAL_MEMORY_MAP')
-        if not source: self.skipTest('optional external source audit')
-        original=Path(source).read_text();result=prep.xnu_memory_profile(original)
-        original_entries=re.findall(r'^\s*\{[^\n]+',original,re.M)
-        result_entries=re.findall(r'^\s*\{[^\n]+',result,re.M)
-        self.assertEqual([x for x in original_entries if '0x980000000ULL' not in x],
-                         [x for x in result_entries if 'B2L EL2 early memory' not in x])
+        if not source:self.skipTest('optional external source audit')
+        result=prep.xnu_memory_profile(Path(source).read_text())
+        self.assertIn('B2L discontiguous RAM profile v1',result)
+        self.assertNotRegex(result,r'^\s*\{"(?:Lower dynamic guard|Upper bank guard)"')
     def test_bootstrap_worst_case(self):
         board=(ROOT/'xnu-overlay/pexpert/pexpert/arm64/B2L.h').read_text()
         pages=int(re.search(r'B2L_BOOTSTRAP_TABLE_PAGES\s+(\d+)',board)[1])

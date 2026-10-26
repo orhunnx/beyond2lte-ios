@@ -13,12 +13,12 @@
 #include <vm/vm_kern_xnu.h>
 #include <arm/caches_internal.h>
 #include <pexpert/device_tree.h>
+#include <pexpert/arm64/b2l_ram.h>
 #include <libkern/libkern.h>
 #include "b2l_ufs_protocol.h"
 
 extern vm_offset_t ml_io_map(vm_offset_t,vm_size_t);
 extern ppnum_t pmap_find_phys(pmap_t,addr64_t);
-extern unsigned long gPhysBase,gPhysSize;
 static LCK_GRP_DECLARE(b2l_ufs_group,"b2l_ufs_transport");
 static LCK_MTX_DECLARE(b2l_ufs_mutex,&b2l_ufs_group);
 static struct {
@@ -173,13 +173,21 @@ int b2l_ufs_transport_init(struct b2l_ufs_geometry *out)
     ppnum_t page=pmap_find_phys(kernel_pmap,(addr64_t)host.dma);
     if(!page) { error=ENOMEM;goto done; }
     host.dma_pa=ptoa_64(page);
-    if((host.dma_pa&4095) || host.dma_pa<gPhysBase || B2L_UFS_DMA_SIZE>gPhysSize ||
-        host.dma_pa-gPhysBase>gPhysSize-B2L_UFS_DMA_SIZE) { error=EFAULT;goto done; }
+    /* The allocator may use any loader-owned bank, including RAM below the
+     * primary bootstrap arena. Never admit a physical hole or reserved bank. */
+    if((host.dma_pa&4095) || !b2l_ram_contains_range(b2l_owned_ram,
+        b2l_owned_ram_count,host.dma_pa,B2L_UFS_DMA_SIZE)) {
+        printf("B2L UFS: DMA extent outside owned RAM pa=0x%llx bytes=%u\n",
+            host.dma_pa,B2L_UFS_DMA_SIZE);
+        error=EFAULT;goto done;
+    }
     for(uint32_t off=0;off<B2L_UFS_DMA_SIZE;off+=PAGE_SIZE) {
         if(ptoa_64(pmap_find_phys(kernel_pmap,(addr64_t)host.dma+off))!=host.dma_pa+off) {
             error=EFAULT;goto done;
         }
     }
+    printf("B2L UFS: owned contiguous DMA pa=0x%llx bytes=%u verified\n",
+        host.dma_pa,B2L_UFS_DMA_SIZE);
     host.io=(struct b2l_ufs_io){NULL,native_read,native_write,native_clock,native_pause,native_sync,0};
     nanoseconds_to_absolutetime(5ULL*NSEC_PER_SEC,&host.io.timeout_ticks);
     if(!host.io.timeout_ticks) { error=EIO;goto done; }

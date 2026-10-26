@@ -19,6 +19,7 @@ mkdir -p "$WORKSPACE/B2LXnuPkg"
 rsync -a "$repo_root/uefi/" "$WORKSPACE/B2LXnuPkg/"
 rsync -a "$repo_root/common/cache/" "$WORKSPACE/B2LXnuPkg/XnuLoader/"
 rsync -a "$repo_root/common/smp/" "$WORKSPACE/B2LXnuPkg/XnuLoader/"
+rsync -a "$repo_root/common/memory/" "$WORKSPACE/B2LXnuPkg/XnuLoader/"
 cd "$WORKSPACE"
 exec "$EDK_TOOLS_PATH/BinWrappers/PosixLike/build" \
   -a AARCH64 -t CLANGPDB -b RELEASE -n "${BUILD_JOBS:-4}" \

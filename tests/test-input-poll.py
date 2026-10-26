@@ -38,6 +38,7 @@ public:
  uint64_t pollCount=0,eventCount=0,updateCount=0,bulkCount=0,transferFailures=0;
  uint64_t lastPollStart=0,lastDiagnostic=0,maxPollGapUS=0,maxPollWorkUS=0;
  unsigned maxPending=0,quiesced=0;
+ unsigned initAttempts=0,initCalls=0;bool initPending=false;uint64_t nextInitUS=0;
  uint64_t transferTimeUS=0,maxTransferUS=0;
  std::vector<Read> script;size_t next=0;
  B2LInput(){memset(backing,0xff,sizeof(backing));}
@@ -50,6 +51,7 @@ public:
  void add(uint8_t cmd,const std::vector<Event>&events,bool ok=true){
   Read r={cmd,{},ok};for(auto&e:events)r.bytes.insert(r.bytes.end(),e.begin(),e.end());script.push_back(r);
  }
+ void initializeTouch(){assert(initPending&&uptimeUS()>=nextInitUS);++initCalls;++initAttempts;initPending=false;touch=true;}
  static void poll(OSObject*,IOTimerEventSource*);
 };
 '''
@@ -57,6 +59,12 @@ post=r'''
 int main(){
  IOTimerEventSource timer;
  {B2LInput s;s.add(0x60,{Event{}});B2LInput::poll(&s,&timer);assert(s.next==1&&!s.eventCount&&timer.ms==20);}
+ // Deferred retry runs after its deadline and preserves the GPIO/poll cadence.
+ {B2LInput s;s.touch=false;s.initPending=true;s.nextInitUS=tick+1000000;
+  B2LInput::poll(&s,&timer);assert(!s.initCalls&&s.initPending&&timer.ms==20);
+  tick=s.nextInitUS;s.add(0x60,{Event{}});B2LInput::poll(&s,&timer);
+  assert(s.initCalls==1&&s.touch&&!s.initPending&&s.next==1&&timer.ms==20);
+ }
  // Preserve a press, 30 moves and release in chronological order using 2 bus commands.
  {B2LInput s;delivered.clear();std::vector<Event> bulk;
   s.add(0x60,{event(1,100,200,31)});

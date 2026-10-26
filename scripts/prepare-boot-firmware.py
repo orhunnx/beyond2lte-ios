@@ -5,6 +5,7 @@ The reference UEFI remains an external dependency. No ACPI/Windows sources are
 copied into this repository. This script does not access a phone or flash disk.
 """
 import argparse
+import json
 from pathlib import Path
 import re
 import shutil
@@ -23,15 +24,73 @@ def replace_function(source, name, body):
 
 
 def xnu_memory_profile(source):
-    """Relax only the Windows budget guard, preserving the real EL2 top reserve."""
-    old = '  {"Upper bank guard", 0x980000000ULL, 0x080000000ULL, AddMem, MEM_RES, SYS_MEM_CAP, Reserv, WRITE_THROUGH},'
-    new = '  {"B2L EL2 early memory", 0x9FD800000ULL, 0x02800000ULL, AddMem, MEM_RES, SYS_MEM_CAP, Reserv, WRITE_THROUGH},'
-    if source.count(old) == 1 and new not in source:
-        return source.replace(old, '// B2L XNU RAM profile: live 8GiB board DT reserves the final40MiB.\n'
-                             '// RamManagerDxe discovers only actual DDR and excludes this reservation.\n' + new)
-    if source.count(new) == 1 and old not in source:
-        return source
-    raise ValueError("expected original last-bank guard or exact XNU EL2 reservation is missing")
+    """Remove broad budget guards; retain exact observed fixed reservations."""
+    marker="// B2L discontiguous RAM profile v1"
+    if marker in source:return source
+    expected=('"Lower dynamic guard"','"Upper bank guard"','"B2L EL2 early memory"')
+    if not any(x in source for x in expected):raise ValueError("unrecognized firmware memory profile")
+    lines=[l for l in source.splitlines(True) if not any(x in l for x in expected)]
+    source=''.join(lines)
+    evidence=Path(__file__).resolve().parents[1]/"common/memory/beyond2lte-8g-dt.json"
+    nodes=json.loads(evidence.read_text());entries=[]
+    # Exact fixed reservations, except the existing separately named U-H row.
+    for name,p in nodes.items():
+        if not name.startswith('/reserved-memory/') or 'reg' not in p:continue
+        raw=bytes.fromhex(p['reg'])
+        if len(raw)!=12:raise ValueError("unexpected fixed reservation geometry")
+        base=int.from_bytes(raw[:8],'big');size=int.from_bytes(raw[8:],'big')
+        if base==0x87000000 and size==0x200000:continue
+        entries.append('  {"B2L DT '+name.split('/')[-1]+'", 0x%XULL, 0x%XULL, AddMem, MEM_RES, SYS_MEM_CAP, Reserv, WRITE_THROUGH},\n'%(base,size))
+    # These two low-bank gaps are absent from the live memory nodes.
+    for base,size in ((0xBAB00000,0x5500000),(0xE0000000,0x1900000)):
+        entries.append('  {"B2L absent DDR", 0x%XULL, 0x%XULL, AddMem, MEM_RES, SYS_MEM_CAP, Reserv, WRITE_THROUGH},\n'%(base,size))
+    at=source.index('  // DDR Regions')
+    source=source[:at]+marker+'\n'+''.join(entries)+source[at:]
+    return source
+
+
+def xnu_ram_manager_profile(source):
+    """Normalize live secure-world holes and stop on unknown enabled features."""
+    marker='// B2L RAM hole normalization v1'
+    if marker in source:return source
+    source=source.replace('STATIC EFI_PHYSICAL_ADDRESS MemoryStart;', 'STATIC EFI_STATUS B2lRamStatus=EFI_NOT_READY;\nSTATIC EFI_PHYSICAL_ADDRESS MemoryStart;',1)
+    body="""  // B2L RAM hole normalization v1
+  if(EFI_ERROR(B2lRamStatus))return B2lRamStatus;
+  EFI_MEMORY_RANGE *Result=AllocateZeroPool(sizeof(EFI_MEMORY_RANGE)*6);
+  if(Result==NULL)return EFI_OUT_OF_RESOURCES;
+  EFI_MEMORY_RANGE Sorted[5];CopyMem(Sorted,HoleRange,sizeof(Sorted));
+  for(UINTN i=0;i<5;i++){
+    if(Sorted[i].Length && (Sorted[i].Address>MAX_UINT64-Sorted[i].Length)){
+      FreePool(Result);return EFI_COMPROMISED_DATA;
+    }
+    for(UINTN j=i;j>0 && Sorted[j].Address<Sorted[j-1].Address;j--){
+      EFI_MEMORY_RANGE T=Sorted[j];Sorted[j]=Sorted[j-1];Sorted[j-1]=T;
+    }
+  }
+  UINT64 Cursor=MemoryStart;UINT8 Count=0;
+  for(UINTN i=0;i<5;i++){
+    UINT64 Base=Sorted[i].Address,End=Base+Sorted[i].Length;
+    if(!Sorted[i].Length||End<=Cursor||Base>=MemoryEnd)continue;
+    if(Base>Cursor){Result[Count].Address=Cursor;Result[Count++].Length=Base-Cursor;}
+    if(End>MemoryEnd)End=MemoryEnd;
+    if(End>Cursor)Cursor=End;
+  }
+  if(Cursor<MemoryEnd){Result[Count].Address=Cursor;Result[Count++].Length=MemoryEnd-Cursor;}
+  if(!Count){FreePool(Result);return EFI_NOT_FOUND;}
+  *Range=Result;*RangeCount=Count;return EFI_SUCCESS;"""
+    source=replace_function(source,'GetUsableMemoryRanges',body)
+    # Only optional PCD-disabled features return EFI_NOT_FOUND. Other failures
+    # cannot be interpreted as permission to hand secure memory to an OS.
+    begin=source.index('GetMemoryHoles ()');end=source.index('EFI_STATUS\nEFIAPI\nGetMemoryData',begin)
+    part=source[begin:end]
+    for i in range(4):
+        needle='    HoleRange[%d].Length  = HoleLength;\n  }'%i
+        if needle not in part:raise ValueError('external live-hole query changed')
+        part=part.replace(needle,needle+' else if (Status != EFI_NOT_FOUND) {\n    return Status;\n  }',1)
+    source=source[:begin]+part+source[end:]
+    pos=source.index('GetMemoryData (');tail=source[pos:];brace=tail.index('{');tail=tail[:brace+1]+'\n  B2lRamStatus=EFI_NOT_READY;'+tail[brace+1:];at=tail.rfind('  return EFI_SUCCESS;');assert at>=0
+    tail=tail[:at]+'  B2lRamStatus=EFI_SUCCESS;\n'+tail[at:];source=source[:pos]+tail
+    return source
 
 
 def main():
@@ -77,13 +136,15 @@ def main():
     manager_inf_path = library_root / "Library/BootManagerLib/BootManagerLib.inf"
     gic_path = root / "Mu_Basecore/ArmPkg/Drivers/ArmGicDxe/GicV2/ArmGicV2Dxe.c"
     memory_path = platform / "Library/MemoryMapLib/MemoryMapLib.c"
-    for path in (memory_path, dsc_path, fdf_path, bindings_path, manager_path, manager_inf_path, gic_path, a.loader):
+    ram_manager_path=root/"Silicon/Samsung/SamsungPkg/Library/RamManagerLib/RamManager.c"
+    for path in (ram_manager_path,memory_path, dsc_path, fdf_path, bindings_path, manager_path, manager_inf_path, gic_path, a.loader):
         if not path.is_file():
             p.error(f"missing input: {path}")
     if re.search(r"MemoryMapLib\s*\|\s*beyond2ltePkg/Library/MemoryMapLib/MemoryMapLib\.inf", dsc_path.read_text()) is None:
         p.error("external MemoryMapLib binding changed")
     try:
         memory = xnu_memory_profile(memory_path.read_text())
+        ram_manager = xnu_ram_manager_profile(ram_manager_path.read_text())
     except ValueError as error:
         p.error(str(error))
     bindings = bindings_path.read_text()
@@ -216,6 +277,7 @@ def main():
     manager_inf_path.write_text(manager_inf)
     gic_path.write_text(gic)
     memory_path.write_text(memory)
+    ram_manager_path.write_text(ram_manager)
     print(f"Prepared external 4 MiB firmware profile at {root}")
     print(f"Embedded loader {guid}; post-console launch precedes BootNext/BootOrder and stops if the loader returns")
 

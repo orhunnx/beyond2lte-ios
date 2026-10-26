@@ -3,10 +3,13 @@
 #define B2L_DEVICE_TREE_H
 #include "BootArgs.h"
 #include "BootMetadata.h"
+#include "b2l_ram_ranges.h"
 /* rel/xnu-12377 prng_random requires this full bootloader seed length. */
 #define B2L_SEED_BYTES 256U
 struct b2l_dt_config {
     b2l_u64 memory_base, memory_size, mpidr;
+    struct b2l_ram_range ram[B2L_RAM_MAX_RANGES];
+    unsigned ram_count;
     b2l_u64 native_cache_base, native_cache_size;
     b2l_u64 secondary_base, secondary_size;
     b2l_u64 touch_status[24];

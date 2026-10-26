@@ -138,6 +138,24 @@ void b2l_early_fault(const char *message, uint64_t pc, uint64_t lr, uint64_t esr
     __atomic_store_n(&b2l_first_fault.ready, 1, __ATOMIC_RELEASE);
 }
 
+/* Capture typed values before panic handling starts; no foreign varargs. */
+static struct {
+    unsigned claimed, ready, name_space;
+    int pid, signal, status;
+    uint64_t code;
+    char description[256];
+} b2l_critical_exit;
+void b2l_early_critical_exit(int pid,unsigned name_space,uint64_t code,int signal,int status,const char *description)
+{
+    unsigned expected=0;
+    if(!__atomic_compare_exchange_n(&b2l_critical_exit.claimed,&expected,1,0,__ATOMIC_ACQ_REL,__ATOMIC_ACQUIRE))return;
+    b2l_critical_exit.pid=pid;b2l_critical_exit.name_space=name_space;b2l_critical_exit.code=code;
+    b2l_critical_exit.signal=signal;b2l_critical_exit.status=status;
+    const char *source=description?description:"none";
+    unsigned n=0;while(n+1<sizeof(b2l_critical_exit.description)&&source[n]){b2l_critical_exit.description[n]=source[n];n++;}
+    b2l_critical_exit.description[n]=0;
+    __atomic_store_n(&b2l_critical_exit.ready,1,__ATOMIC_RELEASE);
+}
 void
 b2l_early_panic(const char *fmt, va_list *args)
 {
@@ -156,13 +174,18 @@ b2l_early_panic(const char *fmt, va_list *args)
         b2l_early_trace("B2L FAULT: MPIDR=0x%x pc=0x%llx lr=0x%llx\n esr=0x%llx far=0x%llx\n",
             b2l_first_fault.cpu, b2l_first_fault.pc, b2l_first_fault.lr,
             b2l_first_fault.esr, b2l_first_fault.far);
+    } else if(__atomic_load_n(&b2l_critical_exit.ready,__ATOMIC_ACQUIRE)) {
+        b2l_early_trace("B2L INIT EXIT: pid=%d ns=%u code=0x%llx signal=%d status=%d\n",
+            b2l_critical_exit.pid,b2l_critical_exit.name_space,b2l_critical_exit.code,
+            b2l_critical_exit.signal,b2l_critical_exit.status);
+        b2l_string("B2L INIT REASON: ");b2l_string(b2l_critical_exit.description);b2l_early_putc('\n');
     } else {
         b2l_string("B2L PANIC FORMAT: ");
         for (unsigned i = 0; i < 160 && fmt[i] && fmt[i] != '\n'; ++i)
             b2l_early_putc(fmt[i]);
         b2l_early_putc('\n');
     }
-    b2l_smp_dump();
+    if(!__atomic_load_n(&b2l_critical_exit.ready,__ATOMIC_ACQUIRE))b2l_smp_dump();
     b2l_panic_floor = b2l_row + 2 < b2l_rows / 2 ? b2l_row + 2 : b2l_rows / 2;
     b2l_row = b2l_panic_floor; b2l_col = 0;
     __asm__ volatile("dsb sy" ::: "memory");

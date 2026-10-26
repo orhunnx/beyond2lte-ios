@@ -1,0 +1,191 @@
+--- a/pexpert/pexpert/arm64/board_config.h
++++ b/pexpert/pexpert/arm64/board_config.h
+@@ -307,9 +307,9 @@
+ #ifdef ARM64_BOARD_CONFIG_B2L
+ #include <pexpert/arm64/B2L.h>
+ #define MAX_L2_CLINE                   7
+ #define MAX_CPUS                       8
+-#define MAX_CPU_CLUSTERS               1
++#define MAX_CPU_CLUSTERS               3
+ #define NO_XNU_PLATFORM_ERROR_HANDLER  1
+ #endif
+ 
+ #ifdef ARM64_BOARD_CONFIG_VMAPPLE
+--- a/osfmk/arm64/machine_routines.c
++++ b/osfmk/arm64/machine_routines.c
+@@ -1250,9 +1250,13 @@
+ 		 * Since we want to keep a linear cluster ID space, we cannot just rely
+ 		 * on the value provided by EDT. Instead, use the MPIDR value to see if we have
+ 		 * seen this exact cluster before. If so, then reuse that cluster ID for this CPU.
+ 		 */
+-#if HAS_CLUSTER
++#if defined(B2L)
++        /* Firmware CPU_ON IDs overlap across core microarchitectures.
++         * Scheduler clusters come from the validated board DT, not AFF1. */
++        uint32_t phys_cluster_id = (uint32_t)ml_readprop(child, "cluster-id", ML_READPROP_MANDATORY);
++#elif HAS_CLUSTER
+ 		uint32_t phys_cluster_id = MPIDR_CLUSTER_ID(cpu->phys_id);
+ #else
+ 		uint32_t phys_cluster_id = (cpu->cluster_type == CLUSTER_TYPE_P);
+ #endif
+--- a/osfmk/kern/sched_clutch.c
++++ b/osfmk/kern/sched_clutch.c
+@@ -1424,8 +1424,26 @@
+  * sched_clutch_init_with_thread_group()
+  *
+  * Initialize the sched_clutch when the thread group is being created
+  */
++#if defined(B2L) && CONFIG_SCHED_EDGE
++/* No Apple CLPC provider exists on this board. Seed native Edge preferences
++ * by QoS, keeping binding, priority inheritance, runqueues and spill logic.
++ * P=Samsung M4, M=Cortex-A75, E=Cortex-A55. Kernel work prefers A75 so the
++ * four cache workers do not compete with user-interactive work on M4. */
++static pset_id_t
++b2l_sched_initial_preferred_pset(sched_bucket_t bucket, bool kernel_group)
++{
++    pset_type_t desired = bucket == TH_BUCKET_SHARE_BG ? PSET_AMP_E :
++        (kernel_group || bucket == TH_BUCKET_SHARE_UT) ? PSET_AMP_M : PSET_AMP_P;
++    for (pset_id_t i = 0; i < sched_num_psets; ++i) {
++        if (pset_array[i] && pset_array[i]->pset_type == desired) return i;
++    }
++    /* Restricted CPU configurations must not invent a nonexistent pset. */
++    return sched_boot_pset->pset_id;
++}
++#endif
++
+ void
+ sched_clutch_init_with_thread_group(
+ 	sched_clutch_t clutch,
+ 	struct thread_group *tg)
+@@ -1434,8 +1452,12 @@
+ 
+ 	/* Initialize all the clutch buckets */
+ 	for (uint32_t i = 0; i < TH_BUCKET_SCHED_MAX; i++) {
+ 		sched_clutch_bucket_group_init(&(clutch->sc_clutch_groups[i]), clutch, i);
++#if defined(B2L) && CONFIG_SCHED_EDGE
++        os_atomic_store(&clutch->sc_clutch_groups[i].scbg_preferred_pset,
++            b2l_sched_initial_preferred_pset(i, thread_group_id(tg) == THREAD_GROUP_SYSTEM), relaxed);
++#endif
+ 	}
+ 
+ 	/* Grouping specific fields */
+ 	clutch->sc_tg = tg;
+@@ -5017,9 +5039,14 @@
+  * state update, in sched_edge_stir_the_pot_try_trigger_swap(), only
+  * happens at quantum expiration, which should allow cheaper
+  * operations at other callsites to win the race.
+  */
++#if defined(B2L)
++/* 8 CPUs need only16 bits; retain atomic publication without 128-bit CAS. */
++typedef uint64_t sched_edge_stp_registry_t;
++#else
+ typedef unsigned __int128 sched_edge_stp_registry_t;
++#endif
+ _Atomic sched_edge_stp_registry_t sched_edge_stir_the_pot_global_registry = 0LL;
+ #define SESTP_BITS_PER_CORE (2)
+ #define SESTP_BIT_POS(cpu_id) ((sched_edge_stp_registry_t)(cpu_id * SESTP_BITS_PER_CORE))
+ #define SESTP_MASK(cpu_id) ((sched_edge_stp_registry_t)bits_mask(SESTP_BITS_PER_CORE) << SESTP_BIT_POS(cpu_id))
+@@ -5037,11 +5064,29 @@
+ });
+ static_assert(SCHED_EDGE_STP_MAX <= bits_mask(SESTP_BITS_PER_CORE),
+     "Per-core stir-the-pot request state must fit in per-core bits");
+ 
++#if defined(B2L) && OS_ATOMIC_USE_LLSC
++/* Compute the candidate outside the exclusive transaction. The candidate
++ * scan reads other atomic state and may clobber an LL/SC reservation. A real
++ * compare-exchange retry keeps the full state transition atomic on ARMv8.0. */
++#define SCHED_STP_RMW_LOOP(p, ov, nv, m, ...) ({ \
++    int _result = 0; \
++    ov = os_atomic_load(p, relaxed); \
++    do { \
++        __VA_ARGS__; \
++        _result = os_atomic_cmpxchgv(p, ov, nv, &ov, m); \
++    } while (!_result); \
++    _result; \
++})
++#define SCHED_STP_RMW_GIVE_UP(...) ({ __VA_ARGS__; break; })
++#else
+ #if OS_ATOMIC_USE_LLSC
+ #error "Expecting CAS implementation of os_atomic_rmw_loop()"
+-#endif /* OS_ATOMIC_USE_LLSC */
++#endif
++#define SCHED_STP_RMW_LOOP os_atomic_rmw_loop
++#define SCHED_STP_RMW_GIVE_UP os_atomic_rmw_loop_give_up
++#endif
+ 
+ static cpumap_t sched_edge_p_core_map = 0ULL;
+ static cpumap_t sched_edge_non_p_core_map = 0ULL;
+ 
+@@ -5107,9 +5152,9 @@
+ 	int swap_cpu;
+ 	sched_edge_stp_registry_t old_registry, new_registry, intermediate_registry;
+ 	sched_edge_stp_state_t self_state;
+ 	/* BEGIN IGNORE CODESTYLE */
+-	os_atomic_rmw_loop(&sched_edge_stir_the_pot_global_registry,
++	SCHED_STP_RMW_LOOP(&sched_edge_stir_the_pot_global_registry,
+ 	    old_registry, new_registry, relaxed, {
+ 		swap_cpu = -1;
+ 		self_state = SESTP_EXTRACT_STATE(old_registry, self_cpu);
+ 		if (self_state == SCHED_EDGE_STP_PENDING_EXTERNAL) {
+@@ -5225,14 +5270,14 @@
+ {
+ 	int self_cpu = current_processor()->cpu_id;
+ 	sched_edge_stp_state_t self_state;
+ 	sched_edge_stp_registry_t old_registry, new_registry;
+-	os_atomic_rmw_loop(&sched_edge_stir_the_pot_global_registry,
++	SCHED_STP_RMW_LOOP(&sched_edge_stir_the_pot_global_registry,
+ 	    old_registry, new_registry, relaxed, {
+ 		self_state = SESTP_EXTRACT_STATE(old_registry, self_cpu);
+ 		if (self_state == SCHED_EDGE_STP_NOT_WANT) {
+ 		        /* State already cleared, nothing to be done */
+-		        os_atomic_rmw_loop_give_up(break);
++		        SCHED_STP_RMW_GIVE_UP(break);
+ 		}
+ 		new_registry = SESTP_SET_STATE(old_registry, self_cpu, SCHED_EDGE_STP_NOT_WANT);
+ 	});
+ 	if (self_state == SCHED_EDGE_STP_REQUESTED) {
+@@ -5254,18 +5299,18 @@
+ {
+ 	int self_cpu = current_processor()->cpu_id;
+ 	sched_edge_stp_state_t self_state;
+ 	sched_edge_stp_registry_t old_registry, new_registry;
+-	bool newly_requested = os_atomic_rmw_loop(&sched_edge_stir_the_pot_global_registry,
++	bool newly_requested = SCHED_STP_RMW_LOOP(&sched_edge_stir_the_pot_global_registry,
+ 	    old_registry, new_registry, relaxed, {
+ 		self_state = SESTP_EXTRACT_STATE(old_registry, self_cpu);
+ 		if (self_state == SCHED_EDGE_STP_REQUESTED) {
+ 		        /* Core already registered, nothing to be done */
+-		        os_atomic_rmw_loop_give_up(break);
++		        SCHED_STP_RMW_GIVE_UP(break);
+ 		} else if (!override_pending_state &&
+ 		(self_state == SCHED_EDGE_STP_PENDING_SELF || self_state == SCHED_EDGE_STP_PENDING_EXTERNAL)) {
+ 		        /* Core is already pending a swap for the running thread */
+-		        os_atomic_rmw_loop_give_up(break);
++		        SCHED_STP_RMW_GIVE_UP(break);
+ 		}
+ 		new_registry = SESTP_SET_STATE(old_registry, self_cpu, SCHED_EDGE_STP_REQUESTED);
+ 	});
+ 	if (newly_requested) {
+@@ -6338,8 +6383,22 @@
+  */
+ static void
+ sched_edge_cpu_init_completed(void)
+ {
++#if defined(B2L)
++    extern void b2l_early_trace(const char *, ...);
++    for (pset_id_t i = 0; i < sched_num_psets; ++i) {
++        processor_set_t p = pset_array[i];
++        b2l_early_trace("B2L SCHED: Edge pset=%u cluster=%u type=%u cpus=0x%llx\n",
++            i,p->cluster_id,p->pset_type,(uint64_t)p->cpu_bitmask);
++    }
++    b2l_early_trace("B2L SCHED: preferred foreground=%u default=%u utility=%u kernel=%u background=%u (M4 > A75 > A55)\n",
++        b2l_sched_initial_preferred_pset(TH_BUCKET_SHARE_FG,false),
++        b2l_sched_initial_preferred_pset(TH_BUCKET_SHARE_DF,false),
++        b2l_sched_initial_preferred_pset(TH_BUCKET_SHARE_UT,false),
++        b2l_sched_initial_preferred_pset(TH_BUCKET_FIXPRI,true),
++        b2l_sched_initial_preferred_pset(TH_BUCKET_SHARE_BG,false));
++#endif
+ 	/* Now that all cores have registered, compute bitmaps for different core types */
+ 	for (int pset_id = 0; pset_id < sched_num_psets; pset_id++) {
+ 		processor_set_t pset = pset_for_id(pset_id);
+ 		if (sched_edge_stir_the_pot_core_type_is_desired(pset)) {

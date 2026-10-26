@@ -1,0 +1,17 @@
+diff --git a/bsd/kern/kern_exit.c b/bsd/kern/kern_exit.c
+--- a/bsd/kern/kern_exit.c
++++ b/bsd/kern/kern_exit.c
+@@ -1983,6 +1983,13 @@
+ 
+ 	char *exit_reason_desc = exit_reason_get_string_desc(p->p_exit_reason);
+ 
++#if defined(ARM64_BOARD_CONFIG_B2L)
++    b2l_early_critical_exit(proc_getpid(p),
++        p->p_exit_reason==OS_REASON_NULL?0:p->p_exit_reason->osr_namespace,
++        p->p_exit_reason==OS_REASON_NULL?0:p->p_exit_reason->osr_code,
++        WTERMSIG(rv),WEXITSTATUS(rv),exit_reason_desc);
++#endif
++
+ 	if (p->p_exit_reason == OS_REASON_NULL) {
+ 		printf("pid %d exited -- no exit reason available -- (signal %d, exit %d)\n",
+ 		    proc_getpid(p), WTERMSIG(rv), WEXITSTATUS(rv));

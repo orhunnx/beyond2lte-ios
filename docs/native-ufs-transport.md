@@ -19,8 +19,10 @@ Controller interrupt enables are cleared for synchronous polling.
 
 Fresh contiguous kernel memory contains a transfer-list page, stopped task-list
 page, command/response/PRDT page, and a 64 KiB bounce buffer. Every physical page
-is checked for contiguity and inclusion in the loader-advertised kernel RAM
-arena. Firmware-reserved RAM and physical guards remain unchanged. Cache lines
+is checked for contiguity and inclusion in one of the EFI-allocated owned RAM
+spans. The primary bootstrap arena is not the only valid DMA bank. Physical
+holes, reservations and buffers that cross a span boundary are rejected before
+controller takeover. Cache lines
 are cleaned before DMA and cleaned/invalidated after completion, with barriers.
 
 ## Read contract and failures
@@ -51,6 +53,11 @@ explicitly. GPT validation and BSD device publication are separate from this
 transport; neither a successful capacity read nor a GPT read proves an HFS mount.
 
 ## Host validation
+
+Run `python3 tests/test-ufs-owned-ram.py` for native initializer tests with
+mocked allocation/translation: low DDR, extra upper DDR and the primary bank
+are admitted; reservations, crossing extents, overflow and physically fragmented
+mappings are rejected before takeover.
 
 Run `bash scripts/test-ufs-transport.sh` for ASAN/UBSAN tests of the actual
 descriptor builder and polling state machine, including high DMA addresses,

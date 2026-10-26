@@ -2,6 +2,7 @@
 #ifndef B2L_ARENA_H
 #define B2L_ARENA_H
 #include "MachO.h"
+#include "b2l_ram_ranges.h"
 #define B2L_MIN_ARENA (1024ULL * 1024 * 1024)
 #define B2L_MAX_ARENA (4ULL * 1024 * 1024 * 1024)
 /* Live 8GiB board: preserve first upper bank and top40MiB EL2 early memory. */
@@ -20,4 +21,7 @@ int b2l_validate_arena(const void *map,b2l_size map_size,b2l_size descriptor_siz
  * EFI conventional pages; validate ownership again before ExitBootServices. */
 int b2l_choose_secondary(const void *,b2l_size,b2l_size,b2l_u64 *);
 int b2l_validate_secondary(const void *,b2l_size,b2l_size,b2l_u64,b2l_u32);
+int b2l_collect_extra_ram(const void *,b2l_size,b2l_size,b2l_u64,b2l_u64,
+                          struct b2l_ram_range *,unsigned *);
+int b2l_validate_owned_ram(const void *,b2l_size,b2l_size,const struct b2l_ram_range *,unsigned);
 #endif

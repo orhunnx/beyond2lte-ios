@@ -247,6 +247,27 @@ static EFI_STATUS AllocateSecondary(VOID *Map, EFI_PHYSICAL_ADDRESS *Page)
     return EFI_OUT_OF_RESOURCES;
 }
 
+/* Claim only actual conventional pages, outside the primary arena and the
+ * retained EFI headroom. No boot/runtime/reserved descriptor is reclaimed. */
+static EFI_STATUS ClaimExtraRam(VOID *Map,struct b2l_dt_config *Dt)
+{
+ UINTN bytes=B2L_MAP_SPACE,key,stride;UINT32 version;unsigned count=0;
+ struct b2l_ram_range extra[B2L_RAM_MAX_RANGES];
+ EFI_STATUS status=gBS->GetMemoryMap(&bytes,Map,&key,&stride,&version);
+ if(EFI_ERROR(status))return status;
+ if(b2l_collect_extra_ram(Map,bytes,stride,Dt->memory_base,Dt->memory_size,extra,&count))return EFI_COMPROMISED_DATA;
+ Dt->ram_count=1;Dt->ram[0]=(struct b2l_ram_range){Dt->memory_base,Dt->memory_size};
+ for(unsigned i=0;i<count;i++){
+  EFI_PHYSICAL_ADDRESS pa=extra[i].base;
+  status=gBS->AllocatePages(AllocateAddress,EfiLoaderData,EFI_SIZE_TO_PAGES(extra[i].size),&pa);
+  if(EFI_ERROR(status))return status;
+  Dt->ram[Dt->ram_count++]=(struct b2l_ram_range){pa,extra[i].size};
+  if(pa!=extra[i].base)return EFI_COMPROMISED_DATA;
+ }
+ for(unsigned i=1;i<Dt->ram_count;i++){struct b2l_ram_range v=Dt->ram[i];unsigned j=i;while(j&&Dt->ram[j-1].base>v.base){Dt->ram[j]=Dt->ram[j-1];j--;}Dt->ram[j]=v;}
+ return b2l_ram_validate(Dt->ram,Dt->ram_count,Dt->memory_base,Dt->memory_size)?EFI_COMPROMISED_DATA:EFI_SUCCESS;
+}
+
 EFI_STATUS EFIAPI UefiMain(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
 {
     EFI_STATUS Status;
@@ -322,6 +343,8 @@ EFI_STATUS EFIAPI UefiMain(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
         ZeroMem(Dest, (UINTN)S->size);
         CopyMem(Dest, (UINT8 *)Kernel + S->file_offset, (UINTN)S->file_size);
     }
+    FreePool(Kernel); Kernel=NULL;
+    if(Root){Root->Close(Root);Root=NULL;}
     /* Staging stays inside the already reserved conventional-memory arena.
      * top_of_kernel_data keeps the snapshot out of the free-page allocator. */
     UINT64 CachePhysical=ALIGN_VALUE(Base+Used,4096);
@@ -332,6 +355,9 @@ EFI_STATUS EFIAPI UefiMain(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
     if(CacheSize){Dt.native_cache_base=CachePhysical;Dt.native_cache_size=CacheSize;}
     DtPhysical = ALIGN_VALUE(CachePhysical+CacheSize, 4096);
     B2lTouchHandoff(Dt.touch_status);
+    Status=ClaimExtraRam(MemoryMap,&Dt);
+    if(EFI_ERROR(Status)){Print(L"Cannot reserve additional RAM: %r\r\n",Status);goto Fail;}
+    Print(L"B2L: total owned RAM %lu MiB in %u ranges\r\n",b2l_ram_bytes(Dt.ram,Dt.ram_count)>>20,Dt.ram_count);
     Status = b2l_build_device_tree((VOID *)(UINTN)DtPhysical, B2L_DT_SPACE, &Dt, &DtSize) == 0
              ? EFI_SUCCESS : EFI_BAD_BUFFER_SIZE;
     ZeroMem(Dt.random_seed, sizeof(Dt.random_seed));
@@ -341,7 +367,7 @@ EFI_STATUS EFIAPI UefiMain(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
     ZeroMem(Args, sizeof(*Args));
     Args->revision = 2; Args->version = 2;
     Args->virtual_base = Mach.virtual_base; Args->physical_base = Base;
-    Args->memory_size = ArenaSize; Args->actual_memory_size = ArenaSize;
+    Args->memory_size = ArenaSize; Args->actual_memory_size = b2l_ram_bytes(Dt.ram,Dt.ram_count);
     Args->top_of_kernel_data = ALIGN_VALUE(ArgsPhysical + sizeof(*Args), 4096);
     Args->device_tree = Mach.virtual_base + DtPhysical - Base;
     Args->device_tree_length = (UINT32)DtSize;
@@ -350,10 +376,10 @@ EFI_STATUS EFIAPI UefiMain(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
     Args->video.base |= 1;
     AsciiStrCpyS(Args->command_line, sizeof(Args->command_line),
                 "-v debug=0x14e serial=3 cpus=8 keepsyms=1 -enable_kprintf_spam "
-                "rd=b2l-userdata b2l_root_rw=1 b2l_unsealed_root=1 b2l_arm64e_compat=1 cs_enforcement_disable=1 "
-                "launchd_unsecure_cache=1 b2l_system_log=1 b2l_native_cache=1 b2l_diag=1 exception_log_max_pid=4096");
+                "rd=b2l-userdata b2l_root_rw=1 b2l_unsealed_root=1 b2l_arm64e_compat=1 b2l_pacga_siphash=1 b2l_pacga_pair=1 cs_enforcement_disable=1 "
+                "launchd_unsecure_cache=1 b2l_system_log=1 b2l_native_cache=1 b2l_diag=1 b2l_userspace_bootstrap=1 exception_log_max_pid=4096");
     Entry = Base + Mach.entry - Mach.virtual_base;
-    FreePool(Kernel); Kernel = NULL;
+    if(Kernel){FreePool(Kernel); Kernel = NULL;}
     if (Root) { Root->Close(Root); Root = NULL; }
     Status = gBS->HandleProtocol(ImageHandle, &gEfiLoadedImageProtocolGuid, (VOID **)&Image);
     if (EFI_ERROR(Status)) goto Fail;
@@ -383,7 +409,8 @@ EFI_STATUS EFIAPI UefiMain(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
         MapSize = B2L_MAP_SPACE;
         Status = gBS->GetMemoryMap(&MapSize, MemoryMap, &MapKey, &DescSize, &DescVersion);
         if (EFI_ERROR(Status)) { B2lProgressSet(&Handoff,0,0x00ff0000); CpuDeadLoop(); }
-        if(b2l_validate_arena(MemoryMap,MapSize,DescSize,Base,ArenaSize,2) ||
+        if(b2l_validate_owned_ram(MemoryMap,MapSize,DescSize,Dt.ram,Dt.ram_count) ||
+            b2l_validate_arena(MemoryMap,MapSize,DescSize,Base,ArenaSize,2) ||
             b2l_validate_secondary(MemoryMap,MapSize,DescSize,SecondaryAllocation,EfiLoaderCode)) {
             B2lProgressSet(&Handoff,0,0x00ff0000); CpuDeadLoop();
         }
@@ -405,6 +432,7 @@ Fail:
     if (Root) Root->Close(Root);
     if (Kernel) FreePool(Kernel);
     if (MemoryMap) FreePool(MemoryMap);
+    for(unsigned i=0;i<Dt.ram_count;i++)if(Dt.ram[i].base!=Allocation)gBS->FreePages(Dt.ram[i].base,EFI_SIZE_TO_PAGES(Dt.ram[i].size));
     if (Allocation) gBS->FreePages(Allocation, Pages);
     if (SecondaryAllocation) gBS->FreePages(SecondaryAllocation, 4);
     return Status;

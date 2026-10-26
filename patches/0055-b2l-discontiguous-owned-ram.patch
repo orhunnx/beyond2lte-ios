@@ -1,0 +1,407 @@
+--- a/osfmk/arm/pmap/pmap.c
++++ b/osfmk/arm/pmap/pmap.c
+@@ -1546,7 +1546,7 @@
+ {
+ 	pvh_assert_locked(pai);
+ 
+-	const vm_offset_t kva = phystokv(vm_first_phys + (pmap_paddr_t)ptoa(pai));
++	const vm_offset_t kva = phystokv(b2l_pai_to_pa(pai));
+ 	pt_entry_t * const ptep = pmap_pte(kernel_pmap, kva);
+ 
+ 	pmap_set_pte_xprr_perm(ptep, expected_perm, new_perm);
+@@ -2353,8 +2353,16 @@
+ 
+ 	memset((char *)phystokv(pmap_struct_start), 0, avail_start - pmap_struct_start);
+ 
+-	vm_first_phys = gPhysBase;
+-	vm_last_phys = trunc_page(avail_end);
++	#if defined(B2L)
++ vm_first_phys=b2l_owned_ram[0].base;
++#else
++ vm_first_phys = gPhysBase;
++#endif
++	#if defined(B2L)
++ vm_last_phys=b2l_owned_ram[b2l_owned_ram_count-1].base+b2l_owned_ram[b2l_owned_ram_count-1].size;
++#else
++ vm_last_phys = trunc_page(avail_end);
++#endif
+ 
+ 	queue_init(&map_pmap_list);
+ 	queue_enter(&map_pmap_list, kernel_pmap, pmap_t, pmaps);
+@@ -2717,6 +2725,37 @@
+  * Initialize the count of available pages. No lock needed here,
+  * as this code is called while kernel boot up is single threaded.
+  */
++#if defined(B2L)
++static unsigned b2l_free_region;
++static uint64_t b2l_free_cursor[B2L_RAM_MAX_RANGES];
++static void initialize_ram_ranges(void)
++{
++ avail_page_count=0;
++ for(unsigned i=0;i<b2l_owned_ram_count;i++){
++  uint64_t start=b2l_owned_ram[i].base,end=start+b2l_owned_ram[i].size;
++  if(start==gPhysBase)start=first_avail;
++  assert(start<=end);b2l_free_cursor[i]=start;
++  avail_page_count+=(unsigned)atop(end-start);
++ }
++ need_ram_ranges_init=false;
++}
++unsigned int pmap_free_pages(void){if(need_ram_ranges_init)initialize_ram_ranges();return avail_page_count;}
++unsigned int pmap_free_pages_span(void){return pmap_free_pages();}
++boolean_t pmap_next_page_hi(ppnum_t *pnum,__unused boolean_t might_free){return pmap_next_page(pnum);}
++boolean_t pmap_next_page(ppnum_t *pnum)
++{
++ if(need_ram_ranges_init)initialize_ram_ranges();
++ for(;b2l_free_region<b2l_owned_ram_count;b2l_free_region++){
++  unsigned i=b2l_free_region;uint64_t end=b2l_owned_ram[i].base+b2l_owned_ram[i].size;
++  if(b2l_free_cursor[i]==end)continue;
++  uint64_t pa=b2l_free_cursor[i];assert(b2l_managed_pa(pa));
++  *pnum=(ppnum_t)atop(pa);b2l_free_cursor[i]+=PAGE_SIZE;
++  if(b2l_owned_ram[i].base==gPhysBase)first_avail=b2l_free_cursor[i];
++  assert(avail_page_count);--avail_page_count;return TRUE;
++ }
++ assert(!avail_page_count);return FALSE;
++}
++#else
+ static void
+ initialize_ram_ranges(void)
+ {
+@@ -2779,6 +2818,8 @@
+ 	assert(avail_page_count == 0);
+ 	return FALSE;
+ }
++
++#endif
+ 
+ /**
+  * Helper function to check wheter the given physical
+@@ -4124,7 +4165,7 @@
+ {
+ #if __ARM_PTE_PHYSMAP__
+ 	pvh_assert_locked(pai);
+-	vm_offset_t kva = phystokv(vm_first_phys + (pmap_paddr_t)ptoa(pai));
++	vm_offset_t kva = phystokv(b2l_pai_to_pa(pai));
+ 	pt_entry_t *pte_p = pmap_pte(kernel_pmap, kva);
+ 
+ 	pt_entry_t tmplate = *pte_p;
+@@ -7816,6 +7857,11 @@
+ boolean_t
+ pmap_has_managed_page(ppnum_t first, ppnum_t last)
+ {
++#if defined(B2L)
++ for(unsigned i=0;i<b2l_owned_ram_count;i++)
++  if(ptoa(first)<b2l_owned_ram[i].base+b2l_owned_ram[i].size && ptoa(last)>=b2l_owned_ram[i].base)return TRUE;
++ return FALSE;
++#else
+ 	if (ptoa(first) >= vm_last_phys) {
+ 		return FALSE;
+ 	}
+@@ -7824,6 +7870,7 @@
+ 	}
+ 
+ 	return TRUE;
++#endif
+ }
+ 
+ /*
+--- a/osfmk/arm/pmap/pmap_data.c
++++ b/osfmk/arm/pmap/pmap_data.c
+@@ -1235,7 +1235,7 @@
+ 
+ 	_vm_page_list_foreach_consume(mem, &list) {
+ 		const vm_object_offset_t offset =
+-		    (vm_object_offset_t) ((ptoa(VM_PAGE_GET_PHYS_PAGE(mem))) - gPhysBase);
++		    (vm_object_offset_t) ptoa(pa_index(ptoa(VM_PAGE_GET_PHYS_PAGE(mem))));
+ 
+ 		vm_page_insert_internal(mem, pmap_object, offset,
+ 		    VM_KERN_MEMORY_PTE, VMPI_NONE, &delayed_acct);
+@@ -1553,7 +1553,7 @@
+ 		 * Remove the page from the pmap's VM object and return it back to the
+ 		 * VM's global free list of pages.
+ 		 */
+-		mem = vm_page_lookup(pmap_object, (pa - gPhysBase));
++		mem = vm_page_lookup(pmap_object, ptoa(pa_index(pa)));
+ 		assert(mem != VM_PAGE_NULL);
+ 		assert(VM_PAGE_WIRED(mem));
+ 		vm_page_lock_queues();
+@@ -2626,7 +2626,7 @@
+ 	}
+ #endif /* PVH_FLAG_EXEC */
+ 	if (__improbable((pvh_flags & PVH_FLAG_FLUSH_NEEDED) && pvh_test_type(pvh, PVH_TYPE_NULL))) {
+-		pmap_flush_noncoherent_page((pmap_paddr_t)ptoa(pai) + vm_first_phys);
++		pmap_flush_noncoherent_page(b2l_pai_to_pa(pai));
+ 	}
+ 
+ 	*is_internal_p = is_internal;
+@@ -3481,7 +3481,12 @@
+ 		}
+ 
+ 		if (!(ranges[i].wimg & PMAP_IO_RANGE_NOT_IO) &&
+-		    !(ranges[i].addr >= avail_end || rgn_end <= gPhysBase)) {
++		    #if defined(B2L)
++            ({bool overlap=false;for(unsigned j=0;j<b2l_owned_ram_count;j++)
++              if(ranges[i].addr<b2l_owned_ram[j].base+b2l_owned_ram[j].size && rgn_end>b2l_owned_ram[j].base)overlap=true;overlap;})) {
++#else
++            !(ranges[i].addr >= avail_end || rgn_end <= gPhysBase)) {
++#endif
+ 			panic("%s: I/O %u addr 0x%llx length 0x%llx overlaps physical memory",
+ 			    __func__, i, ranges[i].addr, ranges[i].len);
+ 		}
+--- a/osfmk/arm/pmap/pmap_data.h
++++ b/osfmk/arm/pmap/pmap_data.h
+@@ -1,3 +1,6 @@
++#if defined(B2L)
++#include <pexpert/arm64/b2l_ram.h>
++#endif
+ /*
+  * Copyright (c) 2020 Apple Inc. All rights reserved.
+  *
+@@ -74,7 +77,11 @@
+ static inline bool
+ pa_valid(pmap_paddr_t pa)
+ {
+-	return (pa >= vm_first_phys) && (pa < vm_last_phys);
++	#if defined(B2L)
++ return b2l_managed_pa(pa);
++#else
++ return (pa >= vm_first_phys) && (pa < vm_last_phys);
++#endif
+ }
+ 
+ /**
+@@ -98,7 +105,11 @@
+ static inline unsigned int
+ pa_index(pmap_paddr_t pa)
+ {
+-	return (unsigned int)atop(pa - vm_first_phys);
++	#if defined(B2L)
++ unsigned idx=b2l_managed_index(pa);assert(idx!=~0u);return idx;
++#else
++ return (unsigned int)atop(pa - vm_first_phys);
++#endif
+ }
+ 
+ /* See the definition of pv_head_table for more information. */
+@@ -2084,4 +2095,15 @@
+ extern unsigned int pmap_wcrt_on_non_dram_count_get(void);
+ extern void pmap_wcrt_on_non_dram_count_increment_atomic(void);
+ #endif /* DEBUG || DEVELOPMENT */
++
++/* Inverse of pa_index; B2L's indices omit physical holes. */
++static inline pmap_paddr_t b2l_pai_to_pa(unsigned pai)
++{
++#if defined(B2L)
++ pmap_paddr_t pa=b2l_managed_pa_for_index(pai);assert(pa);return pa;
++#else
++ return vm_first_phys+(pmap_paddr_t)ptoa(pai);
++#endif
++}
++
+ #endif /* _ARM_PMAP_PMAP_DATA_H_ */
+--- a/osfmk/arm64/arm_vm_init.c
++++ b/osfmk/arm64/arm_vm_init.c
+@@ -1,3 +1,6 @@
++#if defined(B2L)
++#include <pexpert/arm64/b2l_ram.h>
++#endif
+ /*
+  * Copyright (c) 2007-2011 Apple Inc. All rights reserved.
+  *
+@@ -368,7 +371,9 @@
+ 	vm_size_t len;
+ } ptov_table_entry;
+ 
+-#if HAS_MTE
++#if defined(B2L)
++#define PTOV_TABLE_SIZE (B2L_RAM_MAX_RANGES + 8)
++#elif HAS_MTE
+ #define PTOV_TABLE_SIZE 9
+ #else /* HAS_MTE */
+ #define PTOV_TABLE_SIZE 8
+@@ -421,6 +426,19 @@
+ 	}
+ 	return pa - gPhysBase + gVirtBase;
+ }
++
++#if defined(B2L)
++/* Physical I-cache operations must use the remapped aperture, including low
++ * banks. Keep each operation inside one actually owned physical range. */
++extern void InvalidatePoU_IcacheRegion(vm_offset_t,size_t);
++void b2l_invalidate_icache_phys(pmap_paddr_t pa,unsigned length)
++{
++ while(length){vm_size_t part=length;vm_map_address_t va=phystokv_range(pa,&part);
++  if(!part)panic("B2L RAM: empty I-cache translation");
++  InvalidatePoU_IcacheRegion(va,part);pa+=part;length-=(unsigned)part;
++ }
++}
++#endif
+ 
+ vm_offset_t
+ ml_static_vtop(vm_offset_t va)
+@@ -1012,7 +1030,13 @@
+ 		va &= ~ARM_TT_L2_OFFMASK;
+ 		pa = va - gVirtBase + gPhysBase - pa_offset;
+ 
+-		if (pa >= real_avail_end) {
++		#if defined(B2L)
++        pmap_paddr_t map_end=b2l_ram_range_end(b2l_owned_ram,b2l_owned_ram_count,start-gVirtBase+gPhysBase-pa_offset);
++        if (!map_end) return;
++#else
++        pmap_paddr_t map_end=real_avail_end;
++#endif
++        if (pa >= map_end) {
+ 			return;
+ 		}
+ 
+@@ -1039,10 +1063,14 @@
+ 		}
+ 
+ 		vm_offset_t len = _end - va;
+-		if ((pa + len) > real_avail_end) {
+-			_end -= (pa + len - real_avail_end);
+-		}
+-		assert((start - gVirtBase + gPhysBase - pa_offset) >= gPhysBase);
++		if ((pa + len) > map_end) {
++			_end -= (pa + len - map_end);
++		}
++		#if defined(B2L)
++        assert(b2l_ram_contains_range(b2l_owned_ram,b2l_owned_ram_count,start-gVirtBase+gPhysBase-pa_offset,_end-start));
++#else
++        assert((start - gVirtBase + gPhysBase - pa_offset) >= gPhysBase);
++#endif
+ 
+ 		/* Round up to the nearest PAGE_SIZE boundary when creating mappings:
+ 		 * PAGE_SIZE may be a multiple of ARM_PGBYTES, and we don't want to leave
+@@ -1142,7 +1170,11 @@
+ 
+ 			tte2 = arm_kva_to_tte(align_start);
+ 
+-			if ((pa >= gPhysBase) && (pa < real_avail_end)) {
++			#if defined(B2L)
++            if(b2l_ram_contains_range(b2l_owned_ram,b2l_owned_ram_count,pa,ARM_TT_L2_SIZE)) {
++#else
++            if ((pa >= gPhysBase) && (pa < real_avail_end)) {
++#endif
+ 				tmplate = (pa & ARM_TTE_BLOCK_L2_MASK) | ARM_TTE_TYPE_BLOCK
+ 				    | ARM_TTE_VALID | ARM_TTE_BLOCK_AF | ARM_TTE_BLOCK_NX
+ 				    | ARM_TTE_BLOCK_AP(pte_prot_APX) | ARM_TTE_BLOCK_SH(SH_OUTER_MEMORY)
+@@ -1641,6 +1673,13 @@
+ 	arm_vm_physmap_slide(temp_ptov_table, (args->topOfKernelData - gPhysBase + gVirtBase),
+ 	    real_avail_end - args->topOfKernelData, AP_RWNA, ARM64_GRANULE_ALLOW_BLOCK | ARM64_GRANULE_ALLOW_HINT); // rest of physmem
+ 
++#if defined(B2L)
++ for(unsigned i=0;i<b2l_owned_ram_count;i++){
++  if(b2l_owned_ram[i].base==args->physBase)continue;
++  arm_vm_physmap_slide(temp_ptov_table,b2l_owned_ram[i].base-gPhysBase+gVirtBase,
++   b2l_owned_ram[i].size,AP_RWNA,ARM64_GRANULE_ALLOW_BLOCK);
++ }
++#endif
+ 	assert((temp_ptov_table[ptov_index - 1].va + temp_ptov_table[ptov_index - 1].len) <= physmap_end);
+ 
+ 	// Sort in descending order of segment length.  LUT traversal is linear, so largest (most likely used)
+@@ -1846,6 +1885,29 @@
+ }
+ #endif
+ 
++#if defined(B2L)
++struct b2l_ram_range b2l_owned_ram[B2L_RAM_MAX_RANGES];
++unsigned b2l_owned_ram_count;
++unsigned long long b2l_owned_ram_bytes;
++static void b2l_ram_init(boot_args *args)
++{
++ DTEntry chosen;const void *raw=NULL;unsigned int size=0;
++ if(SecureDTLookupEntry(NULL,"/chosen",&chosen)!=kSuccess ||
++    SecureDTGetProperty(chosen,"b2l,owned-ram-v1",&raw,&size)!=kSuccess ||
++    !size || size%sizeof(struct b2l_ram_range) || size>sizeof(b2l_owned_ram))
++  panic("B2L RAM: missing or oversized EFI-owned range list");
++ b2l_owned_ram_count=size/sizeof(struct b2l_ram_range);
++ memcpy(b2l_owned_ram,raw,size);
++ if(PAGE_SIZE!=B2L_RAM_PAGE || b2l_ram_validate(b2l_owned_ram,b2l_owned_ram_count,args->physBase,args->memSize))
++  panic("B2L RAM: invalid EFI-owned range list");
++ b2l_owned_ram_bytes=b2l_ram_bytes(b2l_owned_ram,b2l_owned_ram_count);
++ pmap_first_pnum=(ppnum_t)atop(b2l_owned_ram[0].base);
++ if(args->memSizeActual!=b2l_owned_ram_bytes)panic("B2L RAM: total differs from boot_args");
++ b2l_early_trace("B2L RAM: owned=%llu MiB ranges=%u primary=%llu MiB\n",b2l_owned_ram_bytes>>20,b2l_owned_ram_count,args->memSize>>20);
++ for(unsigned i=0;i<b2l_owned_ram_count;i++)b2l_early_trace("B2L RAM RANGE: %u PA=0x%llx bytes=0x%llx\n",i,b2l_owned_ram[i].base,b2l_owned_ram[i].size);
++}
++#endif
++
+ void
+ arm_vm_init(uint64_t memory_size, boot_args * args)
+ {
+@@ -1864,6 +1926,9 @@
+ 	 */
+ 	gVirtBase = args->virtBase;
+ 	gPhysBase = args->physBase;
++#if defined(B2L)
++	b2l_ram_init(args);
++#endif
+ #if KASAN
+ 	real_phys_size = args->memSize + (shadow_ptop - shadow_pbase);
+ #else
+@@ -1934,6 +1999,10 @@
+ 	/* add the KASAN stolen memory to the physmap */
+ 	dynamic_memory_begin = static_memory_end + (shadow_ptop - shadow_pbase);
+ #else
++#if defined(B2L)
++ static_memory_end += b2l_owned_ram_bytes - args->memSize;
++ physmap_end += b2l_owned_ram_bytes - args->memSize;
++#endif
+ 	dynamic_memory_begin = static_memory_end;
+ #endif
+ #if XNU_MONITOR
+@@ -2273,6 +2342,9 @@
+ 		flush_mmu_tlb();
+ 	}
+ 
++#if defined(B2L)
++ mem_size=b2l_owned_ram_bytes; /* aperture/avail_end remain the primary span */
++#endif
+ 	sane_size = mem_size - (avail_start - gPhysBase);
+ 	max_mem = mem_size;
+ 	vm_kernel_slid_base = segLOWESTTEXT;
+--- a/osfmk/arm64/caches_asm.s
++++ b/osfmk/arm64/caches_asm.s
+@@ -480,6 +480,9 @@
+ 	ARM64_PROLOG
+ 	cmp     w2, #0								// Is it physical?
+ 	b.eq	Lcall_invalidate_worker
++#if defined(B2L)
++	b	EXT(b2l_invalidate_icache_phys)
++#else
+ 	adrp	x2, _gPhysBase@page
+ 	add		x2, x2, _gPhysBase@pageoff
+ 	ldr		x2, [x2]
+@@ -488,6 +491,7 @@
+ 	add		x2, x2, _gVirtBase@pageoff
+ 	ldr		x2, [x2]
+ 	add		x0, x0, x2
++#endif
+ Lcall_invalidate_worker:
+ 	b		EXT(InvalidatePoU_IcacheRegion)
+ 
+--- a/osfmk/vm/vm_page.h
++++ b/osfmk/vm/vm_page.h
+@@ -87,7 +87,11 @@
+ #else
+ #define XNU_VM_HAS_DELAYED_PAGES        0
+ #define XNU_VM_HAS_LOPAGE               0
++#if defined(B2L)
++#define XNU_VM_HAS_LINEAR_PAGES_ARRAY   0
++#else
+ #define XNU_VM_HAS_LINEAR_PAGES_ARRAY   1
++#endif
+ #endif
+ 
+ 
+--- a/pexpert/pexpert/arm64/Makefile
++++ b/pexpert/pexpert/arm64/Makefile
+@@ -21,6 +21,8 @@
+ 
+ 
+ PRIVATE_KERNELFILES = \
++	b2l_ram.h \
++	b2l_ram_ranges.h \
+ 	B2L.h \
+ 	AIC.h \
+ 	apple_arm64_common.h \

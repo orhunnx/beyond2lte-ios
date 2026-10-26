@@ -6,7 +6,8 @@
  * talks to the user client below:
  *
  *   sel 13  limits: struct out 0x28, u16 at +0x22 must be 1 (ABI version),
- *           +0 offset alignment mask, +4 bytes-per-row alignment mask
+ *           +0 offset alignment mask, +4 bytes-per-row alignment mask,
+ *           +8 max bytes-per-row, +0x10 max width, +0x18 max height (u64)
  *   sel 0   create: scalar [parent id], struct in = serialized property
  *           dictionary (binary or XML), struct out = lock result (0xc68)
  *   sel 4   lookup by id: scalar [id], struct out = lock result
@@ -43,6 +44,8 @@
 #include <libkern/c++/OSSerialize.h>
 #include <libkern/c++/OSUnserialize.h>
 #include <sys/proc.h>
+
+#include "B2LMemoryIO.h"
 
 enum {
 	kB2LSurfaceCreate             = 0,
@@ -600,7 +603,7 @@ b2l_struct_out(IOExternalMethodArguments *args, const void *buf, uint32_t len)
 		if (len > args->structureOutputDescriptor->getLength()) {
 			return kIOReturnNoSpace;
 		}
-		if (args->structureOutputDescriptor->writeBytes(0, buf, len) != len) {
+		if (b2l_descriptor_write(args->structureOutputDescriptor, 0, buf, len) != len) {
 			return kIOReturnVMError;
 		}
 		args->structureOutputDescriptorSize = len;
@@ -660,7 +663,7 @@ IOSurfaceRootUserClient::create(IOExternalMethodArguments *args)
 		if (copy == NULL) {
 			return kIOReturnNoMemory;
 		}
-		if(args->structureInputDescriptor->readBytes(0,copy,len)!=len){IOFreeData(copy,len);return kIOReturnNoSpace;}
+		if(b2l_descriptor_read(args->structureInputDescriptor, 0,copy,len)!=len){IOFreeData(copy,len);return kIOReturnNoSpace;}
 		buf = copy;
 	}
 	OSObject *obj = (buf != NULL && len > 0 && len <= B2L_SURFACE_MAX_PROPS) ? OSUnserializeXML(buf, len) : NULL;
@@ -735,12 +738,30 @@ IOSurfaceRootUserClient::externalMethod(uint32_t selector, IOExternalMethodArgum
 
 	switch (selector) {
 	case kB2LSurfaceLimits: {
+		if (args->scalarInputCount != 0 || args->scalarOutputCount != 0 ||
+		    args->structureInputSize != 0 || args->structureInputDescriptor != NULL) {
+			return kIOReturnBadArgument;
+		}
 		uint8_t limits[0x28] = { 0 };
 		put32(limits, 0x0, B2L_SURFACE_ROW_ALIGN - 1);
 		put32(limits, 0x4, B2L_SURFACE_ROW_ALIGN - 1);
+		/* iOS 26 IOSurfaceClientGetPropertyMaximum reads these u64 fields.
+		 * CI::SWContext caches the width as its input/output/texture limit;
+		 * zero rejects every nonempty image. Keep the advertised dimensions
+		 * tied to layout validation, with the existing per-allocation ceiling
+		 * as the largest possible single row. Aggregate wiring is unchanged. */
+		put64(limits, 0x08, B2L_SURFACE_MAX_ALLOC);
+		put64(limits, 0x10, B2L_SURFACE_MAX_DIM);
+		put64(limits, 0x18, B2L_SURFACE_MAX_DIM);
 		limits[0x22] = 1;
-		b2l_surf_log_once("sel", selector);
-		return b2l_struct_out(args, limits, sizeof(limits));
+		IOReturn result = b2l_struct_out(args, limits, sizeof(limits));
+		static unsigned logged;
+		if (result == kIOReturnSuccess &&
+		    __atomic_fetch_add(&logged, 1, __ATOMIC_RELAXED) == 0) {
+			b2l_diag_record("B2L SURF LIMITS: width=%u height=%u row=%u abi=1\n",
+			    B2L_SURFACE_MAX_DIM, B2L_SURFACE_MAX_DIM, B2L_SURFACE_MAX_ALLOC);
+		}
+		return result;
 	}
 	case kB2LSurfaceSetYCbCrMatrix:
 	case kB2LSurfaceSetValue:
@@ -909,7 +930,7 @@ b2l_surface_metadata_input(IOExternalMethodArguments *args, uint8_t **copy,
 	if (*copy == NULL) return kIOReturnNoMemory;
 	*length = (uint32_t)n;
 	if (args->structureInputDescriptor) {
-		if (args->structureInputDescriptor->readBytes(0, *copy, n) == n) return kIOReturnSuccess;
+		if (b2l_descriptor_read(args->structureInputDescriptor, 0, *copy, n) == n) return kIOReturnSuccess;
 	} else if (args->structureInput) {
 		memcpy(*copy, args->structureInput, n);
 		return kIOReturnSuccess;

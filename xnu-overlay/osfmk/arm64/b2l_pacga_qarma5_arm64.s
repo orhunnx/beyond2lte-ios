@@ -7,10 +7,8 @@
  */
 #if defined(__APPLE__)
 #define ENTRY _b2l_pacga_qarma5_asm
-#define LOAD_CONSTANTS(reg) adrp reg, Lconstants@PAGE; add reg, reg, Lconstants@PAGEOFF
 #else
 #define ENTRY b2l_pacga_qarma5_asm
-#define LOAD_CONSTANTS(reg) adrp reg, Lconstants; add reg, reg, :lo12:Lconstants
 #endif
 .text
 .p2align 2
@@ -30,7 +28,14 @@ ENTRY:
     eor x23, x23, x3, lsr #63
     eor x19, x19, x22
     mov x24, #0
-    LOAD_CONSTANTS(x25)
+    /* Darwin treats ';' as a comment: keep these on separate source lines. */
+#if defined(__APPLE__)
+    adrp x25, Lconstants@PAGE
+    add x25, x25, Lconstants@PAGEOFF
+#else
+    adrp x25, Lconstants
+    add x25, x25, :lo12:Lconstants
+#endif
 Lforward:
     eor x19, x19, x21
     eor x19, x19, x20

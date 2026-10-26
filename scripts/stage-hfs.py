@@ -27,11 +27,11 @@ def hashes(root):
 
 
 def unencrypted_getattr(text):
-    """Keep native unencrypted class-0 queries when the key-service build is off.
+    """Stage the historical read-only query hook; revision2 supplies None below.
 
-    Native CONFIG_PROTECT HFS returns class 0 for c_cpentry == NULL. The B2L
-    key-service-free build must not turn that read-only query into ENOTSUP.
-    This does not add encrypted files, class changes or key generation.
+    Native CONFIG_PROTECT behavior is preserved, including class0 for an absent
+    key entry. The separate B2L revision2 path reports explicit unencrypted
+    None (classD), because shipped CoreServices maps class0 to a null property.
     """
     start = text.index('#if CONFIG_PROTECT\n\tif (VATTR_IS_ACTIVE(vap, va_dataprotect_class))')
     end = text.index('\n#endif', start) + len('\n#endif')
@@ -46,11 +46,42 @@ def unencrypted_getattr(text):
 
 def upgrade_unencrypted_getattr(destination, data):
     path = destination / 'core/hfs_vnops.c'
-    if data.get('unencrypted_getattr_revision') == 1:
+    revision = data.get('unencrypted_getattr_revision', 0)
+    if revision == 2:
         return
-    text = unencrypted_getattr(path.read_text())
+    text = path.read_text()
+    if not revision:
+        text = unencrypted_getattr(text)
+    old = 'vap->va_dataprotect_class = 0; /* explicitly unencrypted */'
+    if text.count(old) != 1:
+        raise SystemExit('Pinned B2L unencrypted HFS query changed')
+    text = text.replace(old, 'vap->va_dataprotect_class = PROTECTION_CLASS_D; /* FileProtectionNone */')
+    text = text.replace('#include <sys/namei.h>', '#include <sys/namei.h>\n#include <sys/content_protection.h>', 1)
+    begin = text.index('int\nhfs_vnop_setattr(')
+    at = text.index('\torig_ctime = VTOC(vp)->c_ctime;', begin)
+    check = """#if defined(ARM64_BOARD_CONFIG_B2L) && !CONFIG_PROTECT
+    /* The explicitly unencrypted B2L volume can satisfy only None. Never
+     * acknowledge an encrypted protection class or persist a fake class. */
+    int class_error = hfs_b2l_unencrypted_setclass(vap);
+    if (class_error) return class_error;
+#endif
+
+"""
+    text = text[:at] + check + text[at:]
+    helper = """#if defined(ARM64_BOARD_CONFIG_B2L) && !CONFIG_PROTECT
+static int hfs_b2l_unencrypted_setclass(struct vnode_attr *vap)
+{
+    if (!VATTR_IS_ACTIVE(vap, va_dataprotect_class)) return 0;
+    if (vap->va_dataprotect_class != PROTECTION_CLASS_D) return ENOTSUP;
+    VATTR_SET_SUPPORTED(vap, va_dataprotect_class);
+    return 0;
+}
+#endif
+
+"""
+    text = text[:begin] + helper + text[begin:]
     path.write_text(text)
-    data['unencrypted_getattr_revision'] = 1
+    data['unencrypted_getattr_revision'] = 2
     data['files'] = hashes(destination)
     (destination / 'b2l-provider.json').write_text(json.dumps(data, indent=2, sort_keys=True) + '\n')
 

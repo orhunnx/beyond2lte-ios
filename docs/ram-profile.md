@@ -37,3 +37,15 @@ RAM outside the allocation.
 The proof is source and host validation, not a device boot result. The full
 kernel/EFI build and installation checks pass in 0031; the next device screen
 and recovered early log must establish the actual advertised RAM size.
+
+
+## 0087 discontiguous ownership profile
+
+The earlier section records the 0031 single-arena profile. [0087](build-0087.md)
+adds separately allocated low-bank and first-upper-bank conventional spans.
+The primary bootstrap arena remains 4024MiB; it is no longer the total RAM
+ceiling. All fixed runtime-DT reservations and live secure-world holes remain
+excluded, and each advertised range must be an actual EFI LoaderData allocation.
+The range whitelist ceiling is about7045MiB; active firmware allocations and
+alignment reduce the device result. The 0087 BOOT has been written and verified;
+actual owned-range/page counts still need a recovered boot log or device screen.

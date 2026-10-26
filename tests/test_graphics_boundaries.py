@@ -17,6 +17,8 @@ def function(source, name):
 
 s = SURFACE.read_text()
 reply = "\n".join(function(s, n) for n in ("put32", "put64", "b2l_surface_fill_result"))
+struct_out = '\nenum {kIODirectionIn=1,kIODirectionOut=2};\n'+(ROOT/'xnu-overlay/iokit/Kernel/arm/B2LMemoryIO.h').read_text()+'\n'+s[s.index("static IOReturn\nb2l_struct_out("):s.index("/* Map s for this client")]
+limit_defines = "\n".join(re.findall(r"^#define B2L_SURFACE_(?:MAX_DIM|MAX_ALLOC).*", s, re.M))
 # Execute the exact case body too, catching an old limits ABI reply.
 limits = s.split("case kB2LSurfaceLimits: {", 1)[1].split("\n\t}", 1)[0]
 patch = (ROOT / "patches/0037-b2l-hfs-regular-file-swap.patch").read_text()
@@ -31,6 +33,8 @@ code = r'''#include <cassert>
 #define B2L_SURFACE_RESULT_SIZE 0xc68
 #define B2L_SURFACE_TIMESTAMPS 0x800
 #define B2L_SURFACE_ROW_ALIGN 64
+using IOReturn=int;
+enum{kIOReturnSuccess=0,kIOReturnBadArgument=1,kIOReturnNoSpace=2,kIOReturnVMError=3};
 struct Map { uint64_t a; uint64_t getAddress() { return a; } };
 struct B2LSurfaceRef { Map *data, *state; };
 struct B2LSurface {
@@ -39,12 +43,25 @@ struct B2LSurface {
  uint32_t cacheMode,parentID;
 };
 ''' + reply + r'''
-static uint8_t limitsReply[0x28];
-static void b2l_surf_log_once(const char*,unsigned) {}
-static int b2l_struct_out(void*,const void *p,unsigned n) {
- assert(n==sizeof(limitsReply));memcpy(limitsReply,p,n);return 0;
-}
-static int limits_test() { void *args=nullptr; unsigned selector=13;
+struct Descriptor { int prepare(int){return 0;} int complete(int){return 0;}
+ uint8_t data[42];uint64_t length=40;bool short_write=false;
+ Descriptor(){memset(data,0xa5,sizeof(data));}
+ uint64_t getLength(){return length;}
+ uint64_t writeBytes(uint64_t off,const void*p,uint64_t n){
+  assert(off==0&&n<=40);if(short_write)return n-1;
+  memcpy(data+1,p,n);return n;
+ }
+};
+struct IOExternalMethodArguments {
+ unsigned scalarInputCount=0,scalarOutputCount=0;
+ uint64_t structureInputSize=0,structureOutputSize=0;
+ void*structureInputDescriptor=nullptr;
+ Descriptor*structureOutputDescriptor=nullptr;
+ void*structureOutput=nullptr;uint64_t structureOutputDescriptorSize=0;
+};
+''' + limit_defines + '\n' + struct_out + r'''
+static void b2l_diag_record(const char*,...) {}
+static int limits_test(IOExternalMethodArguments *args) {
 ''' + limits + r'''
 }
 struct Mount { const char *f_fstypename; };
@@ -90,7 +107,43 @@ int main() {
  assert(u64(out,0x20)==surf.allocSize&&u64(out,0x28)==1080&&u64(out,0x30)==2400);
  assert(u64(out,0x38)==4352&&u64(out,0x40)==64&&out[0x58]==0);
  for(unsigned i=0x74;i<B2L_SURFACE_RESULT_SIZE;++i)assert(out[i]==0);
- free(out);assert(limits_test()==0&&limitsReply[0x22]==1&&limitsReply[0x23]==0);
+ free(out);
+ uint8_t guarded[42];memset(guarded,0xa5,sizeof(guarded));
+ IOExternalMethodArguments q;q.structureOutput=guarded+1;q.structureOutputSize=40;
+ assert(limits_test(&q)==0&&q.structureOutputSize==40);
+ auto*lim=guarded+1;
+ assert(guarded[0]==0xa5&&guarded[41]==0xa5);
+ assert(u64(lim,8)==(256u<<20)&&u64(lim,0x10)==16384&&u64(lim,0x18)==16384);
+ assert(lim[0]==63&&lim[4]==63&&lim[0x22]==1&&lim[0x23]==0);
+ for(unsigned i=0x20;i<40;++i)assert(lim[i]==(i==0x22?1:0));
+ // Native IOSurfaceGetPropertyMaximum reads width/height as 64-bit values
+ // at reply+0x10/+0x18. CI::SWContext uses width for output/texture limits.
+ // The old version/alignment-only reply admitted a service but rejected
+ // even the observed 12x12 render. The corrected reply admits real sizes.
+ auto ci_accepts=[](const uint8_t*p,uint64_t w,uint64_t h){
+  uint64_t max=u64(p,0x10);return w<=max&&h<=max;
+ };
+ uint8_t old[40]{};old[0]=old[4]=63;old[0x22]=1;
+ assert(!ci_accepts(old,12,12));
+ assert(ci_accepts(lim,12,12)&&ci_accepts(lim,1440,3040));
+ assert(ci_accepts(lim,16384,16384)&&!ci_accepts(lim,16385,1));
+ assert(!ci_accepts(lim,1,16385));
+ // MIG can supply non-null backing for absent inputs. Count zero is valid.
+ for(unsigned bad=0;bad<6;++bad){
+  auto a=q;memset(guarded,0xa5,sizeof(guarded));
+  if(bad==0)a.scalarInputCount=1;if(bad==1)a.scalarOutputCount=1;
+  if(bad==2)a.structureInputSize=1;if(bad==3)a.structureInputDescriptor=(void*)1;
+  if(bad==4)a.structureOutputSize=39;if(bad==5)a.structureOutput=nullptr;
+  assert(limits_test(&a)!=0);
+  for(auto x:guarded)assert(x==0xa5);
+ }
+ Descriptor desc;auto dq=q;dq.structureOutput=nullptr;dq.structureOutputSize=0;
+ dq.structureOutputDescriptor=&desc;assert(limits_test(&dq)==0&&dq.structureOutputDescriptorSize==40);
+ assert(desc.data[0]==0xa5&&desc.data[41]==0xa5&&u64(desc.data+1,0x10)==16384);
+ desc.length=39;memset(desc.data,0xa5,sizeof(desc.data));
+ assert(limits_test(&dq)==kIOReturnNoSpace);for(auto x:desc.data)assert(x==0xa5);
+ desc.length=40;desc.short_write=true;assert(limits_test(&dq)==kIOReturnVMError);
+
  Mount hfsMount{"hfs"},otherMount{"hfs"},apfsMount{"apfs"};
  Vnode a{true,true,&hfsMount},b{false,true,&hfsMount};exchangeResult=0;
  assert(swap_test(ENOTSUP,2,&a,&b)==0&&calls==1);

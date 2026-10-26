@@ -21,30 +21,103 @@ and selects the XNU loader as its default boot application. U-Boot is not used.
 
 ## Device support and implementation
 
-Latest runtime evidence: **0082**. **0083 is built and installed with a matching
-BOOT readback hash**, but its new fixes and software identity still need a device
-run. **Verified** means observed on this S10+, **Partial** means working with
+Current installed checkpoint: **0100**. The owner confirms Settings opens on
+0099;0100 logs verify D94 touch-profile selection. Icons/alert backing and a
+SpringBoard assertion remain unresolved. The native installer rejects HFS
+staging, so source-image application migration is incomplete. The0101 owned
+publisher/native-cache comparison fix is compiled/tested but not installed.
+See [current findings](docs/0100-userspace-findings.md) and the
+[HFS/APFS comparison](docs/hfs-apfs-installation.md).
+
+Earlier runtime checkpoint **0083**: the owner observed SpringBoard with fluid
+animations, but touch input was absent. The kernel log shows a failed first
+sensor probe and touch disabled throughout the run. **0084** adds bounded
+deferred startup retries. Recovery logs verify successful sensor setup on
+attempt 2 and delivery into backboardd; responsive UI input remains unverified. **0085** verifies all eight CPUs and three Edge clusters, but its shared
+system-group override incorrectly preferred A75 for userspace services too.
+**0086 is installed with exact BOOT readback verification**; it restricts
+that override to IO-storage workers. M4 placement is observed in 0086, but the owner still reports no UI after
+40 minutes. Startup performance remains unresolved. **Verified** means observed on this S10+, **Partial** means working with
 known limits, and **Pending** means implemented/tested without runtime acceptance.
+**0087 reached eight initialized CPUs but failed HFS root selection.**
+[0088](docs/build-0088.md) fixes UFS DMA validation for the added owned RAM
+banks; 0088 reached the lock screen. **[0089](docs/build-0089.md) is installed**
+with exact BOOT readback verification and fixes current-format HID child-event
+headers. Responsive touch and startup speed still require device evidence.
+**[0090](docs/build-0090.md) is installed with exact BOOT readback verification.**
+Its loader selects a SipHash-2-4 PACGA trial, and steady-state key reads no longer
+take the global mutex. 0090 runtime confirms SipHash activation, but
+the owner still reports no UI after80 minutes. **[0091](docs/build-0091.md) is installed with exact BOOT readback verification.**
+It adds a bounded adjacent-PACGA pair trial and sampled timing; 0091 runtime confirms
+5.2 million paired extra instructions, but sampled VM-query elapsed time still
+dominates the wrapper. **[0092](docs/build-0092.md) is installed with exact BOOT readback verification.**
+It replaces the expensive metadata query with a direct executable-leaf check;
+The owner now reports an Apple logo at about1 minute and the lock screen at
+about1.5 minutes after power-on (manual timings), and confirms working touch.
+Fresh0092 samples reduce mean VM-query elapsed time from about2.08ms to4.92us.
+The owner then reports a completely black screen after tapping Settings, with
+no recovery from a short power-button press, and incorrectly drawn icons.
+Native CoreImage render failures are present; the black-screen cause and
+long-run stability remain unresolved.
+**[0093](docs/build-0093.md) is installed with exact BOOT readback verification.** It corrects the proven zero IOSurface dimension
+limits consumed by CoreImage CPU rendering and adds bounded presentation
+progress counters. 0093 runtime no longer records the earlier CoreImage size errors, but the owner
+still reports malformed icons and Settings black screen.
+**[0094](docs/build-0094.md) is installed with exact BOOT readback verification.** It adds scoped native CoreGraphics backtraces to
+identify the remaining NULL colorspace/context; it is a diagnostic trial.
 Historical build notes below retain the status at the time of each experiment.
+
+**[0095](docs/build-0095.md) is installed with exact BOOT readback verification.** It reports explicit unencrypted HFS
+FileProtectionNone, completes the artwork device profile, and includes the owner's explicitly approved, bounded native
+SystemAppMigrator bootstrap. Native app installation, PosterBoard migration and the visible graphics result await a fresh run.
+
+**[0097](docs/build-0097.md) runtime identifies `No service cache` in launchd.**
+The derived cache in 0096/0097 was shorter than the parent's fixed shared-memory
+view. [0098](docs/build-0098.md) preserves the exact original length while adding
+the one approved bootstrap job. Its production build and native XPC parsing
+checks pass. [0098 runtime](docs/0098-userspace-findings.md) confirms service startup
+and native iPhone artwork-profile regeneration. Its owned helper crashed in
+dyld before main, and Settings triggered an IOGMD wire-count panic.
+**[0099](docs/build-0099.md) is installed with exact BOOT readback verification
+and reboot completed.** It balances descriptor prepare/complete at owned
+adapter byte-copy sites and compiles the helper as arm64e. Its captured
+runtime results follow below.
+
+[0099 runtime](docs/0099-userspace-findings.md): the owner confirms Settings
+opens. Icons and alert backing remain incorrect. The app helper now executes,
+but native staging rejects the HFS root (APFS required, error166), and no apps
+are installed. [0100](docs/build-0100.md) adds the missing D94 target used to
+select the already-present UIKit EventTimingProfiles resources. **0100 is
+installed with exact BOOT readback verification and reboot completed; D94
+touch-profile selection is verified in its runtime log.**
+
+[0100 logs](docs/0100-userspace-findings.md) now verify D94 touch-profile
+selection. Rendering failures and a SpringBoard assertion remain. The cache
+translated34 words in our owned helper, exposing an exact-byte publisher
+mismatch; the0101 fix is compiled and tested but **not installed**. Native
+migration still needs [HFS staging compatibility](docs/hfs-apfs-installation.md),
+and the failed one-attempt receipt is preserved.
 
 | Component | Device status | How it works / current limits |
 | --- | --- | --- |
 | Boot chain and XNU startup | Verified | S-Boot loads the packaged UEFI firmware. The embedded EFI loader reads XNU from the BOOT trailer, builds Apple `boot_args`/device tree and hands control to XNU. |
-| CPU, scheduler and interrupts | Verified: 8/8 CPUs | Four Cortex-A55, two Cortex-A75 and two Samsung M4 cores run through the B2L platform driver, GICv2 and architected timers. Per-CPU timers and bidirectional SGI1/xcall checks pass; the kernel uses an explicit generic ARMv8 target. See [0082](docs/build-0082.md). |
+| CPU, scheduler and interrupts | Verified: 8/8 CPUs | Four Cortex-A55, two Cortex-A75 and two Samsung M4 cores run through the B2L platform driver, GICv2 and architected timers. Per-CPU timers and bidirectional SGI1/xcall checks pass; the kernel uses an explicit generic ARMv8 target. See [0082](docs/build-0082.md). [0085](docs/build-0085.md) adds A55/E, A75/M and M4/P clusters with QoS preferences; three-cluster startup is verified. [0086](docs/build-0086.md) corrects the shared system-group preference; runtime performance remains pending. |
+| RAM | Partial: 6976MiB owned at0090 startup | [0087](docs/build-0087.md) retains the primary arena and adds separately owned conventional-memory spans. Fixed firmware/EL2/display reservations and physical gaps are excluded. The whitelist ceiling is about7045MiB;0090 reports6976MiB owned across13 spans and reaches userspace. Long-run allocator coverage remains incomplete. |
 | Native UFS storage | Verified | XNU accesses the Exynos UFS controller directly after the EFI handoff, with GPT partition discovery, bounded reads/writes, flush and readback. Storage is not emulated by a host computer. |
 | Root filesystem | Verified: read/write | The Apple OSS HFS driver mounts the journaled HFS root inside USERDATA and performs journal replay. This port uses HFS rather than native iOS APFS. |
 | ARM64e userspace | Partial | Kernel traps emulate supported instructions missing on Exynos, including authenticated control flow and LDAPR. This allows real launchd, dyld and iOS services to execute; it does not provide hardware pointer-authentication security or universal instruction coverage. |
 | Persistent native-code cache | Verified | Four workers learn eligible executed instructions and commit checked A/B records to a roughly 5.52 GiB SYSTEM cache file. A 1.5 MiB RAM hot window and disk index avoid keeping the whole file in RAM. On the next normal boot, XNU applies matching pages to the HFS root before launchd, archives undo data and reclaims applied cells. This is selective reuse, not a complete offline ARM64e conversion. See [cache lifecycle](docs/native-cache.md). |
-| Display and SpringBoard UI | Partial | Native QuartzCore software rendering submits IOSurfaces; the B2L framebuffer path copies supported BGRA layers to physical scanout using the CPU. Apple logo and SpringBoard/lock-screen UI have appeared, but interaction remains very slow and crashes have occurred. See [CPU presentation](docs/build-0061.md). |
+| Display and SpringBoard UI | Partial; Settings opens on0099 | Native QuartzCore software rendering submits IOSurfaces; the B2L framebuffer path copies supported BGRA layers to physical scanout using the CPU. 0092 reaches the lock screen in about90s by owner timing and touch works. The owner reports malformed icons and a black screen after tapping Settings; CoreImage render failures are logged, but causality for the black screen is unresolved. See [CPU presentation](docs/build-0061.md). |
+| Source-image application migration | Blocked: native staging requires APFS | The owned arm64e helper invokes the shipped SystemAppMigrator once;0099 finds50 candidates but installs0. MIStagingManager rejects the HFS volume with error166. A real HFS-compatible staging path and native desired-state handling remain required. |
 | GPU acceleration | Not implemented | There is no working Mali graphics driver for this iOS stack. Visible frames currently use the CPU presentation path. |
-| Touchscreen | Partial; 0083 fix pending | The native sec_ts/HSI2C driver forwards touch events through the B2L HID bridge to backboardd. Events and touch-stream attachment are observed. 0083 replaces the old 104-byte digitizer wire layout with the native iOS 26 160-byte layout to address the measured backboardd crash. |
+| Touchscreen | Partial; touch accepted on0092 | Native sec_ts/HSI2C input reaches backboardd, which matches it as the main built-in digitizer. [0089](docs/build-0089.md) fixes current-format child framing. On0092 the owner confirms working touch, and the kernel records down/up events. Settings subsequently produces a black screen; sustained interaction remains unverified. |
 | Physical buttons | Partial | GPIO input becomes HID consumer events for power/volume; Bixby currently maps to Home. The power-off overlay has been observed. Button events do not imply working audio or complete power management. |
 | Kernel and iOS logs | Verified | Framed kernel records persist in a separate 16 MiB SYSTEM tail. Native tracev3, UUIDText, timesync and crash reports can be exported from recovery and decoded offline; redacted/missing strings and uncommitted panic-tail records remain possible. |
 | AMFI, entitlements and containers | Partial | Scoped B2L development providers expose original identity/entitlement metadata and selected native API contracts. They do not establish Apple's production signing chain. 0083 adds exact pinned `extensions.plist` detached-data admission to target the ExtensionKit/DataMigrator retry storm; runtime acceptance is pending. |
 | Sandbox / Photos access | Partial; 0083 fix pending | Development extension capabilities track issuer, target, consumer and lifetime. 0083 grows token/handle storage in chunks to address the observed ENOSPC/Photos failure. This does not implement full production sandbox enforcement or grant blanket TCC access. See [0083](docs/build-0083.md). |
 | KeyStore / passcode state | Development only | A volatile no-passcode KeyStore supplies the limited startup and lock-state contracts used by this unencrypted HFS environment. It is not a SEP, hardware-backed key storage or encrypted iOS data protection. See [KeyStore scope](docs/development-keystore.md) and [lock-state correction](docs/build-0071.md). |
 | Watchdog service | Partial | IOWatchdog accepts the supported userspace check-ins. Hardware watchdog reset/recovery is not implemented by this service. |
-| Software product identity | Pending: 0083 | `hw.product`/`hw.machine` now advertise `iPhone17,2`; `/buttons/home-button-type=2` selects no physical Home button. Samsung driver matching is retained. Previously, the unknown product fell back to the iPod class. The displayed identity still needs runtime confirmation. |
+| Software product identity | Partial: native iPhone artwork profile verified on0098 | `hw.product`/`hw.machine` now advertise `iPhone17,2`; `/buttons/home-button-type=2` selects no physical Home button. Samsung driver matching is retained. Previously, the unknown product fell back to the iPod class. Native MobileGestalt now regenerates phone idiom, subtype2868, scale3 and iPhone16ProMax artwork metadata. The displayed identity still needs runtime confirmation. |
 | System suspend / resume | Not implemented | Deep system sleep is disabled to avoid entering unsupported CPU halt/resume paths. Display blanking and interrupt-driven CPU idle are separate; battery life and sustained thermal behavior are not validated. |
 | WiFi | Address metadata only | The loader privately supplies this device's real WiFi address to MobileGestalt, avoiding a known discovery timeout. There is no working WiFi networking driver in this iOS port; the address is not committed to the repository. |
 | Bluetooth, cellular and audio | Not validated | No working Bluetooth, modem/call or speaker/microphone path is claimed. Installing an iPhone IPSW or advertising its product identity does not add these hardware drivers. |

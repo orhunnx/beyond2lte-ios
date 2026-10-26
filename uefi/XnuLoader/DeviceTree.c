@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: BSD-2-Clause */
 #include "DeviceTree.h"
 #include "b2l_secondary.h"
+#include "b2l_cpu_topology.h"
 struct writer { unsigned char *buf; b2l_size size, pos; int error; };
 struct node { b2l_size offset; b2l_u32 properties, children; };
 static void bytes(struct writer *w, const void *data, b2l_size length)
@@ -47,7 +48,7 @@ int b2l_build_device_tree(void *buffer, b2l_size capacity,
 {
     struct writer w = { buffer, capacity, 0, 0 };
     struct node root, chosen, memory_map, manifest, product, buttons, defaults, memory, cpus, cpu, arm_io, gic, aliases;
-    b2l_u32 two = 2, one = 1, zero = 0, cpu_reg, cluster_type = 'S';
+    b2l_u32 two = 2, one = 1, zero = 0, cpu_reg;
     b2l_u64 ranges[] = { 0, 0x10000000ULL, 0x20000000ULL };
     b2l_u64 gic_regs[] = { 0x101000, 0x1000, 0x102000, 0x1000 };
     b2l_u64 mem_regs[2];
@@ -61,11 +62,16 @@ int b2l_build_device_tree(void *buffer, b2l_size capacity,
     if (cpu_reg != 0) return -1;
     if ((c->secondary_base || c->secondary_size) &&
         (!b2l_secondary_address(c->secondary_base) || c->secondary_size!=B2L_SECONDARY_BYTES))return -1;
+    if(c->ram_count&&b2l_ram_validate(c->ram,c->ram_count,c->memory_base,c->memory_size))return -1;
     mem_regs[0] = c->memory_base; mem_regs[1] = c->memory_size;
     root = begin(&w, 0, "device-tree");
     /* hw.product/hw.machine feed MobileGestalt ProductType and DeviceClass.
      * Keep Samsung compatible for the actual B2L driver match. */
     text_prop(&w, &root, "model", "iPhone17,2");
+    /* UIKit builds EventTimingProfiles/<hw.targettype>.<kind>.plist.
+     * Select the D94 resources actually shipped in this source image. The
+     * Samsung driver-compatible property and physical hardware stay separate. */
+    text_prop(&w, &root, "target-type", "D94");
     text_prop(&w, &root, "compatible", "samsung,beyond2lte");
     prop(&w, &root, "#address-cells", &two, 4);
     prop(&w, &root, "#size-cells", &two, 4);
@@ -75,6 +81,7 @@ int b2l_build_device_tree(void *buffer, b2l_size capacity,
         prop(&w, &chosen, "mac-address-wifi0", c->wifi_mac, B2L_WIFI_MAC_BYTES);
     prop(&w, &chosen, "dram-base", &c->memory_base, 8);
     prop(&w, &chosen, "dram-size", &c->memory_size, 8);
+    if(c->ram_count)prop(&w,&chosen,"b2l,owned-ram-v1",c->ram,c->ram_count*sizeof(c->ram[0]));
     prop(&w, &chosen, "debug-enabled", &one, 4);
     text_prop(&w, &chosen, "crypto-hash-method", "sha2-384");
     b2l_u32 display_scale = 3;
@@ -116,6 +123,20 @@ int b2l_build_device_tree(void *buffer, b2l_size capacity,
     text_prop(&w, &product, "product-name", "iPhone 16 Pro Max");
     text_prop(&w, &product, "model", "iPhone17,2");
     text_prop(&w, &product, "board-config", "beyond2lte");
+    /* Native MobileGestalt reads artwork traits from /product, independently
+     * of hw.machine. Product/idiom/subtype/scale follow the source d94ap
+     * asset profile; the physical framebuffer geometry remains c->video.
+     * Our BGRA CPU path is sRGB and has no Apple Metal device. Select only
+     * the source profile's oldest artwork fallback, not APPLE9 assets.
+     * Artwork tags do not register a GPU or advertise API availability. */
+    b2l_u32 artwork_subtype = 2868, artwork_scale = 3;
+    text_prop(&w, &product, "product-description", "iPhone 16 Pro Max");
+    text_prop(&w, &product, "artwork-device-idiom", "phone");
+    prop(&w, &product, "artwork-device-subtype", &artwork_subtype, sizeof(artwork_subtype));
+    prop(&w, &product, "artwork-scale-factor", &artwork_scale, sizeof(artwork_scale));
+    text_prop(&w, &product, "artwork-display-gamut", "sRGB");
+    text_prop(&w, &product, "graphics-featureset-class", "GLES2,0");
+    text_prop(&w, &product, "graphics-featureset-fallbacks", "GLES2,0");
     end(&w, &product);
     /* Native MG HomeButtonType reads this four-byte CFData as a number.
      * Absent metadata defaults to mechanical Home (0). This device has none. */
@@ -131,7 +152,8 @@ int b2l_build_device_tree(void *buffer, b2l_size capacity,
     end(&w, &defaults);
     memory = begin(&w, &root, "memory");
     text_prop(&w, &memory, "device_type", "memory");
-    prop(&w, &memory, "reg", mem_regs, sizeof(mem_regs));
+    if(c->ram_count)prop(&w,&memory,"reg",c->ram,c->ram_count*sizeof(c->ram[0]));
+    else prop(&w, &memory, "reg", mem_regs, sizeof(mem_regs));
     end(&w, &memory);
     cpus = begin(&w, &root, "cpus");
     prop(&w, &cpus, "#address-cells", &one, 4);
@@ -144,9 +166,11 @@ int b2l_build_device_tree(void *buffer, b2l_size capacity,
         text_prop(&w, &cpu, "state", cpu_id ? "stopped" : "running");
         prop(&w, &cpu, "reg", &cpu_reg, 4);
         prop(&w, &cpu, "cpu-id", &cpu_reg, 4);
-        prop(&w, &cpu, "cluster-id", &zero, 4);
-        prop(&w, &cpu, "die-cluster-id", &zero, 4);
-        b2l_u32 logical_core=cpu_id;
+        b2l_u32 cluster_id=b2l_cpu_cluster(cpu_id);
+        b2l_u32 cluster_type=b2l_cpu_cluster_type(cpu_id);
+        prop(&w, &cpu, "cluster-id", &cluster_id, 4);
+        prop(&w, &cpu, "die-cluster-id", &cluster_id, 4);
+        b2l_u32 logical_core=b2l_cpu_cluster_core(cpu_id);
         prop(&w, &cpu, "cluster-core-id", &logical_core, 4);
         prop(&w, &cpu, "cluster-type", &cluster_type, 4);
         prop(&w, &cpu, "timebase-frequency", &c->counter_frequency, 4);

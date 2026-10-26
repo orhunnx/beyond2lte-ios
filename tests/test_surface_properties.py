@@ -37,7 +37,7 @@ class OSDictionary:public OSObject{public:std::map<std::string,OSObject*>items;~
 class OSSerialize:public OSObject{public:std::string bytes;static OSSerialize*binaryWithCapacity(unsigned){return allocation_fails()?nullptr:new OSSerialize;}unsigned getLength(){return bytes.size();}const char*text(){return bytes.data();}};
 static bool fail_serialize=false, oversize_serialize=false;
 bool OSDictionary::serialize(OSSerialize*s){if(fail_serialize)return false;s->bytes="dictionary:";for(auto&p:items){s->bytes+=p.first;s->bytes+='=';if(auto*n=dynamic_cast<OSNumber*>(p.second))s->bytes+=std::to_string(n->value);s->bytes+=';';}if(oversize_serialize)s->bytes.resize(B2L_SURFACE_MAX_PROPS+1,'x');return true;}
-class Descriptor:public OSObject{public:std::vector<uint8_t>bytes;uint64_t length_override=0;bool short_read=false,short_write=false;explicit Descriptor(size_t n):bytes(n){}uint64_t getLength(){return length_override?length_override:bytes.size();}uint64_t readBytes(uint64_t off,void*p,uint64_t n){if(off>bytes.size()||n>bytes.size()-off)return 0;if(short_read)return n? n-1:0;memcpy(p,bytes.data()+off,n);return n;}uint64_t writeBytes(uint64_t off,const void*p,uint64_t n){if(off>bytes.size()||n>bytes.size()-off)return 0;if(short_write)return n? n-1:0;memcpy(bytes.data()+off,p,n);return n;}void*getBytesNoCopy(){return bytes.data();}};
+class Descriptor:public OSObject{public:int prepare(int){return 0;} int complete(int){return 0;}std::vector<uint8_t>bytes;uint64_t length_override=0;bool short_read=false,short_write=false;explicit Descriptor(size_t n):bytes(n){}uint64_t getLength(){return length_override?length_override:bytes.size();}uint64_t readBytes(uint64_t off,void*p,uint64_t n){if(off>bytes.size()||n>bytes.size()-off)return 0;if(short_read)return n? n-1:0;memcpy(p,bytes.data()+off,n);return n;}uint64_t writeBytes(uint64_t off,const void*p,uint64_t n){if(off>bytes.size()||n>bytes.size()-off)return 0;if(short_write)return n? n-1:0;memcpy(bytes.data()+off,p,n);return n;}void*getBytesNoCopy(){return bytes.data();}};
 struct IOExternalMethodArguments{uint64_t*scalarInput=nullptr;unsigned scalarInputCount=0;const void*structureInput=nullptr;uint64_t structureInputSize=0;Descriptor*structureInputDescriptor=nullptr;void*structureOutput=nullptr;uint64_t structureOutputSize=0;Descriptor*structureOutputDescriptor=nullptr;uint64_t structureOutputDescriptorSize=0;};
 using IOLock=std::mutex;static IOLock global_lock;static IOLock*b2l_surface_lock=&global_lock;static void IOLockLock(IOLock*p){p->lock();}static void IOLockUnlock(IOLock*p){p->unlock();}
 class B2LSurface:public OSObject{public:uint32_t id=77;Descriptor*state=new Descriptor(4096);OSDictionary*properties=nullptr;OSSerialize*serializedProperties=nullptr;~B2LSurface()override{OSSafeReleaseNULL(properties);OSSafeReleaseNULL(serializedProperties);state->release();}};
@@ -137,7 +137,7 @@ def extract(text, start, end):
 
 def test_metadata():
     source = (ROOT / "xnu-overlay/iokit/Kernel/arm/B2LSurface.cpp").read_text()
-    code = PREAMBLE
+    code = PREAMBLE + '\nenum {kIODirectionIn=1,kIODirectionOut=2};\n'+(ROOT/'xnu-overlay/iokit/Kernel/arm/B2LMemoryIO.h').read_text()+'\n'
     code += "static void\nput32(" + extract(source, "static void\nput32(", "static void\nput64(")
     code += "static IOReturn\nb2l_struct_out(" + extract(source, "static IOReturn\nb2l_struct_out(", "/* Map s for this client")
     code += "static B2LSurface *\nb2l_surface_held(" + extract(source, "static B2LSurface *\nb2l_surface_held(", "/* BEGIN B2L SURFACE METADATA")
@@ -171,7 +171,7 @@ class OSObject{public:unsigned refs=1;OSObject(){++live;}virtual~OSObject(){--li
 #define OSTypeAlloc(T) (fail_ref?nullptr:new T)
 class Mapping:public OSObject{public:Mapping(){++maps;}~Mapping()override{--maps;}uint64_t getAddress(){return 0x100000;}};
 static std::function<void()> mapping_hook;
-class Descriptor:public OSObject{public:std::vector<uint8_t>bytes;bool short_write=false;explicit Descriptor(unsigned n):bytes(n){}uint64_t getLength(){return bytes.size();}uint64_t writeBytes(uint64_t off,const void*p,uint64_t n){if(short_write)return n-1;if(off>bytes.size()||n>bytes.size()-off)return 0;memcpy(bytes.data()+off,p,n);return n;}Mapping*createMappingInTask(task_t,unsigned,unsigned){if(mapping_hook){auto fn=mapping_hook;mapping_hook=nullptr;fn();}return fail_mapping?nullptr:new Mapping;}};
+class Descriptor:public OSObject{public:int prepare(int){return 0;} int complete(int){return 0;}std::vector<uint8_t>bytes;bool short_write=false;explicit Descriptor(unsigned n):bytes(n){}uint64_t getLength(){return bytes.size();}uint64_t writeBytes(uint64_t off,const void*p,uint64_t n){if(short_write)return n-1;if(off>bytes.size()||n>bytes.size()-off)return 0;memcpy(bytes.data()+off,p,n);return n;}Mapping*createMappingInTask(task_t,unsigned,unsigned){if(mapping_hook){auto fn=mapping_hook;mapping_hook=nullptr;fn();}return fail_mapping?nullptr:new Mapping;}};
 struct IOExternalMethodArguments{Descriptor*structureOutputDescriptor=nullptr;uint64_t structureOutputDescriptorSize=0;void*structureOutput=nullptr;uint64_t structureOutputSize=0;};
 class B2LSurface:public OSObject{public:uint32_t id=77,allocSize=4096,width=16,height=16,bytesPerRow=64,offset=0,pixelFormat=0,cacheMode=0,parentID=0;uint16_t bytesPerElement=4;uint8_t elementWidth=1,elementHeight=1;unsigned mapCache=0,users=0;Descriptor*memory=new Descriptor(4096),*state=new Descriptor(4096);~B2LSurface()override{assert(users==0);memory->release();state->release();}};
 static void b2l_surface_put(B2LSurface*s){assert(s->users);--s->users;}
@@ -233,7 +233,7 @@ int main(){int baseline=live;
 
 def test_lookup_lifetime():
     source = (ROOT / "xnu-overlay/iokit/Kernel/arm/B2LSurface.cpp").read_text()
-    code = LIFETIME_PREAMBLE
+    code = LIFETIME_PREAMBLE + '\nenum {kIODirectionIn=1,kIODirectionOut=2};\n'+(ROOT/'xnu-overlay/iokit/Kernel/arm/B2LMemoryIO.h').read_text()+'\n'
     code += "B2LSurfaceRef *\nIOSurfaceRootUserClient::findRef(" + extract(source, "B2LSurfaceRef *\nIOSurfaceRootUserClient::findRef(", "IOReturn\nIOSurfaceRootUserClient::create(")
     code += "IOReturn\nIOSurfaceRootUserClient::trapRelease(" + extract(source, "IOReturn\nIOSurfaceRootUserClient::trapRelease(", "static IOExternalTrap b2l_surface_traps[]")
     code += LIFETIME_TESTS

@@ -35,6 +35,8 @@ class AppleMobileFileIntegrity : public IOService {
 public:
     bool start(IOService *provider) APPLE_KEXT_OVERRIDE;
 };
+#include "B2LMemoryIO.h"
+
 OSDefineMetaClassAndStructors(AppleMobileFileIntegrity, IOService);
 bool AppleMobileFileIntegrity::start(IOService *provider)
 {
@@ -111,7 +113,7 @@ static IOReturn b2l_amfi_cache_call(uint32_t selector, IOExternalMethodArguments
      * zero. Validate lengths, not those unused addresses; never write them. */
     uint8_t hash[20];
     if (a->structureInputDescriptor) {
-        if (a->structureInputDescriptor->readBytes(0, hash, sizeof(hash)) != sizeof(hash))
+        if (b2l_descriptor_read(a->structureInputDescriptor, 0, hash, sizeof(hash)) != sizeof(hash))
             return kIOReturnBadArgument;
     } else {
         memcpy(hash, a->structureInput, sizeof(hash));

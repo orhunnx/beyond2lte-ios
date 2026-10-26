@@ -11,6 +11,7 @@ assert plistlib.loads(xml.encode())==dict(UsePersonaManifestVersion=1,UsePersona
 actual=s[s.index('static int sync_seed'):s.index('static int publish_seed')]
 actual+=s[s.index('void b2l_persona_before_init'):]
 pre=r"""
+#define B2L_PERSONA_HOST_TEST 1
 #include <assert.h>
 #include <stdbool.h>
 #include <stdint.h>

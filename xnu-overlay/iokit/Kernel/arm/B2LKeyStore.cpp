@@ -12,6 +12,7 @@
 #include <sys/codesign.h>
 #include <os/atomic_private.h>
 #endif
+#include "B2LMemoryIO.h"
 extern "C" {
 #include "b2l_aks_core.h"
 }
@@ -103,7 +104,7 @@ static IOReturn b2l_aks_external(struct b2l_aks_client*state,uint32_t selector,I
     const void*inputPointer=a->structureInput;
     if(inSize){
         if(a->structureInputDescriptor){
-            if(a->structureInputDescriptor->readBytes(0,input,(IOByteCount)inSize)!=inSize)return kIOReturnBadArgument;
+            if(b2l_descriptor_read(a->structureInputDescriptor, 0,input,(IOByteCount)inSize)!=inSize)return kIOReturnBadArgument;
             inputPointer=input;
         }else if(!inputPointer)return kIOReturnBadArgument;
     }
@@ -115,7 +116,7 @@ static IOReturn b2l_aks_external(struct b2l_aks_client*state,uint32_t selector,I
     if(reply.scalar_count>outScalars||reply.structure_size>outSize)return kIOReturnNoSpace;
     if(reply.structure_size){
         if(a->structureOutputDescriptor){
-            if(a->structureOutputDescriptor->writeBytes(0,reply.structure,reply.structure_size)!=reply.structure_size)return kIOReturnNoSpace;
+            if(b2l_descriptor_write(a->structureOutputDescriptor, 0,reply.structure,reply.structure_size)!=reply.structure_size)return kIOReturnNoSpace;
             a->structureOutputDescriptorSize=(uint32_t)reply.structure_size;
         }else{
             if(!a->structureOutput)return kIOReturnBadArgument;

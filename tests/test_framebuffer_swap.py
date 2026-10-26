@@ -88,6 +88,11 @@ int main(){
  // All four enabled layers are read, copied in order and released.
  memset(client,0,sizeof(client));for(unsigned i=0;i<4;++i)layer(client,i,i+1);
  put(client,0x164,15);fb.swap(client+0x18);check(4);
+ assert(b2l_fb_received==11&&b2l_fb_copied==8);
+ assert(b2l_fb_disabled==1&&b2l_fb_missing==1&&b2l_fb_unsupported==1&&b2l_fb_bounds==2);
+ assert(b2l_fb_last_mask==15&&b2l_fb_last_disabled==0&&b2l_fb_last_id==4);
+ b2l_fb_progress(600); // diagnostics leave scanout, masks and references unchanged
+ check(4);
 }
 '''
 with tempfile.TemporaryDirectory(prefix='b2l-fb-swap-') as tmp:

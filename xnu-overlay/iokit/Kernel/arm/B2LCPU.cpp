@@ -17,6 +17,7 @@ extern "C" int get_preemption_level(void);
 #include <pexpert/pexpert.h>
 #include <pexpert/device_tree.h>
 #include "b2l_secondary.h"
+#include "b2l_cpu_topology.h"
 #include <arm64/b2l_cpu_affinity.h>
 
 extern "C" void b2l_secondary_entry(void);
@@ -124,13 +125,17 @@ bool B2LCPU::start(IOService *provider)
     OSNumber *logical = OSDynamicCast(OSNumber, provider->getProperty("logical-cpu-id"));
     OSData *reg = OSDynamicCast(OSData, provider->getProperty("reg"));
     if (!logical || !reg || reg->getLength() != sizeof(uint32_t) ||
-        top->num_cpus != MAX_CPUS || top->boot_cpu != &top->cpus[0] ||
+        top->num_cpus != MAX_CPUS || top->num_clusters != 3 || top->boot_cpu != &top->cpus[0] ||
         top->cpus[0].phys_id != 0 ||
         logical->unsigned32BitValue() >= MAX_CPUS) return false;
     unsigned id = logical->unsigned32BitValue();
     const ml_topology_cpu_t *cpu = &top->cpus[id];
-    if (cpu->phys_id != (unsigned)b2l_cpu_firmware_id(id) || cpu->cluster_id != 0 || *(const uint32_t *)reg->getBytesNoCopy() != cpu->phys_id)
-        return false;
+    const cluster_type_t expectedType = id < 4 ? CLUSTER_TYPE_E : id < 6 ? CLUSTER_TYPE_M : CLUSTER_TYPE_P;
+    if (cpu->phys_id != (unsigned)b2l_cpu_firmware_id(id) ||
+        cpu->cluster_id != b2l_cpu_cluster(id) || cpu->cluster_type != expectedType ||
+        cpu->cluster_core_id != b2l_cpu_cluster_core(id) ||
+        top->clusters[0].cpu_mask != 0x0f || top->clusters[1].cpu_mask != 0x30 || top->clusters[2].cpu_mask != 0xc0 ||
+        *(const uint32_t *)reg->getBytesNoCopy() != cpu->phys_id) return false;
     if (!IOCPU::start(provider)) return false;
     cpuName = OSSymbol::withCStringNoCopy(id < 4 ? "Exynos 9820 Cortex-A55" : id < 6 ? "Exynos 9820 Cortex-A75" : "Exynos 9820 Samsung M4");
     if (!cpuName) return false;

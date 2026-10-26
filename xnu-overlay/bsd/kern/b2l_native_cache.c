@@ -15,6 +15,7 @@
 #include <arm64/b2l_early.h>
 #include <machine/machine_routines.h>
 #include <kern/thread.h>
+#include <mach/thread_info.h>
 #include <kern/sched_prim.h>
 #include <kern/clock.h>
 #include <kern/locks.h>
@@ -261,7 +262,12 @@ static int cache_dequeue(struct request*q){
  __atomic_store_n(&queue_lock,0,__ATOMIC_RELEASE);enable_preemption();return found;
 }
 static void worker(void*arg,wait_result_t why __unused){
+ /* Keep cache I/O in the existing dedicated storage group. The system
+  * group also contains launchd/user services and must not be treated as
+  * kernel-only for placement. Native join updates this current thread. */
+ thread_group_join_io_storage();
  struct cache_worker*w=arg;uint64_t report_at;
+ b2l_early_trace("B2L NCACHE: worker=%u joined IO-storage thread group (A75 preference)\n",w->id);
  nanoseconds_to_deadline(30*NSEC_PER_SEC,&report_at);
  for(;;){struct request q;unsigned budget=32;
   while(budget--&&cache_dequeue(&q)){

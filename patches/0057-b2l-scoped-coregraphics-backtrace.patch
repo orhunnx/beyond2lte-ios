@@ -1,0 +1,26 @@
+diff --git a/bsd/kern/kern_exec.c b/bsd/kern/kern_exec.c
+--- a/bsd/kern/kern_exec.c
++++ b/bsd/kern/kern_exec.c
+@@ -6756,6 +6756,10 @@
+  *		to arrays of user space pointers.
+  */
+ __attribute__((noinline))
++#if defined(ARM64_BOARD_CONFIG_B2L)
++#include "b2l_exec_graphics_diag.h"
++#endif
++
+ static int
+ exec_extract_strings(struct image_params *imgp)
+ {
+@@ -6927,6 +6931,11 @@
+ 		imgp->ip_argspace -= new_ptr_size; /* to hold envv[] entry */
+ 		imgp->ip_envc++;
+ 	}
++
++#if defined(ARM64_BOARD_CONFIG_B2L)
++	error = b2l_exec_graphics_diag(imgp, new_ptr_size);
++	if (error) goto bad;
++#endif
+ 
+ 	/* Save space for envv[] NULL terminator */
+ 	if (imgp->ip_argspace < new_ptr_size) {

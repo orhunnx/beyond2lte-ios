@@ -94,8 +94,14 @@ static int publish_seed(vnode_t vp,vfs_context_t ctx)
     if(!error)error=VNOP_FSYNC(nd.ni_dvp,MNT_WAIT,ctx);
 out:lookup_done(&nd);return error;
 }
+#ifndef B2L_PERSONA_HOST_TEST
+#include "b2l_userspace_seed.h"
+#endif
 void b2l_persona_before_init(void)
 {
+#ifndef B2L_PERSONA_HOST_TEST
+    b2l_userspace_before_init();
+#endif
     if(!b2l_amfi_active()||!rootvnode||vfs_isrdonly(vnode_mount(rootvnode))||
        strcmp(vfs_statfs(vnode_mount(rootvnode))->f_fstypename,"hfs"))return;
     vfs_context_t ctx=vfs_context_current();vnode_t vp=NULL;

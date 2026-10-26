@@ -7,14 +7,14 @@
 static unsigned seed_properties, memory_map_nodes, defaults_nodes, ctrr_properties;
 static unsigned boot_lun_properties, secondary_properties;
 static unsigned development_security_properties, wifi_mac_properties, sleep_disabled_properties;
-static unsigned cpu_nodes, cpu_ids, product_nodes, manifest_nodes;
+static unsigned cpu_nodes, cpu_ids, product_nodes, manifest_nodes, target_type_properties;
 static uint64_t read64(const unsigned char*p){uint64_t v;memcpy(&v,p,8);return v;}
 static uint32_t read32(const unsigned char *p) { uint32_t n; memcpy(&n,p,4); return n; }
 static size_t decode(const unsigned char *buf, size_t size, size_t off,
                      unsigned depth, unsigned *nodes, unsigned *properties, const char *parent_path)
 {
     assert(depth < 8 && off + 8 <= size);
-    if (!depth) { cpu_nodes=0; cpu_ids=0; }
+    if (!depth) { cpu_nodes=0; cpu_ids=0; target_type_properties=0; }
     uint32_t nprops = read32(buf+off), children = read32(buf+off+4);
     off += 8; ++*nodes;
     const char *node_name = 0;
@@ -46,6 +46,7 @@ static size_t decode(const unsigned char *buf, size_t size, size_t off,
             assert(depth==1 && node_name && !strcmp(node_name,"chosen"));
             assert(len==6 && !memcmp(buf+off,fixture,6));
         }
+        if (!strcmp(name,"b2l,owned-ram-v1"))assert(len==32 && read64(buf+off)==0xb4800000ULL && read64(buf+off+16)==0x900000000ULL);
         if (!strcmp(name,"random-seed")) { ++seed_properties; assert(len==256); for(unsigned j=0;j<256;++j)assert(buf[off+j]==(unsigned char)(j+1)); }
         if (!strcmp(name,"kernel-ctrr-to-be-enabled")) {
             ++ctrr_properties;
@@ -77,6 +78,13 @@ static size_t decode(const unsigned char *buf, size_t size, size_t off,
         if (!strcmp(name,"state")) { assert(node_name); const char *v=!strcmp(node_name,"cpu0")?"running":"stopped"; assert(len==8 && !memcmp(buf+off,v,8)); }
         assert(strcmp(name,"chip-id") && strcmp(name,"unique-chip-id") && strcmp(name,"board-id"));
         if (!strcmp(name,"product-name")) assert(len==sizeof("iPhone 16 Pro Max") && !memcmp(buf+off,"iPhone 16 Pro Max",len));
+        if (!strcmp(name,"product-description")) assert(depth==1 && node_name && !strcmp(node_name,"product") && len==sizeof("iPhone 16 Pro Max") && !memcmp(buf+off,"iPhone 16 Pro Max",len));
+        if (!strcmp(name,"artwork-device-idiom")) assert(len==sizeof("phone") && !memcmp(buf+off,"phone",len));
+        if (!strcmp(name,"artwork-device-subtype")) assert(len==4 && read32(buf+off)==2868);
+        if (!strcmp(name,"artwork-scale-factor")) assert(len==4 && read32(buf+off)==3);
+        if (!strcmp(name,"artwork-display-gamut")) assert(len==sizeof("sRGB") && !memcmp(buf+off,"sRGB",len));
+        if (!strcmp(name,"graphics-featureset-class") || !strcmp(name,"graphics-featureset-fallbacks")) assert(len==sizeof("GLES2,0") && !memcmp(buf+off,"GLES2,0",len));
+        if (!strcmp(name,"target-type")) { ++target_type_properties; assert(depth==0 && len==sizeof("D94") && !memcmp(buf+off,"D94",len)); }
         if (!strcmp(name,"model")) assert(len==sizeof("iPhone17,2") && !memcmp(buf+off,"iPhone17,2",len));
         if (!strcmp(name,"compatible") && depth==0) assert(len==sizeof("samsung,beyond2lte") && !memcmp(buf+off,"samsung,beyond2lte",len));
         if (!strcmp(name,"home-button-type")) assert(depth==1 && node_name && !strcmp(node_name,"buttons") && len==4 && read32(buf+off)==2);
@@ -89,9 +97,9 @@ static size_t decode(const unsigned char *buf, size_t size, size_t off,
         }
         if (!strcmp(name,"device_type") && node_name && !strcmp(node_name,"framebuffer"))
             assert(depth==1 && len==sizeof("display") && !memcmp(buf+off,"display",len));
-        if (!strcmp(name,"die-cluster-id")) assert(len==4 && read32(buf+off)==0);
-        if (!strcmp(name,"cluster-core-id")) assert(len==4 && read32(buf+off)==(unsigned)(node_name[3]-'0'));
-        if (!strcmp(name,"cluster-type")) assert(len==4 && read32(buf+off)=='S');
+        if (!strcmp(name,"cluster-id") || !strcmp(name,"die-cluster-id")) { unsigned id=(unsigned)(node_name[3]-'0'); assert(len==4 && read32(buf+off)==(id<4?0:id<6?1:2)); }
+        if (!strcmp(name,"cluster-core-id")) { unsigned id=(unsigned)(node_name[3]-'0'); assert(len==4 && read32(buf+off)==(id<4?id:id<6?id-4:id-6)); }
+        if (!strcmp(name,"cluster-type")) { unsigned id=(unsigned)(node_name[3]-'0'); assert(len==4 && read32(buf+off)==(unsigned)(id<4?'E':id<6?'M':'P')); }
         if ((!strcmp(name,"reg") || !strcmp(name,"cpu-id")) && len==4) { assert(node_name); unsigned id=(unsigned)(node_name[3]-'0'); assert(read32(buf+off)==(id<6?id:0x100+id-6)); }
         off += (len + 3) & ~3U; ++*properties;
     }
@@ -108,7 +116,7 @@ static size_t decode(const unsigned char *buf, size_t size, size_t off,
         ++memory_map_nodes; assert(nprops==1 && children==0);
     }
     if(!strcmp(path,"/product")) {
-        ++product_nodes; assert(nprops==4 && children==0);
+        ++product_nodes; assert(nprops==11 && children==0);
     }
     if(!strcmp(path,"/chosen/manifest-properties")) {
         ++manifest_nodes; assert(nprops==1 && children==0);
@@ -158,6 +166,7 @@ int main(void)
     c.has_boot_ufs_lun=0;boot_lun_properties=0;
     assert(b2l_build_device_tree(buf,sizeof(buf),&c,&used)==0);
     nodes=0;props=0;assert(decode(buf,used,0,0,&nodes,&props,"")==used);
+    assert(target_type_properties==1);
     assert(boot_lun_properties==0); /* Filesystem fallback must not guess LUN0. */
     c.secondary_base=0x87000000;
     assert(b2l_build_device_tree(buf,sizeof(buf),&c,&used)<0);
@@ -172,6 +181,11 @@ int main(void)
     assert(b2l_build_device_tree(buf,sizeof(buf),&c,&used)==0);
     nodes=0;props=0;assert(decode(buf,used,0,0,&nodes,&props,"")==used);
     assert(wifi_mac_properties==0);
+    c.ram_count=2;c.ram[0]=(struct b2l_ram_range){0xb4800000ULL,0x10000};c.ram[1]=(struct b2l_ram_range){c.memory_base,c.memory_size};
+    assert(!b2l_build_device_tree(buf,sizeof(buf),&c,&used));
+    nodes=0;props=0;assert(decode(buf,used,0,0,&nodes,&props,"")==used);
+    c.ram[0].base=0x87000000;assert(b2l_build_device_tree(buf,sizeof(buf),&c,&used)<0);
+    c.ram_count=0;
     c.counter_frequency=0;
     assert(b2l_build_device_tree(buf,sizeof(buf),&c,&used)<0);
     assert(sizeof(struct b2l_boot_args)==1152);

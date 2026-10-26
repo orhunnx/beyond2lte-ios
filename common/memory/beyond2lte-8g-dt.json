@@ -1,0 +1,118 @@
+{
+  "/": {
+    "#address-cells": "00000002",
+    "#size-cells": "00000001"
+  },
+  "/reserved-memory": {
+    "#address-cells": "00000002",
+    "#size-cells": "00000001"
+  },
+  "/reserved-memory/ion_video_stream": {
+    "size": "04800000",
+    "alloc-ranges": "0000000040000000b0000000"
+  },
+  "/reserved-memory/ion_crypto": {
+    "size": "01800000"
+  },
+  "/reserved-memory/sec_debug_magic": {
+    "reg": "000000008000000000001000"
+  },
+  "/reserved-memory/sec_rdx_bootdev": {
+    "reg": "00000008800000000ad00000"
+  },
+  "/reserved-memory/debug_snapshot": {
+    "#address-cells": "00000002",
+    "#size-cells": "00000001"
+  },
+  "/reserved-memory/debug_snapshot/header": {
+    "reg": "00000000fd90000000010000"
+  },
+  "/reserved-memory/debug_snapshot/log_kernel": {
+    "reg": "00000000fd91000000200000"
+  },
+  "/reserved-memory/debug_snapshot/log_platform": {
+    "reg": "00000000fdb1000000400000"
+  },
+  "/reserved-memory/debug_snapshot/log_sfr": {
+    "reg": "00000000fdf1000000100000"
+  },
+  "/reserved-memory/debug_snapshot/log_s2d": {
+    "reg": "00000000eb31000001500000"
+  },
+  "/reserved-memory/debug_snapshot/log_cachedump": {
+    "reg": "00000000fe01000000a00000"
+  },
+  "/reserved-memory/debug_snapshot/log_arraydump": {
+    "reg": "00000000ec81000000a00000"
+  },
+  "/reserved-memory/debug_snapshot/log_etm": {
+    "reg": "00000000fea1000000100000"
+  },
+  "/reserved-memory/debug_snapshot/log_bcm": {
+    "reg": "00000000feb1000000400000"
+  },
+  "/reserved-memory/debug_snapshot/log_llc": {
+    "reg": "00000000fef1000000400000"
+  },
+  "/reserved-memory/debug_snapshot/log_dbgc": {
+    "reg": "00000000ff310000000f0000"
+  },
+  "/reserved-memory/debug_snapshot/log_pstore": {
+    "reg": "00000000eb30800000008000"
+  },
+  "/reserved-memory/debug_snapshot/log_kevents": {
+    "reg": "00000000ff40000000c00000"
+  },
+  "/reserved-memory/abox-rmem": {
+    "size": "03c00000",
+    "alloc-ranges": "00000000c000000020000000"
+  },
+  "/reserved-memory/seclog_mem": {
+    "reg": "00000000c000000000080000"
+  },
+  "/reserved-memory/modem_if": {
+    "reg": "00000000f00000000b900000"
+  },
+  "/reserved-memory/cp_ram_logging": {
+    "reg": "00000000fb90000002000000"
+  },
+  "/reserved-memory/modem_spare": {
+    "reg": "00000000d000000001600000"
+  },
+  "/reserved-memory/secure_camera": {
+    "reg": "000000009600000002200000"
+  },
+  "/reserved-memory/camera_contig": {
+    "reg": "000000009820000000e00000"
+  },
+  "/reserved-memory/camera": {
+    "reg": "00000000990000001b800000"
+  },
+  "/reserved-memory/el2_code": {
+    "reg": "000000008700000000200000"
+  },
+  "/reserved-memory/el2_earlymem": {
+    "reg": "00000009fd80000002800000"
+  },
+  "/reserved-memory/kaslr": {
+    "reg": "000000008000100000001000"
+  },
+  "/memory@80000000": {
+    "reg": "00000000800000003ab00000"
+  },
+  "/memory@C0000000": {
+    "reg": "00000000c000000020000000"
+  },
+  "/memory@E1900000": {
+    "reg": "00000000e19000001e700000"
+  },
+  "/memory@880000000": {
+    "reg": "000000088000000080000000"
+  },
+  "/memory@900000000": {
+    "reg": "000000090000000080000000"
+  },
+  "/memory@980000000": {
+    "reg": "000000098000000080000000"
+  }
+}

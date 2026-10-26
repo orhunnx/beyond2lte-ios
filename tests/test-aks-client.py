@@ -20,6 +20,7 @@ pre=r'''
 #endif
 #define os_atomic_load(p,order) (*(p))
 #define os_atomic_cmpxchgv(p,o,n,out,order) ((*(p)==(o))?(*(p)=(n),true):(*(out)=*(p),false))
+enum {kIODirectionIn=1,kIODirectionOut=2};
 using IOReturn=int;using IOByteCount=size_t;using UInt32=uint32_t;using task_t=void*;
 enum {kIOReturnSuccess=0,kIOReturnUnsupported=1,kIOReturnBadArgument=2,kIOReturnNotOpen=3,kIOReturnNotFound=4,kIOReturnNoSpace=5,kIOReturnError=6};
 static bool compat=true,enforcement=false,baseInit=true,allocFailure=false;
@@ -32,7 +33,7 @@ IOLock*IOLockAlloc(){if(allocFailure)return nullptr;allocated++;return new IOLoc
 void IOLockFree(IOLock*p){freed++;delete p;}
 void IOLockLock(IOLock*){assert(!held);held++;}
 void IOLockUnlock(IOLock*){assert(held==1);held--;}
-struct Descriptor{uint8_t data[256]={};size_t length=0;size_t getLength(){return length;}
+struct Descriptor{ int prepare(int){return 0;} int complete(int){return 0;}uint8_t data[256]={};size_t length=0;size_t getLength(){return length;}
  size_t readBytes(size_t,void*p,size_t n){memcpy(p,data,n);return n;}
  size_t writeBytes(size_t,const void*p,size_t n){memcpy(data,p,n);return n;}};
 struct IOExternalMethodArguments{

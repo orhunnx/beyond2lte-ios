@@ -13,7 +13,8 @@
 #define B2L_FB_RESERVED_BASE            0xCA000000ULL
 #define B2L_FB_RESERVED_SIZE            0x01400000ULL
 #define NO_MONITOR                      1
-#define NO_ECORE                        1
+#define __ARM_AMP__                     1
+#define HAS_MCORE                       1
 #define ARM_ARCH_TIMER
 #define __ARM_ARCH__                    8
 #define __ARM_VMSA__                    8

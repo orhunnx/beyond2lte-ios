@@ -18,6 +18,7 @@ pre=r'''
 #ifndef __unused
 #define __unused __attribute__((unused))
 #endif
+enum {kIODirectionIn=1,kIODirectionOut=2};
 using IOReturn=int;using UInt32=uint32_t;using task_t=void*;using proc_t=void*;
 enum {kIOReturnSuccess=0,kIOReturnUnsupported=1,kIOReturnBadArgument=2,
  kIOReturnNotPermitted=3,kIOReturnNotFound=4,kIOReturnNoSpace=5};
@@ -37,7 +38,7 @@ struct OSBoolean:OSObject{};static OSBoolean trueObject,falseObject;
 static OSObject notBoolean;static OSObject*entitlementObject=&trueObject;
 static OSBoolean*kOSBooleanTrue=&trueObject;
 
-struct Descriptor {
+struct Descriptor { int prepare(int){return 0;} int complete(int){return 0;}
  uint8_t data[24]={};uint64_t length=20;bool shortRead=false;
  uint64_t getLength(){return length;}
  size_t readBytes(size_t off,void*out,size_t n){assert(!off&&n<=sizeof(data));if(shortRead)return n-1;memcpy(out,data,n);return n;}

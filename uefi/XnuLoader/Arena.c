@@ -107,3 +107,58 @@ int b2l_choose_secondary(const void *map,b2l_size bytes,b2l_size stride,b2l_u64 
     }
     if(!best)return -2;*out=best;return 0;
 }
+
+/* Snapshot only; the caller reserves each candidate with AllocateAddress,
+ * then validates final unique LoaderData ownership before handoff. */
+int b2l_collect_extra_ram(const void *map,b2l_size bytes,b2l_size stride,
+ b2l_u64 primary,b2l_u64 size,struct b2l_ram_range *out,unsigned *count)
+{
+ const b2l_u8 *p=map;unsigned n=0;
+ if(!p||!out||!count||stride<40||bytes%stride)return -1;
+ for(b2l_size off=0;off<bytes;off+=stride){
+  b2l_u64 base,end;if(descriptor(p+off,&base,&end))return -1;
+  if(get32(p+off)!=7||(get64(p+off+32)&(1ULL<<63)))continue;
+  for(unsigned a=0;a<sizeof(b2l_ram_allowlist)/sizeof(b2l_ram_allowlist[0]);a++){
+   b2l_u64 lo=base>b2l_ram_allowlist[a].base?base:b2l_ram_allowlist[a].base;
+   b2l_u64 ae=b2l_ram_allowlist[a].base+b2l_ram_allowlist[a].size;
+   b2l_u64 hi=end<ae?end:ae;
+   /* Preserve the existing 32MiB EFI execution/allocation headroom. */
+   if(lo>=primary+size&&lo<B2L_RAM_END){if(hi>B2L_RAM_END)lo=B2L_RAM_END;else continue;}
+   else if(lo<primary+size&&hi>primary+size)hi=primary+size;
+   lo=(lo+B2L_RAM_PAGE-1)&~(B2L_RAM_PAGE-1);hi&=~(B2L_RAM_PAGE-1);
+   if(hi<=lo)continue;
+   if(n==B2L_RAM_MAX_RANGES-1)return -1;
+   out[n++]=(struct b2l_ram_range){lo,hi-lo};
+  }
+ }
+ /* EFI maps need not be sorted. Reject overlaps before any allocation. */
+ for(unsigned i=1;i<n;i++){struct b2l_ram_range v=out[i];unsigned j=i;while(j&&out[j-1].base>v.base){out[j]=out[j-1];j--;}out[j]=v;}
+ for(unsigned i=0;i<n;i++){
+  if(!b2l_ram_allowed(out[i].base,out[i].size)||
+   (i&&out[i].base<out[i-1].base+out[i-1].size)||
+   (out[i].base<primary+size&&primary<out[i].base+out[i].size))return -1;
+ }
+ *count=n;return 0;
+}
+int b2l_validate_owned_ram(const void *map,b2l_size bytes,b2l_size stride,
+ const struct b2l_ram_range *r,unsigned n)
+{
+ const b2l_u8 *p=map;if(!p||!r||!n||n>B2L_RAM_MAX_RANGES||stride<40||bytes%stride)return -1;
+ for(unsigned i=0;i<n;i++){
+  b2l_u64 cursor=r[i].base,end=cursor+r[i].size;
+  if(!b2l_ram_allowed(cursor,r[i].size))return -1;
+  while(cursor<end){unsigned matches=0;b2l_u64 next=cursor;
+   for(b2l_size off=0;off<bytes;off+=stride){
+    b2l_u64 b,e;if(descriptor(p+off,&b,&e))return -1;
+    if(b>=end||e<=cursor)continue;
+    if(b<=cursor){if(get32(p+off)!=2||(get64(p+off+32)&(1ULL<<63)))return -1;matches++;next=e<end?e:end;}
+    else if(b<next)return -1;
+   }
+   if(matches!=1||next<=cursor)return -1;
+   /* Reject a later, partially overlapping descriptor too. */
+   unsigned overlaps=0;for(b2l_size off=0;off<bytes;off+=stride){b2l_u64 b,e;if(descriptor(p+off,&b,&e))return -1;if(b<next&&e>cursor)overlaps++;}
+   if(overlaps!=1)return -1;cursor=next;
+  }
+ }
+ return 0;
+}

@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>application-identifier</key><string>dev.b2l.system-app-bootstrap</string>
+<key>com.apple.private.InstallCoordination.allowed</key><true/>
+<key>com.apple.private.MobileContainerManager.allowed</key><true/>
+<key>com.apple.private.mobileinstall.allowedSPI</key><array>
+<string>InstallForDataMigrator</string><string>LookupSystemAppState</string>
+<string>UpdateSystemAppState</string><string>SetSystemAppMigrationComplete</string>
+<string>StoreListOfAppsRequiringPreInstallConsent</string><string>FetchListOfAppsRequiringPreInstallConsent</string>
+</array>
+</dict></plist>

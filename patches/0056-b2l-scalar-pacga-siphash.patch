@@ -1,0 +1,24 @@
+diff --git a/bsd/conf/files b/bsd/conf/files
+--- a/bsd/conf/files
++++ b/bsd/conf/files
+@@ -228,6 +228,7 @@
+ bsd/net/if_llreach.c          		optional networking bound-checks
+ bsd/net/flowhash.c			optional networking bound-checks
+ bsd/net/siphash.c			optional networking bound-checks
++bsd/kern/b2l_pacga_siphash.c optional b2l
+ bsd/net/flowadv.c			optional networking bound-checks
+ bsd/net/content_filter.c		optional content_filter bound-checks
+ bsd/net/content_filter_crypto.c         optional content_filter bound-checks
+diff --git a/bsd/conf/Makefile.template b/bsd/conf/Makefile.template
+--- a/bsd/conf/Makefile.template
++++ b/bsd/conf/Makefile.template
+@@ -666,6 +666,9 @@
+ 
+ b2l_ufs_aux.o_CFLAGS_ADD += -mgeneral-regs-only
+ 
++# Called from the B2L EL0 exception path through a narrow BSD-side bridge.
++$(foreach o,b2l_pacga_siphash.o siphash.o,$(eval $(o)_CFLAGS_ADD += -mgeneral-regs-only))
++
+ # Cache code can run during exception-driven learning; no SIMD state use.
+ $(foreach o,b2l_native_cache.o b2l_cache_core.o CacheHfs.o CacheSha.o,$(eval $(o)_CFLAGS_ADD += -mgeneral-regs-only))
+ 

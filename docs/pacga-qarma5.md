@@ -87,3 +87,9 @@ outputs, not Apple binaries, actual device keys or captured identifiers.
 - The caller's software-key generation, scope, storage and lifecycle still
   need integration review. Host/vector/QEMU tests do not establish device boot
   or iOS userspace success.
+
+## 0090 integration update
+
+[0090](build-0090.md) retains this corrected QARMA fallback, adds the explicit
+boot-selected SipHash experiment, and publishes the immutable boot key with
+acquire/release ordering instead of taking the mutex on every invocation.

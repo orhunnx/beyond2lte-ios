@@ -1,0 +1,44 @@
+--- a/osfmk/kern/sched_clutch.c
++++ b/osfmk/kern/sched_clutch.c
+@@ -1427,15 +1427,15 @@
+  */
+ #if defined(B2L) && CONFIG_SCHED_EDGE
+ /* No Apple CLPC provider exists on this board. Seed native Edge preferences
+  * by QoS, keeping binding, priority inheritance, runqueues and spill logic.
+- * P=Samsung M4, M=Cortex-A75, E=Cortex-A55. Kernel work prefers A75 so the
+- * four cache workers do not compete with user-interactive work on M4. */
++ * P=Samsung M4, M=Cortex-A75, E=Cortex-A55. Only the explicit IO-storage
++ * group prefers A75. The system group is shared with userspace services. */
+ static pset_id_t
+-b2l_sched_initial_preferred_pset(sched_bucket_t bucket, bool kernel_group)
++b2l_sched_initial_preferred_pset(sched_bucket_t bucket, bool storage_group)
+ {
+     pset_type_t desired = bucket == TH_BUCKET_SHARE_BG ? PSET_AMP_E :
+-        (kernel_group || bucket == TH_BUCKET_SHARE_UT) ? PSET_AMP_M : PSET_AMP_P;
++        (storage_group || bucket == TH_BUCKET_SHARE_UT) ? PSET_AMP_M : PSET_AMP_P;
+     for (pset_id_t i = 0; i < sched_num_psets; ++i) {
+         if (pset_array[i] && pset_array[i]->pset_type == desired) return i;
+     }
+     /* Restricted CPU configurations must not invent a nonexistent pset. */
+@@ -1454,9 +1454,9 @@
+ 	for (uint32_t i = 0; i < TH_BUCKET_SCHED_MAX; i++) {
+ 		sched_clutch_bucket_group_init(&(clutch->sc_clutch_groups[i]), clutch, i);
+ #if defined(B2L) && CONFIG_SCHED_EDGE
+         os_atomic_store(&clutch->sc_clutch_groups[i].scbg_preferred_pset,
+-            b2l_sched_initial_preferred_pset(i, thread_group_id(tg) == THREAD_GROUP_SYSTEM), relaxed);
++            b2l_sched_initial_preferred_pset(i, thread_group_id(tg) == THREAD_GROUP_IO_STORAGE), relaxed);
+ #endif
+ 	}
+ 
+ 	/* Grouping specific fields */
+@@ -6390,9 +6390,9 @@
+         processor_set_t p = pset_array[i];
+         b2l_early_trace("B2L SCHED: Edge pset=%u cluster=%u type=%u cpus=0x%llx\n",
+             i,p->cluster_id,p->pset_type,(uint64_t)p->cpu_bitmask);
+     }
+-    b2l_early_trace("B2L SCHED: preferred foreground=%u default=%u utility=%u kernel=%u background=%u (M4 > A75 > A55)\n",
++    b2l_early_trace("B2L SCHED: preferred foreground=%u default=%u utility=%u storage=%u background=%u (M4 > A75 > A55)\n",
+         b2l_sched_initial_preferred_pset(TH_BUCKET_SHARE_FG,false),
+         b2l_sched_initial_preferred_pset(TH_BUCKET_SHARE_DF,false),
+         b2l_sched_initial_preferred_pset(TH_BUCKET_SHARE_UT,false),
+         b2l_sched_initial_preferred_pset(TH_BUCKET_FIXPRI,true),

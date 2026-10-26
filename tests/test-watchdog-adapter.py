@@ -14,7 +14,7 @@ pre=r'''
 #include <cstdio>
 using IOReturn=int;using IOByteCount=size_t;
 enum {kIOReturnSuccess=0,kIOReturnUnsupported=1,kIOReturnBadArgument=2,kIOReturnNotOpen=3,kIOReturnNotFound=4,kIOReturnNoSpace=5,kIOReturnError=6};
-struct Descriptor {
+struct Descriptor { int prepare(int){return 0;} int complete(int){return 0;}
  uint8_t data[256]={};size_t length=0;bool shortRead=false,shortWrite=false;
  size_t getLength(){return length;}
  size_t readBytes(size_t,void*out,size_t n){if(shortRead)return 0;assert(n<=256);memcpy(out,data,n);return n;}
@@ -32,6 +32,7 @@ struct IOExternalMethodArguments {
 
 #include <initializer_list>
 '''
+pre+='\nenum {kIODirectionIn=1,kIODirectionOut=2};\n'+(root/'xnu-overlay/iokit/Kernel/arm/B2LMemoryIO.h').read_text()+'\n'
 post=r'''
 int main(){
  IOExternalMethodArguments a;

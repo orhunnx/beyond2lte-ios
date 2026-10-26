@@ -26,6 +26,9 @@ class B2LInput : public IOService {
     volatile uint8_t *gpio,*i2c;
     bool stable[4],candidate[4],touch;
     unsigned debounce[4],failures,keyLogs,transferLogs,timeoutUS;
+    unsigned initAttempts;
+    bool initPending;
+    uint64_t nextInitUS;
     uint64_t pollCount,eventCount,updateCount,bulkCount,transferFailures;
     uint64_t lastPollStart,lastDiagnostic,maxPollGapUS,maxPollWorkUS;
     unsigned maxPending;
@@ -34,6 +37,7 @@ class B2LInput : public IOService {
     uint8_t lastCommand;
     B2L_SEC_TS_POINTER pointer;
     static void poll(OSObject*,IOTimerEventSource*);
+    void initializeTouch();
     uint32_t r(unsigned off){uint32_t v=*(volatile uint32_t*)(i2c+off);__asm__ volatile("dmb oshld":::"memory");return v;}
     void w(unsigned off,uint32_t v){*(volatile uint32_t*)(i2c+off)=v;__asm__ volatile("dsb oshst":::"memory");}
     void quiesce(){w(0x20,0);w(0x24,r(0x24));w(0x44,r(0x44)&~(1u<<31));w(0,r(0)&~0xc0u);}
@@ -95,28 +99,9 @@ public:
     void free() APPLE_KEXT_OVERRIDE;
 };
 OSDefineMetaClassAndStructors(B2LInput,IOService);
-bool B2LInput::start(IOService *provider){
-    if(!IOService::start(provider))return false;
-    gpioDesc=IOMemoryDescriptor::withPhysicalAddress(0x15850000,4096,kIODirectionInOut);
-    if(gpioDesc)gpioMap=gpioDesc->map(kIOMapInhibitCache);
-    if(!gpioMap)return false;
-    gpio=(volatile uint8_t*)gpioMap->getVirtualAddress();
-    const unsigned masks[4]={1u<<4,1u<<3,1u<<4,1u<<6};
-    for(unsigned k=0;k<4;++k){unsigned off=k?4:0x44;bool down=!( *(volatile uint32_t*)(gpio+off)&masks[k]);stable[k]=candidate[k]=down;}
-    i2cDesc=IOMemoryDescriptor::withPhysicalAddress(0x104b0000,4096,kIODirectionInOut);
-    if(i2cDesc)i2cMap=i2cDesc->map(kIOMapInhibitCache);
-    if(i2cMap){
-        i2c=(volatile uint8_t*)i2cMap->getVirtualAddress();
-        timeoutUS=100000; /* same bounded probe budget as the touch branch */
-        const void *property=NULL;unsigned propertySize=0;DTEntry chosen;
-        uint64_t handoff[24]={0};
-        if(SecureDTLookupEntry(NULL,"/chosen",&chosen)==kSuccess &&
-           SecureDTGetProperty(chosen,"b2l,touch-status",&property,&propertySize)==kSuccess &&
-           propertySize==sizeof(handoff))memcpy(handoff,property,sizeof(handoff));
-        b2l_diag_record("B2L TOUCH EFI: version=%llu locate=0x%llx init=0x%llx probe=0x%llx reset=0x%llx functions=0x%llx pointer=0x%llx dvdd=0x%llx avdd=0x%llx boot=0x%llx usi=0x%llx transfers=%llu failed=%llu\n",
-            handoff[0],handoff[1],handoff[2],handoff[3],handoff[4],handoff[5],handoff[6],handoff[7],handoff[8],handoff[9],handoff[14],handoff[20],handoff[21]);
-        b2l_diag_record("B2L TOUCH HANDOFF: fs1=0x%x fs2=0x%x fs3=0x%x sla=0x%x ctrl=0x%x int=0x%llx err=0x%llx trans=0x%llx fifo=0x%llx\n",
-            r(0x60),r(0x64),r(0x68),r(0x6c),r(0),handoff[16],handoff[17],handoff[18],handoff[19]);
+void B2LInput::initializeTouch(){
+        ++initAttempts;
+        timeoutUS=100000;
         uint8_t boot=0,integrity=0,device[5]={0};
         const char *stage="timing";
         /* Reuse firmware timings, never infer dividers or touch PMIC state. */
@@ -141,9 +126,37 @@ bool B2LInput::start(IOService *provider){
             }
         }
         timeoutUS=20000;
-        b2l_diag_record("B2L TOUCH INIT: stage=%s ready=%d boot=0x%x integrity=0x%x id=%02x%02x%02x%02x%02x\n",
-            stage,touch,boot,integrity,device[0],device[1],device[2],device[3],device[4]);
+        initPending=!touch && initAttempts<4 && r(0x60) && r(0x64);
+        nextInitUS=uptimeUS()+1000000;
+        b2l_diag_record("B2L TOUCH INIT: stage=%s ready=%d boot=0x%x integrity=0x%x id=%02x%02x%02x%02x%02x attempt=%u retry_pending=%d\n",
+            stage,touch,boot,integrity,device[0],device[1],device[2],device[3],device[4],initAttempts,initPending);
         quiesce();
+}
+bool B2LInput::start(IOService *provider){
+    if(!IOService::start(provider))return false;
+    gpioDesc=IOMemoryDescriptor::withPhysicalAddress(0x15850000,4096,kIODirectionInOut);
+    if(gpioDesc)gpioMap=gpioDesc->map(kIOMapInhibitCache);
+    if(!gpioMap)return false;
+    gpio=(volatile uint8_t*)gpioMap->getVirtualAddress();
+    const unsigned masks[4]={1u<<4,1u<<3,1u<<4,1u<<6};
+    for(unsigned k=0;k<4;++k){unsigned off=k?4:0x44;bool down=!( *(volatile uint32_t*)(gpio+off)&masks[k]);stable[k]=candidate[k]=down;}
+    i2cDesc=IOMemoryDescriptor::withPhysicalAddress(0x104b0000,4096,kIODirectionInOut);
+    if(i2cDesc)i2cMap=i2cDesc->map(kIOMapInhibitCache);
+    if(i2cMap){
+        i2c=(volatile uint8_t*)i2cMap->getVirtualAddress();
+        timeoutUS=100000; /* same bounded probe budget as the touch branch */
+        const void *property=NULL;unsigned propertySize=0;DTEntry chosen;
+        uint64_t handoff[24]={0};
+        if(SecureDTLookupEntry(NULL,"/chosen",&chosen)==kSuccess &&
+           SecureDTGetProperty(chosen,"b2l,touch-status",&property,&propertySize)==kSuccess &&
+           propertySize==sizeof(handoff))memcpy(handoff,property,sizeof(handoff));
+        b2l_diag_record("B2L TOUCH EFI: version=%llu locate=0x%llx init=0x%llx probe=0x%llx reset=0x%llx functions=0x%llx pointer=0x%llx dvdd=0x%llx avdd=0x%llx boot=0x%llx usi=0x%llx transfers=%llu failed=%llu\n",
+            handoff[0],handoff[1],handoff[2],handoff[3],handoff[4],handoff[5],handoff[6],handoff[7],handoff[8],handoff[9],handoff[14],handoff[20],handoff[21]);
+        b2l_diag_record("B2L TOUCH HANDOFF: fs1=0x%x fs2=0x%x fs3=0x%x sla=0x%x ctrl=0x%x int=0x%llx err=0x%llx trans=0x%llx fifo=0x%llx\n",
+            r(0x60),r(0x64),r(0x68),r(0x6c),r(0),handoff[16],handoff[17],handoff[18],handoff[19]);
+        /* A preempted early probe must not disable touch for the entire
+         * boot. Retry on this driver's workloop, at most four attempts total. */
+        initializeTouch();
     }
     loop=IOWorkLoop::workLoop();if(!loop)return false;
     timer=IOTimerEventSource::timerEventSource(this,&B2LInput::poll);
@@ -169,6 +182,7 @@ void B2LInput::poll(OSObject *owner,IOTimerEventSource *sender){
             if(s->keyLogs++<32)IOLog("B2L INPUT: key=%u down=%d\n",k,down);
         }
     }
+    if(s->initPending && begin>=s->nextInitUS)s->initializeTouch();
     if(s->touch){
         /* Same bounded READ_ONE / READ_ALL sequence as B2LTouchDxe. Read
          * up to 32 FIFO records per tick instead of four individual commands.
@@ -209,10 +223,10 @@ void B2LInput::poll(OSObject *owner,IOTimerEventSource *sender){
     if(work>s->maxPollWorkUS)s->maxPollWorkUS=work;
     if(end-s->lastDiagnostic>=10000000){
         s->lastDiagnostic=end;
-        b2l_diag_record("B2L INPUT PERF: sec=%llu polls=%llu wire=%llu updates=%llu bulk=%llu max_pending=%u transfer_failures=%llu max_gap_us=%llu max_work_us=%llu max_transfer_us=%llu bus_us=%llu enabled=%d\n",
+        b2l_diag_record("B2L INPUT PERF: sec=%llu polls=%llu wire=%llu updates=%llu bulk=%llu max_pending=%u transfer_failures=%llu max_gap_us=%llu max_work_us=%llu max_transfer_us=%llu bus_us=%llu enabled=%d init_attempts=%u init_pending=%d\n",
             end/1000000,s->pollCount,s->eventCount,s->updateCount,s->bulkCount,
             s->maxPending,s->transferFailures,s->maxPollGapUS,s->maxPollWorkUS,
-            s->maxTransferUS,s->transferTimeUS,s->touch);
+            s->maxTransferUS,s->transferTimeUS,s->touch,s->initAttempts,s->initPending);
         s->maxPending=0;s->maxPollGapUS=0;s->maxPollWorkUS=0;s->maxTransferUS=0;
     }
     sender->setTimeoutMS(20);
