@@ -14,7 +14,7 @@ on:
       enable_touch:
         description: "Enable B2LTouchDxe in firmware profile"
         type: boolean
-        default: false
+        default: true
 
 env:
   XNU_COMMIT: ac9718fb1af618d5ce8678d0dc6e8a58f252216f
@@ -406,7 +406,7 @@ jobs:
 
       - name: Build UEFI loader and beyond2lte firmware profile
         env:
-          B2L_ENABLE_TOUCH: ${{ inputs.enable_touch && '1' || '0' }}
+          B2L_ENABLE_TOUCH: ${{ (github.event_name != 'workflow_dispatch' || inputs.enable_touch) && '1' || '0' }}
         run: |
           WORKSPACE="$MU_WORK_TREE" scripts/build-boot-firmware.sh
 
