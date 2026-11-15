@@ -15,6 +15,12 @@ for tool in clang llvm-lib llvm-rc lld-link; do
   [[ -x "$CLANG_BIN$tool" ]] || { echo "Missing tool: $CLANG_BIN$tool" >&2; exit 1; }
 done
 [[ -x "$EDK_TOOLS_BIN/GenFw" ]] || { echo 'Build native BaseTools first.' >&2; exit 1; }
+# edksetup.sh normally creates Conf/ from the BaseTools templates.
+mkdir -p "$WORKSPACE/Conf"
+for t in tools_def build_rule target; do
+  [[ -f "$WORKSPACE/Conf/$t.txt" ]] || cp "$EDK_TOOLS_PATH/Conf/$t.template" "$WORKSPACE/Conf/$t.txt"
+done
+export CONF_PATH="$WORKSPACE/Conf"
 mkdir -p "$WORKSPACE/B2LXnuPkg"
 rsync -a "$repo_root/uefi/" "$WORKSPACE/B2LXnuPkg/"
 rsync -a "$repo_root/common/cache/" "$WORKSPACE/B2LXnuPkg/XnuLoader/"

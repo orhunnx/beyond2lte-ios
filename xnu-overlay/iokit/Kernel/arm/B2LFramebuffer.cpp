@@ -160,6 +160,8 @@ AppleCLCD::start(IOService *provider)
 	return true;
 }
 
+static void b2l_fb_progress(uint64_t vsync);
+
 void
 AppleCLCD::vsyncFired(OSObject *owner, IOTimerEventSource *sender)
 {
@@ -179,6 +181,7 @@ AppleCLCD::vsyncFired(OSObject *owner, IOTimerEventSource *sender)
 		client->notify(B2L_FB_NOTIFY_VSYNC, values, 6);
 	}
 	IOLockUnlock(fb->fLock);
+	b2l_fb_progress(count);
 	sender->setTimeoutUS(B2L_FB_VSYNC_US);
 }
 
@@ -210,6 +213,31 @@ get32(const uint8_t *p, uint32_t off)
 }
 
 static uint32_t b2l_fb_swaps_logged;
+static uint64_t b2l_fb_received, b2l_fb_copied, b2l_fb_disabled, b2l_fb_missing,
+    b2l_fb_unsupported, b2l_fb_bounds;
+static uint32_t b2l_fb_last_swap, b2l_fb_last_mask, b2l_fb_last_disabled,
+    b2l_fb_last_id, b2l_fb_last_format;
+
+static void
+b2l_fb_progress(uint64_t vsync)
+{
+	if (vsync == 0 || (vsync % 600) != 0) {
+		return;
+	}
+	b2l_diag_record("B2L FB PROGRESS: vsync=%llu swaps=%llu copied=%llu disabled=%llu missing=%llu unsupported=%llu bounds=%llu last_swap=%u mask=0x%x disabled_mask=0x%x id=%u fmt=0x%x\n",
+	    (unsigned long long)vsync,
+	    (unsigned long long)__atomic_load_n(&b2l_fb_received, __ATOMIC_RELAXED),
+	    (unsigned long long)__atomic_load_n(&b2l_fb_copied, __ATOMIC_RELAXED),
+	    (unsigned long long)__atomic_load_n(&b2l_fb_disabled, __ATOMIC_RELAXED),
+	    (unsigned long long)__atomic_load_n(&b2l_fb_missing, __ATOMIC_RELAXED),
+	    (unsigned long long)__atomic_load_n(&b2l_fb_unsupported, __ATOMIC_RELAXED),
+	    (unsigned long long)__atomic_load_n(&b2l_fb_bounds, __ATOMIC_RELAXED),
+	    __atomic_load_n(&b2l_fb_last_swap, __ATOMIC_RELAXED),
+	    __atomic_load_n(&b2l_fb_last_mask, __ATOMIC_RELAXED),
+	    __atomic_load_n(&b2l_fb_last_disabled, __ATOMIC_RELAXED),
+	    __atomic_load_n(&b2l_fb_last_id, __ATOMIC_RELAXED),
+	    __atomic_load_n(&b2l_fb_last_format, __ATOMIC_RELAXED));
+}
 
 /* Copy each enabled layer's surface into the panel memory (no scaling). */
 void
@@ -218,12 +246,17 @@ AppleCLCD::swap(const uint8_t *rec)
 	/* kern_SwapSetLayer stores client+0x164/+0x168; kern_SwapEnd sends
 	 * client+0x18. client+0x194 (wire+0x17c) is unrelated and cleared by
 	 * SwapBegin. Reading it silently discarded every native CPU frame. */
+	uint32_t swap_id = get32(rec, 0x98);
 	uint32_t mask = get32(rec, 0x14c);
 	uint32_t disabled = get32(rec, 0x150);
+	__atomic_fetch_add(&b2l_fb_received, 1, __ATOMIC_RELAXED);
+	__atomic_store_n(&b2l_fb_last_swap, swap_id, __ATOMIC_RELAXED);
+	__atomic_store_n(&b2l_fb_last_mask, mask, __ATOMIC_RELAXED);
+	__atomic_store_n(&b2l_fb_last_disabled, disabled, __ATOMIC_RELAXED);
 	static unsigned records;
 	if (__atomic_fetch_add(&records, 1, __ATOMIC_RELAXED) < 32) {
 		b2l_diag_record("B2L FB RECORD: swap=%u updated=0x%x disabled=0x%x ids=%u,%u,%u,%u\n",
-		    get32(rec, 0x98), mask, disabled, get32(rec, 0x9c),
+		    swap_id, mask, disabled, get32(rec, 0x9c),
 		    get32(rec, 0xa0), get32(rec, 0xa4), get32(rec, 0xa8));
 	}
 
@@ -235,21 +268,35 @@ AppleCLCD::swap(const uint8_t *rec)
 		int32_t dx = (int32_t)get32(b, 0), dy = (int32_t)get32(b, 4);
 		int32_t w = (int32_t)get32(b, 8), h = (int32_t)get32(b, 12);
 
-		if (!(mask & (1u << layer)) || (disabled & (1u << layer)) || id == 0) {
+		if (!(mask & (1u << layer))) {
+			continue;
+		}
+		if (disabled & (1u << layer)) {
+			__atomic_fetch_add(&b2l_fb_disabled, 1, __ATOMIC_RELAXED);
+			continue;
+		}
+		if (id == 0) {
+			__atomic_fetch_add(&b2l_fb_missing, 1, __ATOMIC_RELAXED);
 			continue;
 		}
 		B2LSurface *s = b2l_surface_copy(id);
 		if (b2l_fb_swaps_logged < 16) {
 			b2l_fb_swaps_logged++;
 			IOLog("B2L FB: swap %u layer %u surface %u %ux%u fmt 0x%x bpr %u a %d,%d %ux%u b %d,%d %dx%d\n",
-			    get32(rec, 0x98), layer, id, s ? s->width : 0, s ? s->height : 0,
+			    swap_id, layer, id, s ? s->width : 0, s ? s->height : 0,
 			    s ? s->pixelFormat : 0, s ? s->bytesPerRow : 0, sx, sy, get32(a, 8),
 			    get32(a, 12), dx, dy, w, h);
 		}
-		if (s == NULL || s == fSurface) {
+		if (s == NULL) {
+			__atomic_fetch_add(&b2l_fb_missing, 1, __ATOMIC_RELAXED);
+			continue;
+		}
+		if (s == fSurface) {
 			OSSafeReleaseNULL(s);
 			continue;
 		}
+		__atomic_store_n(&b2l_fb_last_id, id, __ATOMIC_RELAXED);
+		__atomic_store_n(&b2l_fb_last_format, s->pixelFormat, __ATOMIC_RELAXED);
 		uintptr_t src = s->kernelAddress();
         if(src && s->memory && s->bytesPerElement==4 && s->elementWidth==1 && s->elementHeight==1 &&
             s->pixelFormat==B2L_FB_FORMAT_BGRA) {
@@ -261,6 +308,13 @@ AppleCLCD::swap(const uint8_t *rec)
             if(shown&&!fConsolePaused){b2l_early_gui_present();fConsolePaused=true;IOLog("B2L FB: first IOSurface frame copied to physical scanout\n");}
             __asm__ volatile("dsb sy":::"memory");
             IOLockUnlock(fLock);
+            if (shown) {
+                __atomic_fetch_add(&b2l_fb_copied, 1, __ATOMIC_RELAXED);
+            } else {
+                __atomic_fetch_add(&b2l_fb_bounds, 1, __ATOMIC_RELAXED);
+            }
+        } else {
+            __atomic_fetch_add(&b2l_fb_unsupported, 1, __ATOMIC_RELAXED);
         }
 
 		s->release();

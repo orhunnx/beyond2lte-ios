@@ -1,11 +1,65 @@
 /* SPDX-License-Identifier: BSD-2-Clause */
 /* Included by kern_exec.c after EXECUTABLE_KEY/exec_add_user_string.
- * Diagnostic environment only: no loader, trust or entitlement changes. */
+ * Scoped runtime compatibility and optional CoreGraphics backtrace env. */
 #ifndef B2L_EXEC_GRAPHICS_DIAG_H
 #define B2L_EXEC_GRAPHICS_DIAG_H
+#if defined(ARM64_BOARD_CONFIG_B2L)
+extern int b2l_apps_cache_is_ready(void);
+#endif
+static int
+b2l_exec_runtime_compat(struct image_params *imgp, int pointer_size, int ready)
+{
+	static const char graphics_setting[] = "DYLD_INSERT_LIBRARIES=/usr/local/libexec/b2l-graphics-compat-v1.dylib";
+	static const char hfs_setting[] = "DYLD_INSERT_LIBRARIES=/usr/local/libexec/b2l-hfs-install-compat-v1.dylib";
+	static const char key[] = "DYLD_INSERT_LIBRARIES=";
+	int enabled = 0;
+	if (pointer_size != 8 || !ready ||
+	    !PE_parse_boot_argn("b2l_userspace_bootstrap", &enabled, sizeof(enabled)) ||
+	    enabled != 1) return 0;
+	const char *path = imgp->ip_strings + strlen(EXECUTABLE_KEY);
+	const char *setting = NULL;
+	size_t setting_size = 0;
+	if (!strcmp(path, "/System/Library/CoreServices/SpringBoard.app/SpringBoard") ||
+	    !strcmp(path, "/usr/libexec/backboardd") ||
+	    !strcmp(path, "/Applications/Preferences.app/Preferences") ||
+	    !strcmp(path, "/System/Library/PrivateFrameworks/IconServices.framework/Support/iconservicesagent")) {
+		setting = graphics_setting;
+		setting_size = sizeof(graphics_setting);
+	} else if (!strcmp(path, "/usr/libexec/installd") ||
+	           !strcmp(path, "/System/Library/PrivateFrameworks/MobileInstallation.framework/XPCServices/com.apple.MobileInstallationHelperService.xpc/com.apple.MobileInstallationHelperService")) {
+		setting = hfs_setting;
+		setting_size = sizeof(hfs_setting);
+	} else {
+		return 0;
+	}
+	const char *cursor = imgp->ip_endargv;
+	while (cursor < imgp->ip_strendp) {
+		size_t available = (size_t)(imgp->ip_strendp - cursor);
+		size_t length = strnlen(cursor, available);
+		if (length == available) return 0;
+		if (length >= sizeof(key) - 1 &&
+		    memcmp(cursor, key, sizeof(key) - 1) == 0) return 0;
+		cursor += length + 1;
+	}
+	if (imgp->ip_argspace < (int)(setting_size + 3 * pointer_size) ||
+	    imgp->ip_strspace < (int)setting_size) return 0;
+	int error = exec_add_user_string(imgp, CAST_USER_ADDR_T(setting), UIO_SYSSPACE, TRUE);
+	if (error) return error;
+	imgp->ip_argspace -= pointer_size;
+	imgp->ip_envc++;
+	b2l_early_trace("B2L COMPAT: runtime compatibility library enabled for %s\n", path);
+	return 0;
+}
+
 static int
 b2l_exec_graphics_diag(struct image_params *imgp, int pointer_size)
 {
+#if defined(ARM64_BOARD_CONFIG_B2L)
+	int compat_error = b2l_exec_runtime_compat(imgp, pointer_size, b2l_apps_cache_is_ready());
+	if (compat_error) return compat_error;
+#else
+	(void)b2l_exec_runtime_compat;
+#endif
 	static const char setting[] = "CG_CONTEXT_SHOW_BACKTRACE=1";
 	static const char key[] = "CG_CONTEXT_SHOW_BACKTRACE=";
 	int enabled = 0;

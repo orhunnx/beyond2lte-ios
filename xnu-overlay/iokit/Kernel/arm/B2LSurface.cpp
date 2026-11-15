@@ -699,6 +699,19 @@ IOSurfaceRootUserClient::create(IOExternalMethodArguments *args)
 			bzero(mem->getBytesNoCopy(), s->allocSize);
 			s->memory = mem;
 			s->mapCache = kIOMapDefaultCache;
+			OSDictionary *initial = OSDictionary::withDictionary(props);
+			OSSerialize *serialized = initial ? OSSerialize::binaryWithCapacity(256) : NULL;
+			if (serialized && initial->serialize(serialized) &&
+			    serialized->getLength() <= B2L_SURFACE_MAX_PROPS) {
+				uint8_t *state = (uint8_t *)s->state->getBytesNoCopy();
+				uint32_t bytes = serialized->getLength();
+				s->properties = initial; initial = NULL;
+				s->serializedProperties = serialized; serialized = NULL;
+				memcpy(state + 0x28, &bytes, 4);
+				__atomic_store_n((uint32_t *)(state + 0x20), 3u, __ATOMIC_RELEASE);
+			}
+			OSSafeReleaseNULL(serialized);
+			OSSafeReleaseNULL(initial);
 			if (!b2l_surface_publish(s)) {
 				ret = kIOReturnNoResources;
 			}

@@ -48,16 +48,17 @@ int main(void) {
     }
     char model[64]={0};size_t length=sizeof(model);
     NSDictionary *version=[NSDictionary dictionaryWithContentsOfFile:@"/System/Library/CoreServices/SystemVersion.plist"];
-    if(getuid()!=0 || sysctlbyname("hw.machine",model,&length,NULL,0) || strcmp(model,"iPhone17,2") || ![version[@"ProductBuildVersion"] isEqual:@"23G90"]) {
+    NSString *build=version[@"ProductBuildVersion"];
+    if(getuid()!=0 || sysctlbyname("hw.machine",model,&length,NULL,0) || strcmp(model,"iPhone17,2") || !([build isEqual:@"23G90"] || [build isEqual:@"25F71"])) {
         NSLog(@"B2L APPS: unsupported owner/model/build; native migration not invoked");return 64;
     }
     // Serialize accidental duplicate launches without blocking another startup.
     int lock=open("/private/var/run/b2l-system-app-bootstrap-v1.lock",O_RDWR|O_CREAT|O_NOFOLLOW,0600);
     if(lock<0 || flock(lock,LOCK_EX|LOCK_NB))return 65;
-    NSString *marker=@"/private/var/db/b2l-system-app-bootstrap-v1.plist";
+    NSString *marker=@"/private/var/db/b2l-system-app-bootstrap-hfs-v1.plist";
     NSDictionary *previous=[NSDictionary dictionaryWithContentsOfFile:marker];
     NSUInteger before=installedCount();
-    if([previous[@"build"] isEqual:@"23G90"] && [previous[@"complete"] boolValue] && before>0) {
+    if([previous[@"build"] isEqual:build] && [previous[@"complete"] boolValue] && before>0) {
         NSLog(@"B2L APPS: existing completed native migration preserved; installed=%lu",(unsigned long)before);return 0;
     }
     // A failed trial remains explicit. Do not retry migration on every reboot.
@@ -85,7 +86,7 @@ int main(void) {
     if(![items isKindOfClass:NSDictionary.class] || [items count]==0) {
         NSLog(@"B2L APPS: plugin found no staged apps; installed=%lu",(unsigned long)before);return 71;
     }
-    NSDictionary *attempt=@{@"build":@"23G90",@"attempted":@YES,@"complete":@NO,@"installedBefore":@(before),@"stagedCandidates":@([items count])};
+    NSDictionary *attempt=@{@"build":build,@"attempted":@YES,@"complete":@NO,@"installedBefore":@(before),@"stagedCandidates":@([items count])};
     if(![attempt writeToFile:marker atomically:YES]) {NSLog(@"B2L APPS: cannot persist attempt receipt");return 72;}
     NSLog(@"B2L APPS: invoking shipped SystemAppMigrator; staged=%lu installedBefore=%lu",(unsigned long)[items count],(unsigned long)before);
     BOOL result=NO;

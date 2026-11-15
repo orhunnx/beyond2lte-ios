@@ -45,7 +45,7 @@ static int b2l_apps_sync_payload(vnode_t vp,const unsigned char *data,size_t byt
         size_t n=size-offset;if(n>sizeof(check))n=sizeof(check);int resid=0;
         error=vn_rdwr(UIO_READ,vp,(caddr_t)check,(int)n,(off_t)offset,UIO_SYSSPACE,0,kauth_cred_get(),&resid,current_proc());
         if(error||resid||!b2l_apps_payload_equal(data,bytes,offset,check,n,
-            !writing&&mode==0755&&data==b2l_apps_executable))return error?error:EIO;
+            !writing&&mode==0755&&(data==b2l_apps_executable||data==b2l_hfs_compat_dylib||data==b2l_graphics_compat_dylib)))return error?error:EIO;
         offset+=n;
     }
     if(!writing)return 0;
@@ -87,11 +87,15 @@ static void b2l_userspace_before_init(void)
     error=0;
     static const char *const dirs[]={"/usr/local","/usr/local/libexec","/System/Library/LaunchDaemons","/private/var/db"};
     for(unsigned i=0;i<sizeof(dirs)/sizeof(dirs[0]);i++)if((error=b2l_apps_directory(dirs[i],ctx)))goto out;
-    error=b2l_apps_publish("/usr/local/libexec/b2l-system-app-bootstrap-v2","/usr/local/libexec/.b2l-system-app-bootstrap-v2",b2l_apps_executable,sizeof(b2l_apps_executable),0755,ctx);
+    error=b2l_apps_publish("/usr/local/libexec/b2l-system-app-bootstrap-v3","/usr/local/libexec/.b2l-system-app-bootstrap-v3",b2l_apps_executable,sizeof(b2l_apps_executable),0755,ctx);
     if(error)goto out;
-    error=b2l_apps_publish("/System/Library/LaunchDaemons/dev.b2l.system-app-bootstrap-v2.plist","/System/Library/LaunchDaemons/.b2l-system-app-bootstrap-v2.plist",b2l_apps_job,sizeof(b2l_apps_job),0644,ctx);
+    error=b2l_apps_publish("/usr/local/libexec/b2l-hfs-install-compat-v1.dylib","/usr/local/libexec/.b2l-hfs-install-compat-v1.dylib",b2l_hfs_compat_dylib,sizeof(b2l_hfs_compat_dylib),0755,ctx);
     if(error)goto out;
-    error=b2l_apps_publish("/private/var/db/b2l-launchd-bootstrap-v3.plist","/private/var/db/.b2l-launchd-bootstrap-v3",b2l_apps_launch_cache,sizeof(b2l_apps_launch_cache),0644,ctx);
+    error=b2l_apps_publish("/usr/local/libexec/b2l-graphics-compat-v1.dylib","/usr/local/libexec/.b2l-graphics-compat-v1.dylib",b2l_graphics_compat_dylib,sizeof(b2l_graphics_compat_dylib),0755,ctx);
+    if(error)goto out;
+    error=b2l_apps_publish("/System/Library/LaunchDaemons/dev.b2l.system-app-bootstrap-v3.plist","/System/Library/LaunchDaemons/.b2l-system-app-bootstrap-v3.plist",b2l_apps_job,sizeof(b2l_apps_job),0644,ctx);
+    if(error)goto out;
+    error=b2l_apps_publish("/private/var/db/b2l-launchd-bootstrap-v4.plist","/private/var/db/.b2l-launchd-bootstrap-v4",b2l_apps_launch_cache,sizeof(b2l_apps_launch_cache),0644,ctx);
     if(!error)error=VFS_SYNC(vnode_mount(rootvnode),MNT_WAIT,ctx);
     if(!error)b2l_apps_cache_ready=1;
 out:printf("B2L APPS: native migration bootstrap publication error=%d\n",error);

@@ -13,7 +13,7 @@ static int b2l_exec_bootstrap_cache(struct image_params *imgp,int pointer_size)
        !b2l_apps_cache_is_ready())return 0;
     const char *path=imgp->ip_strings+strlen(EXECUTABLE_KEY);
     if(strcmp(path,"/usr/libexec/launchd_cache_loader"))return 0;
-    static const char cache[]="/private/var/db/b2l-launchd-bootstrap-v3.plist";
+    static const char cache[]="/private/var/db/b2l-launchd-bootstrap-v4.plist";
     static const char signature[]="/System/Library/xpc/launchd.plist.sig";
     size_t bytes=sizeof(cache)+sizeof(signature);
     if(imgp->ip_argspace<(int)(bytes+5*pointer_size)||imgp->ip_strspace<(int)bytes)return E2BIG;

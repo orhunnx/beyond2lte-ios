@@ -23,6 +23,11 @@ static inline int b2l_blit(void *dst,uint64_t dbytes,uint32_t dw,uint32_t dh,uin
     uint64_t end_d=((uint64_t)dy+h-1)*ds+((uint64_t)dx+w)*4;
     if(end_s>sbytes||end_d>dbytes)return 0;
     /* memmove tolerates the default scanout surface being re-presented. */
+    if(sx==0&&dx==0&&(uint64_t)w*4==ds&&ds==ss){
+        memmove((uint8_t*)dst+(uint64_t)dy*ds,
+                (const uint8_t*)src+soff+(uint64_t)sy*ss,(size_t)h*ds);
+        return 1;
+    }
     for(uint32_t y=0;y<h;++y)
         memmove((uint8_t*)dst+((uint64_t)dy+y)*ds+(uint64_t)dx*4,
                 (const uint8_t*)src+soff+((uint64_t)sy+y)*ss+(uint64_t)sx*4,(size_t)w*4);

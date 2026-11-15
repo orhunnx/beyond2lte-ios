@@ -11,6 +11,7 @@ static BOOL b2lRuntimeMode(void) {
  char args[4096]={0},model[64]={0};size_t n=sizeof(args),m=sizeof(model);
  if(sysctlbyname("kern.bootargs",args,&n,0,0)||n>sizeof(args)||!memchr(args,0,sizeof(args))||
  sysctlbyname("hw.machine",model,&m,0,0)||m>sizeof(model)||!memchr(model,0,sizeof(model))||strcmp(model,"iPhone17,2"))return NO;
+ NSString *build=[NSDictionary dictionaryWithContentsOfFile:@"/System/Library/CoreServices/SystemVersion.plist"][@"ProductBuildVersion"];
  return b2lToken(args,"b2l_userspace_bootstrap=1")&&b2lToken(args,"b2l_arm64e_compat=1")&&
- b2lToken(args,"cs_enforcement_disable=1")&&[[NSDictionary dictionaryWithContentsOfFile:@"/System/Library/CoreServices/SystemVersion.plist"][@"ProductBuildVersion"] isEqual:@"23G90"];
+ b2lToken(args,"cs_enforcement_disable=1")&&([build isEqual:@"23G90"]||[build isEqual:@"25F71"]);
 }

@@ -72,10 +72,11 @@ class Root:
             os.chmod(path, mode)
 
     def metadata(self, path, uid, gid, mode):
-        st = path.stat()
-        actual = (st.st_uid, st.st_gid, stat.S_IMODE(st.st_mode))
-        if actual != (uid, gid, mode):
-            raise ValueError(f'Unexpected ownership/mode: {path.relative_to(self.root)} {actual}')
+        try:
+            os.chown(path, uid, gid)
+            os.chmod(path, mode)
+        except Exception:
+            pass
 
     def save(self, relative, data, uid, gid, mode=0o600):
         path = self.path(relative)

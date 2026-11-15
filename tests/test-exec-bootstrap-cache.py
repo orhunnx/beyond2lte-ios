@@ -50,7 +50,7 @@ int main(){
   else if(trial<8){assert(error==E2BIG&&p.ip_strendp==old.ip_strendp&&p.ip_argc==1);}
   else if(trial==8){assert(error==EFAULT&&p.ip_strendp==old.ip_strendp&&p.ip_argc==1);}
   else{
-   const char*c="/private/var/db/b2l-launchd-bootstrap-v3.plist";const char*sig="/System/Library/xpc/launchd.plist.sig";
+   const char*c="/private/var/db/b2l-launchd-bootstrap-v4.plist";const char*sig="/System/Library/xpc/launchd.plist.sig";
    size_t bytes=strlen(c)+strlen(sig)+2;
    assert(!error&&p.ip_argc==3&&p.ip_envc==0&&p.ip_strendp==old.ip_strendp+bytes);
    assert(p.ip_argspace==old.ip_argspace-(int)bytes-16&&p.ip_strspace==old.ip_strspace-(int)bytes);
