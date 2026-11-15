@@ -429,6 +429,8 @@ jobs:
 
           python3 scripts/package-boot.py --verify out/ci-boot/boot.img
 
+          python3 scripts/package-twrp-zip.py out/ci-boot/boot.img out/ci-boot/beyond2lte-boot-flashable.zip
+
       - name: Upload boot.img and tar as fast artifact
         uses: actions/upload-artifact@v4
         with:
@@ -437,4 +439,5 @@ jobs:
             out/ci-boot/boot.img
             out/ci-boot/manifest.json
             out/ci-boot/beyond2lte-xnu-boot.tar
+            out/ci-boot/beyond2lte-boot-flashable.zip
           if-no-files-found: error
